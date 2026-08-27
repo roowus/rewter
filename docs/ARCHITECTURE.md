@@ -344,6 +344,16 @@ can think for minutes before its first token, and proxies cut idle sockets long 
 that). Client disconnect aborts the upstream call — nobody is waiting for those tokens, and
 on a paid upstream generating them costs real money.
 
+**Which object you watch for that disconnect is load-bearing.** The listener goes on
+`reply.raw` (the `ServerResponse`), never on `req.raw`. An `IncomingMessage` emits `"close"`
+when the *request body* has finished being read — on any POST that is immediately, so a
+listener there aborts every stream before its first token. `ServerResponse` emits `"close"`
+when the socket actually goes away, and the `!writableEnded` guard keeps our own clean
+finish from looking like a hang-up. This shipped broken once and no `app.inject()` test
+could see it, because `inject()` has no socket; `http/app.socket.test.ts` binds a real
+ephemeral port for exactly this class of bug and is the only place that would have caught
+it.
+
 Two mismatches between our internal grammar and OpenAI's, both deliberate:
 
 - **Resolution happens before any bytes go out.** A bad model name must be a clean `404`;

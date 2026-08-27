@@ -18,7 +18,7 @@ import {
   toOpenAIUsage,
   toToolDefinitions,
 } from "@rewter/shared";
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
 import {
@@ -127,7 +127,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const created = Math.floor(clock() / 1000);
 
     if (body.stream) {
-      await streamCompletion(req, reply, {
+      await streamCompletion(reply, {
         router,
         routeReq,
         ctx: { id, model: body.model, created },
@@ -179,16 +179,20 @@ interface StreamOptions {
   sse?: SseWriterOptions;
 }
 
-async function streamCompletion(
-  req: FastifyRequest,
-  reply: FastifyReply,
-  opts: StreamOptions,
-): Promise<void> {
+async function streamCompletion(reply: FastifyReply, opts: StreamOptions): Promise<void> {
   const writer = new SseWriter(reply.raw, opts.sse ?? {});
   // A disconnected client means nobody is waiting for those tokens — and for a
   // paid upstream, continuing to generate them costs real money.
+  //
+  // Watch the *response*, not the request: `IncomingMessage` emits "close" as
+  // soon as the request body has been read, which on any POST is immediately —
+  // listening there aborts every stream before its first token. `ServerResponse`
+  // emits "close" when the socket goes away (or when we finish, hence the
+  // `writableEnded` guard).
   const abort = new AbortController();
-  req.raw.on("close", () => abort.abort());
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableEnded) abort.abort();
+  });
 
   writer.send(roleFrame(opts.ctx));
   try {

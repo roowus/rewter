@@ -13,6 +13,11 @@ export interface FakeAdapterOptions {
   kind?: ProviderKind;
   /** Throw (rather than yield an error chunk) on the nth attempt, 1-based. */
   throwOnAttempt?: number;
+  /**
+   * Stay open after the script runs out, until the signal aborts. Lets a test
+   * disconnect a client *while* an upstream call is genuinely in flight.
+   */
+  hang?: boolean;
 }
 
 export class FakeAdapter implements ProviderAdapter {
@@ -20,6 +25,8 @@ export class FakeAdapter implements ProviderAdapter {
   /** Every request this adapter instance saw — assert on what went upstream. */
   readonly requests: AdapterRequest[] = [];
   attempts = 0;
+  /** The signal of the most recent call — assert that a disconnect propagated. */
+  lastSignal: AbortSignal | undefined;
 
   constructor(
     private readonly scripts: StreamChunk[][],
@@ -31,6 +38,7 @@ export class FakeAdapter implements ProviderAdapter {
   async *stream(req: AdapterRequest, signal?: AbortSignal): AsyncIterable<StreamChunk> {
     this.attempts += 1;
     this.requests.push(req);
+    this.lastSignal = signal;
     if (this.opts.throwOnAttempt === this.attempts) {
       throw new Error("adapter exploded");
     }
@@ -43,6 +51,12 @@ export class FakeAdapter implements ProviderAdapter {
         return;
       }
       yield chunk;
+    }
+    if (this.opts.hang === true && signal !== undefined && !signal.aborted) {
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      yield { type: "error", message: "request aborted", retryable: false, statusCode: null };
     }
   }
 

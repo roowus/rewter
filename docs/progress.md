@@ -10,6 +10,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M1 | Shared contracts + DB (entities, state machines, drizzle schema, event bus) | ✅ 2026-08-27 |
 | M2 | Provider adapters + contract test suite | ✅ 2026-08-27 |
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
+| M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ⚪ |
 | M4 | Registry + capability cards + digest renderer | ⚪ |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
@@ -17,6 +18,37 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M3c: streaming was broken in production while 31 tests said otherwise
+
+The first live run of M3's acceptance criterion — a real daemon, two real upstreams — found
+that **every** streaming request returned a role frame and then `request aborted`. Non-stream
+worked. Direct curl to the same upstreams worked. See
+[ARCHITECTURE.md § SSE and the OpenAI wire format](ARCHITECTURE.md#sse-and-the-openai-wire-format).
+
+- **Cause**: the client-disconnect listener sat on `req.raw`. An `IncomingMessage` emits
+  `"close"` once the *request body* has been read, which on a POST is immediately — so the
+  abort controller fired before the first token, every time. Fixed by listening on
+  `reply.raw` (the `ServerResponse`, which closes when the socket does) behind a
+  `!writableEnded` guard so our own clean finish isn't mistaken for a hang-up.
+- **Why the tests missed it**: all 31 wire-format tests run through `app.inject()`, which
+  has no socket and therefore cannot express the bug. Green tests, broken product. New
+  `http/app.socket.test.ts` binds a real ephemeral port: one test pins that a stream
+  survives its own request body, the other that a genuine disconnect still aborts the
+  upstream (~25ms). Reverting the one-line fix makes the first test fail with the exact
+  production symptom — checked, not assumed.
+- A detour worth recording: that disconnect test first took **4s**. Not the abort — undici
+  holds an aborted socket ~4s before releasing it, and `app.close()` waits for it.
+  `closeAllConnections()` in teardown; 136ms.
+- **Live re-verification**, two providers, both streaming real content: Ollama
+  (`llava-phi3`, keyless local) and a local 9router upstream (`glm-5.3`) as a plain
+  OpenAI-compatible provider. Cost rows land with real token counts
+  (`ninerouter/glm-5.3 | 2013 | 264 | $0.0017886`).
+- 413 tests green (185 shared + 220 server + 8 CLI).
+- **M3's acceptance criterion is not met yet, and the reason is structural**: Claude Code
+  talks the *Anthropic* Messages API (`/v1/messages`), not OpenAI's. The plan filed
+  `/v1/messages` as a "phase-2 nicety", which was a misread — without it the milestone's own
+  "replaces 9router" test cannot run. Tracked as M3d.
 
 ### 2026-08-27 — M3b: config, seeding, and a daemon you can actually start
 

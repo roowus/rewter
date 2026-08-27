@@ -56,8 +56,10 @@ for the milestone board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
 
 Working today (M0–M3): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), `POST /v1/chat/completions` (streaming and not), `GET /v1/models`, model
-resolution across all 27 upstreams, retry, SSE, and per-request cost metering. The
-orchestrator pseudo-model is listed but returns `501` until M5.
+resolution across all 27 upstreams, retry, SSE, and per-request cost metering. Verified live
+against two upstreams at once. The orchestrator pseudo-model is listed but returns `501`
+until M5, and Claude Code needs `/v1/messages` (M3d) since it speaks Anthropic's API, not
+OpenAI's.
 
 ## Quickstart
 
