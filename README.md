@@ -62,11 +62,12 @@ resolution across all 27 upstreams, retry, SSE, and per-request cost metering. *
 runs on it** — verified live end to end, tool calls included, against two upstreams. The
 orchestrator pseudo-model is listed but returns `501` until M5.
 
-Landing now (M4): the **model registry** the orchestrator will choose from — capability-card
-storage, where a hand correction survives card regeneration and cannot rewrite the card's
-provenance; the digest renderer that turns the registry into one compact, byte-stable line per
-model; and **`rewter sync-models`**, which fills the registry from the providers' own catalogs.
-AI card generation is next.
+Done (M4): the **model registry** the orchestrator chooses from — capability-card storage, where
+a hand correction survives card regeneration and cannot rewrite the card's provenance; the digest
+renderer that turns the registry into one compact, byte-stable line per model;
+**`rewter sync-models`**, which fills the registry from the providers' own catalogs; and
+**`rewter card`**, where one model writes the capability card for another. Next is M5, the
+orchestrator itself.
 
 ## Quickstart
 
@@ -152,6 +153,36 @@ deletes: a model that disappears upstream is disabled, so the cost records point
 their referent.
 
 `--dry-run` reports without writing; `--provider <slug>` scopes to one.
+
+### Capability cards
+
+A card is what the orchestrator will read to decide which model gets which subtask. One model
+writes them for the others:
+
+```sh
+node packages/cli/dist/index.js card zai/glm-5.3 --using anthropic/claude-sonnet-5
+# zai/glm-5.3
+#   summary:    Cheap 1M-context workhorse; strong at code, weak at hard math.
+#   best at:    coding, long_context
+#   strengths:  coding, long_context, fast_cheap
+#   weaknesses: math
+#   written by: anthropic/claude-sonnet-5
+```
+
+`--using` is required and has no default: the model that writes the cards is billed, and its
+judgement is what the router acts on for the life of the card. A bare `card` is not "do them
+all" either — a synced registry is hundreds of rows, so pass `--all` (all *enabled* models) if
+that is what you want. A model that already has a card is skipped unless `--regenerate`.
+
+Regenerating is always safe: generation writes only the generated half of a card, so a hand
+correction you made in the dashboard survives it. `--show` prints stored cards without calling
+anything; `--dry-run` prints what it would store.
+
+Generators are unreliable narrators, so the parser is forgiving in one direction only: invented
+tags are dropped, a fenced or prose-wrapped reply is dug out, an over-long summary is trimmed,
+and a tag claimed as both a strength and a weakness is kept as the **weakness** — a false
+strength gets a model picked for work it bills for and fails at, while a false weakness only
+costs an option. Everything it discarded is printed, not swallowed.
 
 ## Development
 

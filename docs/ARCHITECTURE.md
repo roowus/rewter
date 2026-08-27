@@ -223,6 +223,55 @@ lowercasing a name round-trips for maybe two thirds of the preset table (`"Googl
 `googlegemini`, `"Z.AI (GLM)"` → `zaiglm`), and combined with `canSync(undefined) === false` a
 missed lookup would *silently skip* the provider rather than erroring.
 
+### Card generation: a model describes a model
+
+`registry/cards.ts` asks one model to write the [capability card](#capability-cards) for another.
+`rewter card <model>... --using <model>` drives it. The card is what the orchestrator reads when
+it decides who does what, so every line of this module is written against one assumption: **the
+generator is an unreliable narrator.** It will invent tags outside the vocabulary, wrap its JSON
+in prose, write a paragraph where a clause was asked for, and occasionally claim a model is both
+good and bad at the same thing. None of that may cost us the card, and none of it may put a value
+into the registry the digest or the tag vocabulary cannot represent.
+
+**The prompt** (`CARD_SYSTEM_PROMPT`, versioned by `CARD_PROMPT_VERSION`) interpolates the tag
+vocabulary from `CapabilityTagSchema.options` rather than retyping it, so a tag added in `shared`
+cannot silently go un-offered — which would leave it permanently unused. The user turn **states
+the facts we already hold** (id, upstream id, context window, price, modalities, `supports`)
+instead of asking for them: the generator's job is judgement, and it should not be guessing at a
+price sitting in the database. The card carries no pricing, so it cannot overwrite one either.
+Generation runs at `temperature: 0` — two runs should differ because the registry changed, not
+because sampling did.
+
+**Parsing degrades; it does not throw.** `parseCardJson` throws only when there is no card to be
+had at all — no JSON object, or one with no summary. Everything short of that is repaired:
+
+- The object is found by **counting braces**, string- and escape-aware, not by slicing to the last
+  `}` — trailing prose containing a brace would otherwise swallow the parse.
+- The draft schema types tags as `string`, not the enum. A `z.enum()` would reject the whole array,
+  losing four good tags to one invented one; instead unknown tags are dropped and **reported**.
+- Tags are lowercased, trimmed and deduped, so `" Coding "` and `"CODING"` are one tag.
+- A tag claimed as both a strength and a weakness is kept as the **weakness**. The two readings are
+  not symmetric: a false strength gets a model *chosen* for work it bills for and fails, while a
+  false weakness only forgoes an option.
+- The summary is collapsed to one line and clamped to 180 characters, because the digest is one
+  line per model and an overrun pushes it past its budget — silently dropping models.
+
+What was discarded rides along in the result (`unknownTags`, `contradictions`) and is printed by
+`formatCardReport`. A card quietly missing the one tag the generator cared about would read as the
+generator's opinion rather than our filtering.
+
+**Failure is a result, not a throw.** An upstream error or an unparseable reply becomes
+`{error}` on that model's `CardResult`; `generateCards` steps over it and keeps going, and the CLI
+exits non-zero. Generation is **sequential on purpose** — this is an interactive command against a
+single upstream, and a parallel burst buys seconds at the price of rate-limit failures halfway
+through a run the user then has to repeat.
+
+Two things generation deliberately cannot do. It never authors `userOverrides` (that would be a
+claim about the half of the row it cannot see), and `upsertCard` writes only the generated half —
+so `--regenerate` can never destroy a hand correction, which is why it needs no confirmation
+prompt. Cost is not accounted for here either: the call goes through `Router`, which records a
+CostRecord for every completion, so cards land in the same spend ledger as everything else.
+
 ### Registry digest renderer
 
 `renderDigest(entries, {maxTokens})` in `server/src/registry/digest.ts` renders section 2 of the
@@ -652,8 +701,7 @@ library barrel so that importing `@rewter/server` never starts a server as a sid
 shape M8 wraps in a launchd plist, and the shape you want anyway while watching logs.
 `rewter version` / `rewter help` round it out. Background management (`stop`, `status`,
 `logs`, `install-service`, `gc`) needs a pidfile and a service definition, which is M8's
-job; those commands exit 1 naming the milestone rather than pretending. `card` does the same
-for the rest of M4.
+job; those commands exit 1 naming the milestone rather than pretending.
 
 `rewter sync-models [--dry-run] [--no-enrich] [--provider <slug>] [--config <path>]` refreshes
 the registry from the providers' catalogs — see [Model sync](#model-sync-catalogs--registry) for
@@ -664,6 +712,17 @@ table would fight the first for the port. SQLite in WAL mode makes the concurren
 a CLI invocation sees exactly the rows the daemon would. Because enrichment reads OpenRouter out
 of the same provider list, `--provider` can scope it away and turn it into a silent no-op; the CLI
 says so on stderr rather than leaving you wondering why the prices are still null.
+
+`rewter card [<model>...] --using <model> [--all] [--regenerate] [--show] [--dry-run]` writes
+capability cards — see [Card generation](#card-generation-a-model-describes-a-model). Two guards
+stand between a typo and a bill. **`--using` is required and has no default**: the generator is
+billed and its judgement is what the orchestrator acts on for the life of the card, so picking one
+silently — cheapest, first-enabled, whatever — would be the wrong kind of convenience. And
+**naming no model is not "do them all"**: a synced registry is hundreds of rows, so `--all` has to
+be asked for, and it means all *enabled* models, which is the set the orchestrator can choose
+from. An unknown target or an unresolvable `--using` fails before anything is spent, and a model
+that already has a card is skipped unless `--regenerate` says otherwise. `--show` only reads, so
+it needs no `--using`.
 
 ## Tier-2 agent loop
 

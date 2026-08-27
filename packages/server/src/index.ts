@@ -43,6 +43,26 @@ export {
   type CatalogOptions,
   type CatalogResult,
 } from "./registry/catalog.js";
+export {
+  CAPABILITY_TAGS,
+  CARD_PROMPT_VERSION,
+  CARD_SYSTEM_PROMPT,
+  CardError,
+  buildCardMessages,
+  formatCard,
+  formatCardReport,
+  generateCard,
+  generateCards,
+  parseCardJson,
+  type CardDraft,
+  type CardGenerator,
+  type CardReport,
+  type CardResult,
+  type CardTarget,
+  type GenerateCardsOptions,
+  type GenerateOptions,
+  type ParsedCard,
+} from "./registry/cards.js";
 export { renderDigest, type DigestEntry, type DigestOptions } from "./registry/digest.js";
 export {
   formatSyncReport,

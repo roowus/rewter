@@ -12,13 +12,61 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
 | M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ✅ 2026-08-27 |
 | — | *M3 acceptance: Claude Code live on rewter, 2 providers, tool calls* | ✅ 2026-08-27 |
-| M4 | Registry + capability cards + digest renderer | 🟡 storage + digest + model sync done; AI card generation left |
+| M4 | Registry + capability cards + digest renderer | ✅ 2026-08-27 |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M4c: AI card generation, and `rewter card` — **M4 complete**
+
+A model now writes the capability card for another model. This is the last M4 piece: the
+registry has rows (M4b), the rows have a card slot (M4a), and something finally fills it.
+
+- **The module is written against one premise: the generator is an unreliable narrator.** Not
+  as a slogan — as the thing that decides every branch. It will invent tags, fence its JSON in
+  prose, write a paragraph where a clause was asked for, and claim a model is both good and bad
+  at the same thing. So `parseCardJson` throws only when there is *no card at all*, and repairs
+  everything short of that. The draft schema types tags as `string` rather than the enum
+  precisely because a `z.enum()` would reject the whole array — losing four good tags to one
+  invented one.
+- **A tag claimed as both a strength and a weakness is kept as the weakness**, because the two
+  readings are not symmetric: a false strength gets a model *chosen* for work it bills for and
+  fails, whereas a false weakness only forgoes an option. The asymmetry is the whole argument.
+- **What was thrown away is printed, not swallowed.** `unknownTags` and `contradictions` ride
+  along on the result and `formatCardReport` says them out loud. A card silently missing the one
+  tag the generator cared about reads as the generator's opinion rather than our filtering.
+- **JSON is extracted by counting braces**, string- and escape-aware — not by slicing to the
+  last `}`, which is the obvious implementation and breaks the moment a reply ends with
+  "…use {curly} braces carefully." There is a test with exactly that shape.
+- **The prompt interpolates the tag vocabulary from the schema** rather than retyping it, so a
+  tag added in `shared` cannot silently go un-offered to the generator and end up permanently
+  unused. A test asserts every tag appears in the prompt. The user turn states the facts we
+  already hold (context, price, modalities) instead of asking for them: the generator's job is
+  judgement, not guessing at a number sitting in the database.
+- **Two guards in the CLI stand between a typo and a bill.** `--using` is required and has no
+  default — the generator is billed and its judgement outlives the call, so choosing it silently
+  is the wrong kind of convenience. And a bare `card` is not "do them all": a synced registry is
+  hundreds of rows, so `--all` must be asked for. An unknown target or an unresolvable `--using`
+  fails before anything is spent; there is a test asserting `fetch` was never called.
+- **`--regenerate` needs no confirmation prompt**, and that is a property, not an oversight:
+  generation never authors `userOverrides` and `upsertCard` writes only the generated half, so
+  regenerating cannot destroy a hand correction. Cost is not accounted for here either — the
+  call goes through `Router`, which already writes a CostRecord per completion, so cards land in
+  the same spend ledger as everything else.
+- **Generation is sequential on purpose.** An interactive command against a single upstream; a
+  parallel burst buys a few seconds at the price of rate-limit failures halfway through a run
+  the user then has to repeat.
+- **573 tests green** (214 shared + 338 server + 21 CLI), +33. Two fixtures were wrong before
+  the code was: a `parseCardJson` test expected `/invalid JSON/` from `"{not json at all"`, but
+  the brace-counting extractor correctly rejects an *unterminated* object before `JSON.parse` is
+  ever reached — split into one input per path. And the CLI's completion fixture returned a
+  plain JSON body, which the router (which streams everything, even a one-shot `complete()`)
+  read as "stream ended without finish_reason" and then, once framed, "without usage".
+- **Still open from the M4 plan: "real cards for 3 models eyeballed."** That needs a live
+  generator, and the keyless-path constraint from M3 still applies.
 
 ### 2026-08-27 — M4b: model sync, and `rewter sync-models`
 

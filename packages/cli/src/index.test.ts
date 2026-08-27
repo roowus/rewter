@@ -82,11 +82,6 @@ describe("run", () => {
     }
   });
 
-  it("says which milestone an unimplemented M4 command is waiting on", async () => {
-    expect(await run(["card"])).toBe(1);
-    expect(err.join("")).toContain("M4");
-  });
-
   it("rejects a non-numeric --port before touching the database", async () => {
     expect(await run(["start", "--port", "eighty"])).toBe(1);
     expect(err.join("")).toContain("--port is not a number");
@@ -183,5 +178,145 @@ describe("run — sync-models", () => {
     });
     expect(code).toBe(1);
     expect(out.join("")).toContain("openai: failed");
+  });
+});
+
+/**
+ * Card generation through the CLI. The parsing and normalization live in
+ * `registry/cards.test.ts`; what is under test here is the wiring and the
+ * guards that stand between a typo and a bill.
+ */
+describe("run — card", () => {
+  const CONFIG = {
+    providers: [{ preset: "openai" }],
+    models: [
+      { id: "openai/gpt-5", provider: "openai" },
+      { id: "openai/gpt-4o", provider: "openai" },
+    ],
+  };
+
+  const CARD = JSON.stringify({
+    summary: "Fast general-purpose model.",
+    strengths: ["coding", "reasoning"],
+    weaknesses: [],
+    bestAt: ["coding"],
+    notes: null,
+  });
+
+  /**
+   * An OpenAI-shaped SSE completion carrying `content`. The router streams
+   * everything — even a one-shot `complete()` collects a stream — so a plain
+   * JSON body would be read as a stream that ended without a finish_reason.
+   */
+  function completionFetch(content: string): typeof globalThis.fetch {
+    const chunk = (delta: unknown, finish: string | null = null) =>
+      JSON.stringify({
+        id: "chatcmpl-1",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-4o",
+        choices: [{ index: 0, delta, finish_reason: finish }],
+      });
+    const usage = JSON.stringify({
+      id: "chatcmpl-1",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "gpt-4o",
+      choices: [],
+      usage: { prompt_tokens: 12, completion_tokens: 5 },
+    });
+    const body = [
+      `data: ${chunk({ role: "assistant", content: "" })}\n\n`,
+      `data: ${chunk({ content })}\n\n`,
+      `data: ${chunk({}, "stop")}\n\n`,
+      `data: ${usage}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+    return (async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })) as unknown as typeof globalThis.fetch;
+  }
+
+  it("writes a card and prints it", async () => {
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const opts = { env, fetch: completionFetch(CARD) };
+    expect(await run(["card", "openai/gpt-5", "--using", "openai/gpt-4o"], opts)).toBe(0);
+    expect(out.join("")).toContain("best at:    coding");
+
+    // …and it persisted: `--show` reads it back out of the same database.
+    out = [];
+    expect(await run(["card", "openai/gpt-5", "--show"], { env })).toBe(0);
+    expect(out.join("")).toContain("Fast general-purpose model.");
+  });
+
+  it("requires --using rather than picking a generator for you", async () => {
+    // The generator is billed and its judgement outlives the call; choosing it
+    // silently is the wrong kind of convenience.
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["card", "openai/gpt-5"], { env })).toBe(1);
+    expect(err.join("")).toContain("--using");
+  });
+
+  it("refuses an unknown --using before spending anything", async () => {
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    let called = false;
+    const fetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    expect(await run(["card", "openai/gpt-5", "--using", "nope/nope"], { env, fetch })).toBe(1);
+    expect(err.join("")).toContain("unknown model: nope/nope");
+    expect(called).toBe(false);
+  });
+
+  it("refuses an unknown target model", async () => {
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["card", "openai/ghost", "--using", "openai/gpt-4o"], { env })).toBe(1);
+    expect(err.join("")).toContain("unknown model(s): openai/ghost");
+  });
+
+  it("does not treat a bare `card` as every model", async () => {
+    // A synced registry is hundreds of rows; an implicit --all is hundreds of
+    // billed calls.
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["card", "--using", "openai/gpt-4o"], { env })).toBe(1);
+    expect(err.join("")).toContain("--all");
+  });
+
+  it("writes nothing on --dry-run", async () => {
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const opts = { env, fetch: completionFetch(CARD) };
+    expect(await run(["card", "openai/gpt-5", "--using", "openai/gpt-4o", "--dry-run"], opts)).toBe(
+      0,
+    );
+    expect(out.join("")).toContain("nothing written");
+
+    out = [];
+    expect(await run(["card", "openai/gpt-5", "--show"], { env })).toBe(1);
+    expect(out.join("")).toContain("no cards yet");
+  });
+
+  it("exits non-zero when the generator's reply had no card in it", async () => {
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const opts = { env, fetch: completionFetch("I'm sorry, I can't help with that.") };
+    expect(await run(["card", "openai/gpt-5", "--using", "openai/gpt-4o"], opts)).toBe(1);
+    expect(out.join("")).toContain("failed");
+  });
+
+  it("skips a model that already has a card unless told to regenerate", async () => {
+    const env = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const opts = { env, fetch: completionFetch(CARD) };
+    await run(["card", "openai/gpt-5", "--using", "openai/gpt-4o"], opts);
+
+    out = [];
+    expect(await run(["card", "openai/gpt-5", "--using", "openai/gpt-4o"], opts)).toBe(0);
+    expect(out.join("")).toContain("already has a card");
+
+    out = [];
+    const args = ["card", "openai/gpt-5", "--using", "openai/gpt-4o", "--regenerate"];
+    expect(await run(args, opts)).toBe(0);
+    expect(out.join("")).toContain("best at:    coding");
   });
 });
