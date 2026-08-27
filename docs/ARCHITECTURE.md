@@ -105,7 +105,7 @@ schemas so the event/API contract cannot drift. Server module dirs are the futur
 | DB | better-sqlite3 + Drizzle | synchronous writes = no async races in a single process; WAL for concurrent reads; drizzle-kit migrations |
 | Dashboard | Vite + React 18, TanStack Router/Query, zustand, Tailwind | local ops UI, no SSR |
 | Validation | zod (in `shared`) | validates OpenAI requests, LLM tool args, config, DB round-trips; `zod-to-json-schema` for tool defs |
-| Tests | vitest + msw + in-memory SQLite + FakeProviderAdapter/ScriptedModel | deterministic, no keys/network |
+| Tests | vitest + recorded wire fixtures + in-memory SQLite + FakeProviderAdapter/ScriptedModel | deterministic, no keys/network |
 | Lint/format | Biome | one fast tool |
 | SDKs | `@anthropic-ai/sdk` (native), `openai` (covers all OpenAI-compatible upstreams via baseURL), `@google/genai` | |
 | Daemon | launchd plist via `rewter install-service`; `--foreground` for dev; logs `~/Library/Logs/rewter/` | |
@@ -181,19 +181,97 @@ Budget guard: soft threshold → injected system note; hard cap → forced `ask_
 
 ## Provider adapters
 
-Unified internal `IMessage` / `StreamChunk` format in `shared` (`text_delta`,
-`tool_call_start/delta`, `message_end` with usage incl. cache tokens, normalized error with
-a retryable flag). Three adapter classes cover all upstreams:
+Implemented in M2 — `packages/server/src/providers/`.
 
-- **anthropic** — native SDK: `cache_control`, tool_use/tool_result blocks, `refusal` stop reason.
-- **openai-compat** — one class parameterized by `{baseURL, apiKeyRef, quirks}`: OpenAI,
-  OpenRouter, xAI, Z.AI/GLM, Ollama, LM Studio.
-- **google** — `@google/genai`, functionDeclarations mapping.
+### The normalized contract
 
-Retry/fallback lives in the **router layer**, not in adapters. A shared
-`describeAdapterContract()` test suite runs against every adapter with msw-recorded wire
-fixtures (including truncated/error/split-tool-arg streams) asserting identical normalized
-chunk sequences.
+Every adapter, whatever the upstream, emits exactly this chunk grammar:
+
+```
+(text_delta | tool_call_start | tool_call_delta)*  →  message_end
+                                                   |  error          (terminal)
+```
+
+Invariants enforced by the shared test suite, not by convention:
+
+- Exactly **one** terminal chunk (`message_end` or `error`), and it is **last**.
+- Every `tool_call_delta` is preceded by a `tool_call_start` with the same `index`.
+- An `index` is opened at most once.
+- `message_end.usage` always carries `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`.
+- Errors carry a `retryable` flag and a `statusCode` (null when the failure was not HTTP).
+
+Two semantics are load-bearing and easy to get wrong, so they are spelled out here:
+
+- **Truncation is never success.** A stream that ends before its upstream terminal event
+  (`message_stop` / `[DONE]` / a `finishReason`) yields a *retryable* `error`, never a clean
+  `message_end`. Folding a dead socket into a `ChatResponse` would silently hand the
+  orchestrator a half-written answer.
+- **Aborts are never retryable.** A cancelled task must not be resurrected by the router's
+  retry loop, so `toErrorChunk()` maps `AbortError` to `retryable: false`.
+
+### Three classes, many upstreams
+
+- **anthropic** — native `@anthropic-ai/sdk`: `cache_control` breakpoints, typed
+  tool_use/tool_result blocks, real cache-token accounting. Leading `system` messages are
+  hoisted to the top-level `system` param (and removed from `messages`); consecutive tool
+  results merge into a single user turn.
+- **openai-compat** — one class parameterized by `{baseUrl, apiKey, quirks}`; covers ~25 of
+  the 27 presets.
+- **google** — `@google/genai`. Roles are `user`/`model`, messages are `contents`/`parts`,
+  and there is no system role (leading system messages join into `systemInstruction`).
+
+**Quirks, not subclasses.** Upstream deviations are data on the preset, not new code:
+
+| Quirk | Meaning |
+|---|---|
+| `usageOptional` | upstream may omit the usage block entirely (local runtimes do); absent usage is zeros rather than an error |
+| `maxCompletionTokens` | send `max_completion_tokens` instead of the legacy `max_tokens` |
+| `noStreamOptions` | omit `stream_options: {include_usage: true}` — some servers 400 on it |
+
+**Gemini's finish reason is a lie.** Gemini reports `STOP` even when the turn is entirely
+function calls — its wire has no `tool_calls` value. The adapter therefore lets a *seen*
+function call outrank a plain `STOP` and normalizes to `finishReason: "tool_calls"`, so the
+orchestrator knows it must run tools. Gemini also sends no call ids; the adapter synthesizes
+stable `gemini_call_<n>` ids.
+
+Retry/fallback lives in the **router layer**, never in adapters — every SDK client is
+constructed with `maxRetries: 0`.
+
+### Provider presets
+
+`presets.ts` is a **data table**: adding an upstream is a row (slug, kind, baseUrl, env var
+*name*, quirks), not a new class. 27 entries today, spanning four categories:
+
+| Category | Presets |
+|---|---|
+| First-party SDK | anthropic, google, openai |
+| Aggregators | openrouter, together, fireworks, groq, deepinfra, hyperbolic, nebius, novita, sambanova, cerebras, perplexity, githubmodels |
+| Direct vendors | xai, zai, moonshot, deepseek, mistral, cohere, qwen, minimax, baseten |
+| Local runtimes | ollama, lmstudio, llamacpp, vllm |
+
+The slug is a model-id namespace (`<slug>/<model>`), so it is constrained to `[a-z0-9-]+`.
+`apiKeyEnv` holds an env var **name** only — a test asserts it matches SCREAMING_SNAKE,
+which a real key never would. Local runtimes are the only presets allowed a null key.
+
+### Factory
+
+`createAdapter(provider, {env, fetch})` is **the only place that reads secrets out of the
+environment**. It resolves `provider.baseUrl ?? preset.baseUrl`, inherits preset quirks, and
+throws `MissingApiKeyError(providerName, envVar)` when the referenced variable is unset *or
+empty* (an empty key would only 401 later, at a much worse moment). The error names the
+provider and the variable and never a value.
+
+### Contract test suite
+
+`describeAdapterContract()` runs the same eight assertions against every adapter over
+recorded wire fixtures replayed through a stub `fetch` — text, split tool arguments,
+parallel tool calls, HTTP error, truncated stream, abort. **Adding an adapter means adding
+fixtures, not tests.** Fixtures are chunked at event boundaries so a parser cannot rely on
+whole events arriving in one read.
+
+`@google/genai` calls the global `fetch` directly and exposes no injectable transport, so
+its tests stub `globalThis.fetch` and restore it in `afterEach`; the other two SDKs take a
+`fetch` through `AdapterConfig`.
 
 ## Tier-2 agent loop
 

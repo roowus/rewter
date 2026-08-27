@@ -34,7 +34,8 @@ pnpm lint:fix        # biome check --write .
 - LLM-produced JSON (tool args, capability cards) is always zod-parsed defensively.
 - API keys are referenced by env var *name* (`apiKeyRef`) — never store raw keys in the DB
   or commit them.
-- Tests: vitest; provider adapters are tested via the shared contract suite with msw
-  fixtures; orchestrator logic via FakeProviderAdapter/ScriptedModel. No real keys or
+- Tests: vitest; provider adapters are tested via the shared contract suite
+  (`describeAdapterContract`) against recorded wire fixtures replayed through a stub
+  `fetch`; orchestrator logic via FakeProviderAdapter/ScriptedModel. No real keys or
   network in CI.
 - Commit green work as you go; small focused commits.

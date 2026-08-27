@@ -32,6 +32,23 @@ your client (Claude Code, curl, any OpenAI client)
 - **Specialization** — OCR, vision, and coding-specialized models get used where they fit,
   chosen via machine-readable **capability cards** in a model registry.
 
+## Providers
+
+Breadth is a design goal — **27 upstreams ship as built-in presets**, and adding another is
+a table row (slug, base URL, env var name, quirks), not new code:
+
+| | |
+|---|---|
+| **First-party SDKs** | Anthropic, Google Gemini, OpenAI |
+| **Aggregators** | OpenRouter, Together, Fireworks, Groq, DeepInfra, Hyperbolic, Nebius, Novita, SambaNova, Cerebras, Perplexity, GitHub Models |
+| **Direct vendors** | xAI, Z.AI/GLM, Moonshot, DeepSeek, Mistral, Cohere, Qwen, MiniMax, Baseten |
+| **Local runtimes** | Ollama, LM Studio, llama.cpp, vLLM |
+
+Three adapter classes cover all of them (`anthropic`, `openai-compat`, `google`), and one
+shared contract test suite holds every adapter to an identical normalized stream shape. API
+keys are referenced by **environment variable name** — raw keys are never stored in the
+database.
+
 ## Status
 
 **Early development — phase 1 (MVP) in progress.** See [docs/progress.md](docs/progress.md)

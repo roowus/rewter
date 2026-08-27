@@ -16,9 +16,12 @@
     "dev": "node --watch dist/index.js --foreground"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.121.0",
+    "@google/genai": "^2.19.0",
     "@rewter/shared": "workspace:*",
     "better-sqlite3": "^13.0.3",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "openai": "^7.7.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
