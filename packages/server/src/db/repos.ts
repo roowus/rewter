@@ -10,6 +10,8 @@ import {
   type Approval,
   ApprovalSchema,
   type ApprovalStatus,
+  type CapabilityCard,
+  CapabilityCardSchema,
   type CostRecord,
   CostRecordSchema,
   type Model,
@@ -35,6 +37,7 @@ import type { EventBus } from "../events/bus.js";
 import type { Db } from "./connection.js";
 import {
   approvals,
+  capabilityCards,
   costRecords,
   models,
   providers,
@@ -143,6 +146,84 @@ export class Repos {
 
   deleteModel(id: string): void {
     this.db.delete(models).where(eq(models.id, id)).run();
+  }
+
+  // ── Capability cards ─────────────────────────────────────────────────────
+  //
+  // Cards are read *merged*: generated content underneath, the user's overrides
+  // on top. Writes never touch the other half — `upsertCard` regenerates the
+  // generated fields and leaves overrides alone, `setCardOverrides` the reverse.
+  // That split is the whole point: a regenerated card must not silently discard
+  // a correction the user made by hand.
+
+  upsertCard(card: CapabilityCard): CapabilityCard {
+    const c = CapabilityCardSchema.parse(card);
+    const values = cardToRow(c);
+    this.db
+      .insert(capabilityCards)
+      .values(values)
+      .onConflictDoUpdate({
+        target: capabilityCards.modelId,
+        set: {
+          summary: values.summary,
+          strengthsJson: values.strengthsJson,
+          weaknessesJson: values.weaknessesJson,
+          bestAtJson: values.bestAtJson,
+          notes: values.notes,
+          generatedBy: values.generatedBy,
+          generatedAt: values.generatedAt,
+          updatedAt: values.updatedAt,
+          // userOverridesJson deliberately absent: a re-sync must not clobber
+          // hand corrections. Use setCardOverrides to change them.
+        },
+      })
+      .run();
+    return this.getCard(c.modelId) ?? c;
+  }
+
+  /** Merged view: generated fields with `userOverrides` applied over them. */
+  getCard(modelId: string): CapabilityCard | undefined {
+    const raw = this.getRawCard(modelId);
+    return raw === undefined ? undefined : mergeCardOverrides(raw);
+  }
+
+  /** Unmerged, as stored — for the editor, which must show what it can change. */
+  getRawCard(modelId: string): CapabilityCard | undefined {
+    const row = this.db
+      .select()
+      .from(capabilityCards)
+      .where(eq(capabilityCards.modelId, modelId))
+      .get();
+    return row === undefined ? undefined : rowToCard(row);
+  }
+
+  listCards(): CapabilityCard[] {
+    return this.db
+      .select()
+      .from(capabilityCards)
+      .orderBy(asc(capabilityCards.modelId))
+      .all()
+      .map((r) => mergeCardOverrides(rowToCard(r)));
+  }
+
+  /** Replace the override patch. `null` clears it, restoring the generated card. */
+  setCardOverrides(modelId: string, overrides: Record<string, unknown> | null): CapabilityCard {
+    const existing = this.getRawCard(modelId);
+    if (existing === undefined) throw new Error(`no capability card for model ${modelId}`);
+    this.db
+      .update(capabilityCards)
+      .set({
+        userOverridesJson: overrides === null ? null : JSON.stringify(overrides),
+        updatedAt: this.clock(),
+      })
+      .where(eq(capabilityCards.modelId, modelId))
+      .run();
+    // Non-null assertion is safe: we just proved the row exists.
+    return this.getCard(modelId) as CapabilityCard;
+  }
+
+  deleteCard(modelId: string): void {
+    this.db.delete(capabilityCards).where(eq(capabilityCards.modelId, modelId)).run();
   }
 
   // ── Tasks ────────────────────────────────────────────────────────────────
@@ -409,6 +490,51 @@ function rowToModel(row: typeof models.$inferSelect): Model {
     modalities: JSON.parse(row.modalitiesJson),
     supports: JSON.parse(row.supportsJson),
   });
+}
+
+function cardToRow(c: CapabilityCard): typeof capabilityCards.$inferInsert {
+  return {
+    modelId: c.modelId,
+    summary: c.summary,
+    strengthsJson: JSON.stringify(c.strengths),
+    weaknessesJson: JSON.stringify(c.weaknesses),
+    bestAtJson: JSON.stringify(c.bestAt),
+    notes: c.notes,
+    userOverridesJson: c.userOverrides === null ? null : JSON.stringify(c.userOverrides),
+    generatedBy: c.generatedBy,
+    generatedAt: c.generatedAt,
+    updatedAt: c.updatedAt,
+  };
+}
+
+function rowToCard(row: typeof capabilityCards.$inferSelect): CapabilityCard {
+  return CapabilityCardSchema.parse({
+    ...row,
+    strengths: JSON.parse(row.strengthsJson),
+    weaknesses: JSON.parse(row.weaknessesJson),
+    bestAt: JSON.parse(row.bestAtJson),
+    userOverrides: row.userOverridesJson === null ? null : JSON.parse(row.userOverridesJson),
+  });
+}
+
+/**
+ * Apply the user's patch over the generated card — a shallow field-level merge,
+ * not a deep one. `strengths: [...]` *replaces* the generated list rather than
+ * appending, because the common correction is "this list is wrong", and there
+ * would be no way to express a deletion under an append.
+ *
+ * Identity fields (`modelId`, `generatedBy`, `generatedAt`, `userOverrides`) are
+ * not overridable: they describe the card's provenance, and letting a patch
+ * rewrite them would make the record lie about where it came from. An override
+ * that fails to parse is discarded, and the generated card is returned intact —
+ * a bad hand-edit must not take a model out of the registry.
+ */
+export function mergeCardOverrides(card: CapabilityCard): CapabilityCard {
+  if (card.userOverrides === null) return card;
+  const { modelId, generatedBy, generatedAt, userOverrides, ...patchable } =
+    card.userOverrides as Record<string, unknown>;
+  const merged = CapabilityCardSchema.safeParse({ ...card, ...patchable });
+  return merged.success ? merged.data : card;
 }
 
 function rowToTask(row: typeof tasks.$inferSelect): Task {

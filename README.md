@@ -62,6 +62,11 @@ resolution across all 27 upstreams, retry, SSE, and per-request cost metering. *
 runs on it** — verified live end to end, tool calls included, against two upstreams. The
 orchestrator pseudo-model is listed but returns `501` until M5.
 
+Landing now (M4): the **model registry** the orchestrator will choose from — capability-card
+storage, where a hand correction survives card regeneration and cannot rewrite the card's
+provenance, and the digest renderer that turns the registry into one compact, byte-stable line
+per model. Model sync and AI card generation are next.
+
 ## Quickstart
 
 ```sh

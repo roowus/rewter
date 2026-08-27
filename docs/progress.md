@@ -12,13 +12,45 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
 | M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ✅ 2026-08-27 |
 | — | *M3 acceptance: Claude Code live on rewter, 2 providers, tool calls* | ✅ 2026-08-27 |
-| M4 | Registry + capability cards + digest renderer | ⚪ |
+| M4 | Registry + capability cards + digest renderer | 🟡 storage + digest done; sync + card generation left |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M4a: card storage and the digest renderer
+
+The two halves of M4 that the orchestrator actually reads from. Sync and AI card generation
+are still to come; these are the pieces they will write into and render out of.
+
+- **Cards are stored in two halves** — generated content, and a `userOverrides` patch — and
+  every design decision falls out of one tension: a regenerated card must not destroy a hand
+  correction, and a hand correction must not be able to lie about provenance. So `upsertCard`
+  omits `userOverridesJson` from its conflict clause, `setCardOverrides` touches nothing else,
+  and the merge strips `modelId`/`generatedBy`/`generatedAt` from the patch before applying it.
+  A patch that fails to re-parse is **discarded whole** — a typo'd tag in a hand-edit must not
+  take a model out of the registry. Merging replaces lists rather than appending: the common
+  correction is "this list is wrong", and an append cannot express a deletion. 12 tests, and
+  the plan's "override survives re-sync" criterion is one of them.
+- **The digest renderer's real requirement is byte-stability**, because it sits behind a
+  `cache_control` breakpoint: a digest that renders differently for the same registry makes
+  every orchestration pay full input price for a prompt that did not change. So the tests that
+  matter are not "does it render" but "does it render the *same bytes*" — order-independence,
+  no timestamps, no mutation of the caller's array, and prices normalized through the number.
+  That last one is not hypothetical: `0.1 + 0.5` is `0.6000000000000001` in IEEE 754, and a
+  synced price arrives as arithmetic.
+- **Omission is stated, never silent.** Over budget, models drop from the end of the sorted
+  list and the digest says how many. An initiator that cannot see a model will not choose it,
+  and it should know that is why. Same instinct as the rest of the renderer: absent facts are
+  omitted rather than printed as `unknown`, `$0/$0` reads as `free`, and only the *absence* of
+  tools is worth a word, since their presence is the norm and carries no information.
+- **487 tests green** (214 shared + 275 server + 8 CLI), +25.
+- The **vitest-doesn't-typecheck trap bit for the third time** this milestone: 12 digest tests
+  passed against a `renderLine` that did not compile, because `parts` inferred its element type
+  from the branded `model.id` and rejected every plain string pushed after. `pnpm test` green is
+  not the gate; `pnpm build` is.
 
 ### 2026-08-27 — M3 acceptance met: Claude Code runs on rewter
 
