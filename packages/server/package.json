@@ -1,0 +1,26 @@
+{
+  "name": "@rewter/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "dev": "node --watch dist/index.js --foreground"
+  },
+  "dependencies": {
+    "@rewter/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

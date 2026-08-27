@@ -1,0 +1,22 @@
+{
+  "name": "rewter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "rewter": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@rewter/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
