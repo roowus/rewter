@@ -16,10 +16,14 @@
     "dev": "node --watch dist/index.js --foreground"
   },
   "dependencies": {
-    "@rewter/shared": "workspace:*"
+    "@rewter/shared": "workspace:*",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.4.0",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }
