@@ -12,7 +12,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@rewter/shared": "workspace:*"
+    "@rewter/shared": "workspace:*",
+    "@rewter/server": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

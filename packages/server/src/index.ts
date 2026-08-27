@@ -48,4 +48,34 @@ export {
 } from "./http/openai-stream.js";
 export { HEARTBEAT_MS, SseWriter, type SseWriterOptions } from "./http/sse.js";
 
+export {
+  ConfigError,
+  ConfigSchema,
+  DEFAULT_CONFIG_PATH,
+  DEFAULT_PORT,
+  ModelConfigSchema,
+  ProviderConfigSchema,
+  expandPath,
+  loadConfig,
+  type Config,
+  type LoadedConfig,
+  type ModelConfig,
+  type ProviderConfig,
+} from "./config/config.js";
+export {
+  SeedError,
+  providerIdForSlug,
+  seedRegistry,
+  type SeedResult,
+  type SeedTarget,
+} from "./config/seed.js";
+export {
+  bootSummary,
+  runUntilSignal,
+  startDaemon,
+  type RunningDaemon,
+  type SignalHandlerOptions,
+  type StartDaemonOptions,
+} from "./daemon.js";
+
 export const SERVER_VERSION = REWTER_VERSION;

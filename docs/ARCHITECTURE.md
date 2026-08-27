@@ -108,7 +108,7 @@ schemas so the event/API contract cannot drift. Server module dirs are the futur
 | Tests | vitest + recorded wire fixtures + in-memory SQLite + FakeProviderAdapter/ScriptedModel | deterministic, no keys/network |
 | Lint/format | Biome | one fast tool |
 | SDKs | `@anthropic-ai/sdk` (native), `openai` (covers all OpenAI-compatible upstreams via baseURL), `@google/genai` | |
-| Daemon | launchd plist via `rewter install-service`; `--foreground` for dev; logs `~/Library/Logs/rewter/` | |
+| Daemon | `rewter start` runs in the foreground (dev, and what launchd wants); `rewter install-service` writes the plist in M8; logs `~/Library/Logs/rewter/` | |
 
 ## Domain model
 
@@ -374,6 +374,99 @@ generic 502 would hide the one thing they can fix.
 `/v1` takes an optional bearer token (`apiKey`); absent means open, which is the normal
 localhost-daemon case. `/internal` is never gated — it is localhost-bound and the dashboard
 holds no key.
+
+## Configuration and boot
+
+### The config file
+
+`~/.rewter/config.json` (override with `REWTER_CONFIG`, or `rewter start --config <path>`).
+Everything has a default, so the file is optional and an empty `{}` is valid.
+
+```jsonc
+{
+  "port": 20130,                    // not 20128 — that is 9router's, so both can run at once
+  "host": "127.0.0.1",
+  "dbPath": "~/.rewter/rewter.db",  // a leading ~ is expanded; ":memory:" works for throwaway runs
+  "apiKeyEnv": "REWTER_API_KEY",    // env var NAME holding the bearer token /v1 requires
+  "providers": [
+    { "preset": "anthropic" },
+    { "preset": "zai" }
+  ],
+  "models": [
+    { "id": "anthropic/claude-sonnet-5", "provider": "anthropic", "contextWindow": 200000,
+      "pricing": { "inputPerMTok": 3, "outputPerMTok": 15 } }
+  ]
+}
+```
+
+A provider entry names a **preset slug** from the 27-entry table, so the common case is one
+line; `slug` + `kind` (+ optional `baseUrl`, `apiKeyEnv`, `name`) describes an upstream the
+table doesn't know. Anything given explicitly overrides the preset.
+
+**No secret ever appears in this file.** `apiKeyEnv` is the *name* of an environment
+variable, both for provider keys and for rewter's own bearer token — the file is safe to
+paste into an issue.
+
+Precedence is **env > file > defaults**, with `REWTER_HOST`, `REWTER_PORT` and `REWTER_DB`
+as the overrides. A `REWTER_PORT` that isn't a number is a hard error rather than a silent
+fall back to the default: a typo'd port that quietly moves the daemon is a daemon nobody can
+find. Likewise a config path *asked for explicitly* and missing throws, while the default
+path missing just means "use defaults".
+
+### Seeding: config → registry
+
+`config/seed.ts` turns the config arrays into Provider and Model rows, and it is
+**idempotent, keyed by slug**. Provider ids are *derived* from the slug
+(`prv_` + 6 readable chars + 6 chars of FNV-1a hash — `prv_anthro1f2g3h`) rather than
+generated, so restarting the daemon updates rows in place instead of minting new ids and
+orphaning the cost records and events that point at them. That is exactly the property M4's
+`sync-models` needs, arrived at a milestone early. `createdAt` survives a re-seed;
+`updatedAt` moves.
+
+Two deliberate choices:
+
+- **Disabled, not absent.** A provider whose key env var is unset is seeded *disabled*. A
+  disabled provider produces a loud 503 naming the model; a *missing* one produces "unknown
+  model", which sends the operator looking in the wrong place. Local runtimes (Ollama, LM
+  Studio, …) are keyless and stay enabled.
+- **Non-fatal problems are warnings, not crashes.** An unknown preset, or a model naming a
+  provider that didn't seed, is logged and skipped — one bad entry must not stop the daemon.
+  A duplicate slug *is* fatal, because two rows would collide on the derived id.
+
+### Boot
+
+`daemon.ts` owns the sequence — config → database → registry → router → listening app —
+and returns the running pieces rather than owning the process, so tests boot a real daemon
+on port 0 and shut it down, and M8's launchd wrapper adds signal handling without this
+module knowing about processes.
+
+```
+startDaemon(opts) → { app, db, repos, bus, router, config, url, stop() }
+bootSummary(d)    → "rewter listening on http://127.0.0.1:20130 — 2 provider(s), 5 model(s)"
+runUntilSignal(d) → Promise<never>   // SIGINT/SIGTERM → graceful drain → exit
+```
+
+The one-line boot summary reports enabled counts and the bound URL, and nothing secret.
+Warnings and every disabled-for-missing-key provider are logged by name at startup, so the
+reason a model 503s is visible before the first request.
+
+`runUntilSignal` returns a promise that never settles: the caller's `await` *is* the "stay
+running" state, and the process ends through the signal path. A second Ctrl-C during
+shutdown is ignored rather than starting a second `stop()`. Draining matters more here than
+in a typical server — an SSE stream severed mid-frame leaves the client parsing a truncated
+event rather than seeing a clean end.
+
+`main.ts` is the bare `node dist/main.js` entrypoint, kept separate from the `index.ts`
+library barrel so that importing `@rewter/server` never starts a server as a side effect.
+
+### CLI
+
+`rewter start [--config <path>] [--port <n>]` runs the daemon in the **foreground** — the
+shape M8 wraps in a launchd plist, and the shape you want anyway while watching logs.
+`rewter version` / `rewter help` round it out. Background management (`stop`, `status`,
+`logs`, `install-service`, `gc`) needs a pidfile and a service definition, which is M8's
+job; those commands exit 1 naming the milestone rather than pretending. `sync-models` and
+`card` do the same for M4.
 
 ## Tier-2 agent loop
 

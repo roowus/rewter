@@ -18,6 +18,49 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-27 — M3b: config, seeding, and a daemon you can actually start
+
+M3's acceptance criterion is "point Claude Code at it as a plain router" — which needed a
+bootable daemon, and there wasn't one: `index.ts` was exports only and nothing called
+`listen()`. Now there is. See
+[ARCHITECTURE.md § Configuration and boot](ARCHITECTURE.md#configuration-and-boot).
+
+- **Config** (`config/config.ts`) — `~/.rewter/config.json`, everything defaulted, `{}` is
+  valid. Providers are named by **preset slug**, so a working config is three lines. No
+  secret ever lands in the file: `apiKeyEnv` is an env var *name*, for provider keys and for
+  rewter's own bearer token alike. Precedence env > file > defaults
+  (`REWTER_HOST/PORT/DB/CONFIG`). A non-numeric `REWTER_PORT` throws instead of falling back
+  — a typo'd port that silently moves the daemon is a daemon nobody can find. A config path
+  asked for *explicitly* and missing throws; the default path missing does not.
+- **Seeding** (`config/seed.ts`) — idempotent and keyed by slug. Provider ids are *derived*
+  from the slug (`prv_` + 6 readable chars + 6 of FNV-1a) rather than generated, so a
+  restart updates rows in place instead of orphaning the costs and events that reference
+  them — the same property M4's `sync-models` needs, a milestone early. `createdAt` survives
+  a re-seed. A provider with an unset key env var seeds **disabled, not absent**: disabled
+  gives a loud 503 naming the model, absent gives "unknown model" and sends you looking in
+  the wrong place. Unknown presets and models naming an unseeded provider are warnings; a
+  duplicate slug is fatal (two rows would collide on the derived id).
+- **Boot** (`daemon.ts`) — config → db → registry → router → listening app, returning the
+  running pieces rather than owning the process, so tests boot a real daemon on port 0 and
+  M8's launchd wrapper adds signal handling without this module knowing about processes.
+  `bootSummary()` prints the bound URL and enabled counts, nothing secret.
+  `runUntilSignal()` wires SIGINT/SIGTERM to a graceful drain and returns a promise that
+  never settles — the caller's `await` *is* the running state; a second Ctrl-C is ignored
+  rather than starting a second `stop()`.
+- **`main.ts`** is a separate entrypoint from the `index.ts` barrel, so importing
+  `@rewter/server` never starts a server as a side effect.
+- **CLI is real** — `rewter start [--config <path>] [--port <n>]`, `version`, `help`.
+  The unimplemented commands name their owning milestone (`stop`/`status`/`logs`/
+  `install-service`/`gc` → M8; `sync-models`/`card` → M4) and exit 1 rather than pretending.
+- **Port 20130**, deliberately not 9router's 20128, so both can run during the switch.
+- Two bugs caught while writing rather than after: the first `providerIdForSlug` truncated
+  slug+hash to 12 chars, so any two slugs sharing a 12-char prefix would have collided onto
+  one row (now 6 readable + 6 hash, with a regression test); and `DEFAULT_PORT` was a
+  function called from `ConfigSchema` above its own declaration.
+- 411 tests green (185 shared + 218 server + 8 CLI; 62 new). Two of them assert the
+  invariant directly rather than trusting it: a literal key value never appears in a
+  serialized provider row, nor in the boot summary.
+
 ### 2026-08-27 — M3: pass-through router + OpenAI endpoint + SSE + cost recording
 
 rewter now answers OpenAI clients. See

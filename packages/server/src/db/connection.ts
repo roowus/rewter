@@ -5,7 +5,12 @@ import { type BetterSQLite3Database, drizzle } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 
-export type Db = BetterSQLite3Database<typeof schema>;
+/**
+ * `$client` is the raw better-sqlite3 handle drizzle wraps. Drizzle attaches it
+ * at runtime but only types it on `drizzle()`'s return, so naming it here is
+ * what lets the daemon close the file on shutdown.
+ */
+export type Db = BetterSQLite3Database<typeof schema> & { $client: Database.Database };
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../drizzle");
 

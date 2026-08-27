@@ -54,10 +54,58 @@ database.
 **Early development — phase 1 (MVP) in progress.** See [docs/progress.md](docs/progress.md)
 for the milestone board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
-Working today (M0–M3): the **plain routing** path end to end — `POST /v1/chat/completions`
-(streaming and not) and `GET /v1/models`, model resolution across all 27 upstreams, retry,
-SSE, and per-request cost metering. The orchestrator pseudo-model is listed but returns
-`501` until M5.
+Working today (M0–M3): the **plain routing** path end to end — a bootable daemon
+(`rewter start`), `POST /v1/chat/completions` (streaming and not), `GET /v1/models`, model
+resolution across all 27 upstreams, retry, SSE, and per-request cost metering. The
+orchestrator pseudo-model is listed but returns `501` until M5.
+
+## Quickstart
+
+```sh
+pnpm install && pnpm build
+```
+
+Write `~/.rewter/config.json` — name providers by preset slug, and export the keys
+separately. **The config file never holds a key**: `apiKeyEnv` is the *name* of an
+environment variable.
+
+```jsonc
+{
+  "providers": [
+    { "preset": "anthropic" },              // reads $ANTHROPIC_API_KEY
+    { "preset": "zai" }                     // reads $ZAI_API_KEY
+  ],
+  "models": [
+    { "id": "anthropic/claude-sonnet-5", "provider": "anthropic", "contextWindow": 200000,
+      "pricing": { "inputPerMTok": 3, "outputPerMTok": 15 } },
+    { "id": "zai/glm-5.3", "provider": "zai", "contextWindow": 1000000,
+      "pricing": { "inputPerMTok": 0.6, "outputPerMTok": 2.2 } }
+  ]
+}
+```
+
+```sh
+export ANTHROPIC_API_KEY=… ZAI_API_KEY=…
+node packages/cli/dist/index.js start
+# rewter listening on http://127.0.0.1:20130 — 2 provider(s), 2 model(s)
+```
+
+Port **20130** is deliberately not 9router's 20128, so both can run side by side while you
+switch. A provider whose key variable is unset still appears — seeded *disabled*, so asking
+for its model gives a 503 that names it rather than a confusing "unknown model".
+
+Point any OpenAI client at it:
+
+```sh
+curl localhost:20130/v1/models
+curl localhost:20130/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"zai/glm-5.3","messages":[{"role":"user","content":"say hi"}],"stream":true}'
+```
+
+Set `apiKeyEnv` in the config (default `REWTER_API_KEY`) and export that variable to require
+a bearer token on `/v1`; leave it unset and the local daemon is open.
+
+Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`.
 
 ## Development
 
