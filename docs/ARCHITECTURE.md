@@ -396,6 +396,11 @@ shapes genuinely disagree:
 
 - `system` is a *sibling field*, not a message — hoisted to a leading `system` message.
   Block-array systems join with blank lines; an empty one is omitted, not emitted blank.
+- A `system` role **inside `messages`** is accepted too, even though Anthropic's documented
+  roles are only `user`/`assistant`. Claude Code sends one on every request, and rejecting it
+  400s the whole session over a role every adapter downstream already handles. It keeps its
+  position rather than being hoisted: a mid-conversation system turn means something where it
+  sits, unlike the top-level parameter. A role we cannot map at all is still rejected.
 - Anthropic batches several `tool_result` blocks into **one** user turn; our format gives
   each tool response its own message, so one turn can expand to several.
 - Those tool results are emitted **before** the turn's own text: they answer the *previous*

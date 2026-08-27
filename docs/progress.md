@@ -11,6 +11,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M2 | Provider adapters + contract test suite | ✅ 2026-08-27 |
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
 | M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ✅ 2026-08-27 |
+| — | *M3 acceptance: Claude Code live on rewter, 2 providers, tool calls* | ✅ 2026-08-27 |
 | M4 | Registry + capability cards + digest renderer | ⚪ |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
@@ -18,6 +19,35 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M3 acceptance met: Claude Code runs on rewter
+
+The live run M3 has been owing since it was declared done. It found a bug in the first
+request, which is the entire reason acceptance criteria are run rather than reasoned about.
+
+- **The bug: `system` inside `messages`.** Claude Code puts a `system`-role message *in the
+  message array*, which Anthropic's own docs do not list — `AnthropicMessageSchema` allowed
+  `user`/`assistant` only, so every Claude Code session died on
+  `messages.1.role Invalid enum value`. Now accepted, and **kept in place** rather than
+  hoisted: unlike the top-level `system` parameter, a mid-conversation system turn means
+  something where it sits. A role we genuinely cannot map is still rejected — the widening is
+  one role, not a hole. See
+  [ARCHITECTURE.md § The Anthropic surface](ARCHITECTURE.md#the-anthropic-surface-post-v1messages).
+- **473 tests green** (214 shared + 251 server + 8 CLI), +5. That all 468 passed while the
+  product was unusable from its headline client is the lesson: the request shape came from
+  the vendor's documentation, and the documentation is not what the client sends.
+- **Live, verified against the database rather than the reply text.** A first apparent
+  success was a false positive — Claude Code's `~/.claude/settings.json` `env` block
+  overrides shell environment variables, so `ANTHROPIC_BASE_URL` still pointed at 9router and
+  rewter never saw the request. Re-run with `--settings`, and `cost_records` shows the real
+  transit: `ninerouter/glm-5.3 | 57785 | 4 | $0.0349` — that input count *is* Claude Code's
+  system prompt and tool schemas.
+- **Tool calling works end to end**: `claude --allowedTools Read -p "read note.txt …"` issued
+  a real tool call through `/v1/messages` and answered from the file's contents.
+- **Two providers on the Anthropic surface**: glm-5.3 via a local 9router upstream (with
+  Claude Code as the client) and Ollama `llava-phi3` (direct, since a 4K window cannot hold a
+  58K-token client prompt). M3's acceptance criterion — "point Claude Code at it as a plain
+  router across 2 providers" — is now met.
 
 ### 2026-08-27 — M3d: the dialect Claude Code actually speaks
 

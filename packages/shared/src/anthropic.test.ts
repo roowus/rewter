@@ -36,6 +36,27 @@ describe("AnthropicMessagesRequestSchema", () => {
     expect(parsed.success).toBe(true);
   });
 
+  it("accepts a system role in the message list", () => {
+    // Undocumented, but Claude Code sends it — and a 400 here kills the session
+    // over a role every adapter downstream already handles.
+    const parsed = AnthropicMessagesRequestSchema.safeParse({
+      ...base,
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "system", content: "reminder" },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still rejects a role we cannot map at all", () => {
+    const parsed = AnthropicMessagesRequestSchema.safeParse({
+      ...base,
+      messages: [{ role: "developer", content: "hi" }],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it("accepts unknown content block types instead of failing the request", () => {
     // Images and documents are dropped downstream (vision routing is M4), but
     // dropping is very different from 400-ing the whole conversation.
@@ -80,6 +101,39 @@ describe("fromAnthropicMessages", () => {
 
   it("omits an empty system prompt rather than emitting a blank message", () => {
     expect(fromAnthropicMessages([{ role: "user", content: "hi" }], "")).toHaveLength(1);
+  });
+
+  // Claude Code sends this on every request; rejecting it 400s the session.
+  it("accepts a system-role message inside the messages array", () => {
+    const out = fromAnthropicMessages([
+      { role: "user", content: "hi" },
+      { role: "system", content: "reminder" },
+      { role: "assistant", content: "ok" },
+    ]);
+    expect(out).toEqual([
+      { role: "user", content: "hi" },
+      { role: "system", content: "reminder" },
+      { role: "assistant", content: "ok" },
+    ]);
+  });
+
+  it("keeps an in-band system turn in place, after a hoisted top-level system", () => {
+    const out = fromAnthropicMessages(
+      [
+        { role: "user", content: "hi" },
+        { role: "system", content: "mid-conversation note" },
+      ],
+      "top-level prompt",
+    );
+    expect(out.map((m) => m.role)).toEqual(["system", "user", "system"]);
+    expect(out[2]).toEqual({ role: "system", content: "mid-conversation note" });
+  });
+
+  it("handles a block-array system turn like any other", () => {
+    const out = fromAnthropicMessages([
+      { role: "system", content: [{ type: "text", text: "from blocks" }] },
+    ]);
+    expect(out).toEqual([{ role: "system", content: "from blocks" }]);
   });
 
   it("concatenates multiple text blocks in one turn", () => {

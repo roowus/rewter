@@ -41,8 +41,15 @@ export const AnthropicContentBlockSchema = z.union([
 ]);
 export type AnthropicContentBlock = z.infer<typeof AnthropicContentBlockSchema>;
 
+/**
+ * `system` is not in Anthropic's documented message roles, but Claude Code puts
+ * one *inside* `messages` anyway. Rejecting it 400s a whole session over a role
+ * every downstream adapter already understands, so we accept it and keep its
+ * position — unlike the top-level `system` parameter, a mid-conversation system
+ * turn means something where it sits.
+ */
 export const AnthropicMessageSchema = z.object({
-  role: z.enum(["user", "assistant"]),
+  role: z.enum(["user", "assistant", "system"]),
   content: z.union([z.string(), z.array(AnthropicContentBlockSchema)]),
 });
 export type AnthropicMessage = z.infer<typeof AnthropicMessageSchema>;

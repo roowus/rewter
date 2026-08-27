@@ -58,9 +58,9 @@ for the milestone board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
 `POST /v1/messages` for Anthropic ones, streaming and not), `GET /v1/models`, model
-resolution across all 27 upstreams, retry, SSE, and per-request cost metering. Verified live
-against two upstreams at once. The orchestrator pseudo-model is listed but returns `501`
-until M5.
+resolution across all 27 upstreams, retry, SSE, and per-request cost metering. **Claude Code
+runs on it** — verified live end to end, tool calls included, against two upstreams. The
+orchestrator pseudo-model is listed but returns `501` until M5.
 
 ## Quickstart
 
@@ -110,6 +110,9 @@ speaks Anthropic's dialect over the same router, so every model above is reachab
 
 ```sh
 ANTHROPIC_BASE_URL=http://localhost:20130 ANTHROPIC_MODEL=zai/glm-5.3 claude
+# ⚠ an `env` block in ~/.claude/settings.json *overrides* these — if you have one,
+#   put the same values there, or pass `--settings <file>`. Otherwise the session
+#   silently goes to whatever that file points at, and looks like it worked.
 
 curl localhost:20130/v1/messages -H 'content-type: application/json' \
   -d '{"model":"zai/glm-5.3","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
