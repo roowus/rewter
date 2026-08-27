@@ -294,42 +294,115 @@ that cannot see a model will not choose it, and it should know that is why.
 
 ## Orchestrator engine
 
-**System prompt** (cache-friendly order):
+Implemented in M5a — `packages/server/src/orchestrator/`. The engine is built and tested;
+**the HTTP routes still return `501`** until the M5b wiring (steering index, daemon
+construction) lands. See [progress.md](progress.md) for the split.
 
-1. **Static core** — role, tier ladder, tool rules, cost discipline ("cheapest sufficient
-   tier/model"), self-assessment + handoff criteria, narration conventions. Gets a
-   `cache_control` breakpoint on the Anthropic adapter.
-2. **Registry digest** — one compact line per active model rendered from Model+Card
-   (`zai/glm-5.3 — $x/$y MTok, 1M ctx, fast — best_at:[…] — avoid:[…]`), stable-sorted for
-   cacheability, ≤ ~4K tokens. Phase-2 stats append inside this same renderer.
-3. **Task context** — the client's incoming conversation.
+### The one decision everything else follows from
 
-**Initiator tools**: `plan_note`, `spawn_worker` (returns work_item_id **immediately**;
-parallel fan-out = several spawns in one turn onto a p-limit scheduler, default concurrency
-4), `wait({ids?, mode:"all"|"any"})`, `get_result`, `send_to_worker`, `cancel_worker`,
-`ask_user`, `handoff({to_model, reason, context_summary})`, `finish({summary})`.
+`Orchestrator.run()` returns `AsyncIterable<StreamChunk>` — *the exact type `Router.stream()`
+returns*. An orchestration is therefore indistinguishable from a model call at the HTTP
+boundary, so both dialect routes, both SSE translators, the `[DONE]` framing, the disconnect
+handling and `collectStream()` for the non-streaming case all work on it unchanged. The
+alternative — a bespoke progress channel — would have meant a second implementation of every
+one of those, kept in sync by hand.
 
-**Worker reports**: tier-2 workers end with a structured REPORT block
-(status/summary/details/artifacts) → `WorkItem.resultSummary` → `wait` returns summaries →
-initiator pulls full text via `get_result` on demand.
+Progress therefore travels as ordinary `text_delta` chunks, so a client needs no rewter
+awareness to show it: `curl` sees the feed, and so does Claude Code.
 
-**Progress-as-text** conventions down the single SSE response:
+### The other invariant: bad model behaviour never throws
+
+Every refusal is phrased as a *tool result* the initiator can read and correct: a
+hallucinated model id, an unavailable tier, a `wait` on a label that was never spawned, a
+handoff to an alias of the model already running, a spawn past the spending cap. A task must
+not die because a model passed a number where a string was wanted. `executeTool` is the one
+place arguments are validated and the one place a refusal is worded.
+
+### Choosing the initiator
+
+Explicit beats implicit: a `:pin` on the request, then the configured default, then a
+heuristic — *the most expensive enabled model that supports tools*. Price is a crude proxy
+for capability, but it is the only one available before any card is read, and the initiator
+is exactly where being wrong is most expensive. Ties break on id, so the choice is
+deterministic across restarts. The task row records the **canonical** id, not the alias the
+caller typed.
+
+### System prompt (cache-friendly order)
+
+1. **Static core** (`ORCHESTRATOR_CORE_PROMPT`, versioned) — role, tier ladder, tool rules,
+   cost discipline ("cheapest sufficient tier/model"), self-assessment + handoff criteria,
+   narration conventions. Gets a `cache_control` breakpoint on the Anthropic adapter.
+2. **Registry digest** — one compact line per active model rendered from Model+Card,
+   stable-sorted for cacheability, ≤ ~4K tokens. Phase-2 stats append inside this same
+   renderer. An empty registry says `registry is empty` rather than rendering nothing —
+   silence would read as "no models exist".
+3. **Task context** — the client's incoming conversation, **passed through untouched**,
+   including its own system message. A router that quietly rewrote the caller's system prompt
+   would be a bug the caller could never see from the outside.
+
+### Initiator tools
+
+`plan_note`, `spawn_worker` (returns a label **immediately** — parallel fan-out is several
+spawns in one turn onto a p-limit scheduler, default concurrency 4), `wait({labels?,
+mode:"all"|"any"})`, `get_result`, `cancel_worker`, `ask_user`, `handoff({to_model, reason,
+context_summary})`, `finish({summary})`. (`send_to_worker` arrives with tier 2 in M6; a
+tier-1 worker has nothing to receive.)
+
+`wait` returns **summaries**, not full text: the initiator pulls the body with `get_result`
+only for the workers whose detail it actually needs. In `"any"` mode a worker that finished
+*before* the call already satisfies it — racing only the still-running subset would block on
+a second result nobody asked for.
+
+### Tier-1 workers
+
+One chat call, ending with a `SUMMARY:` line that the initiator reads back. `splitSummary`
+scans from the **end** of the text, because a worker summarizing a document that itself
+contains "SUMMARY:" would otherwise hand back a line of its own input. Bold labels
+(`**SUMMARY:**` and `**SUMMARY**:`, both seen in the wild) are tolerated. No summary line
+falls back to the head of the body; an empty reply still yields something readable, since the
+initiator has to be able to read it.
+
+Every exit path — pre-aborted, thrown, error-finish, success, mid-flight abort — writes the
+run lifecycle. `WORKER_RUN_TRANSITIONS` has no `created → succeeded` edge, so a path that
+forgets `streaming` throws at the repo write and takes the whole task down. A throw *during*
+an abort counts as cancelled, not failed: the two mean different things to the user, and the
+signal is the only thing that can tell them apart.
+
+### Progress-as-text
 
 ```
-◆ plan: split into 3 subtasks          (dashboard: http://localhost:PORT/tasks/task_x)
+◆ plan: split into 3 subtasks          (dashboard: http://localhost:PORT/t/task_x)
 ▶ [w1 · gemini-flash · tier1] summarize repo docs — started
 ⏸ approval needed: shell `pnpm test` — approve in dashboard or reply "approve w2"
-✔ [w1] done ($0.002, 3.1s)
+✔ [w1] done ($0.002, 3.1s)     ✖ [w2] failed: 429 rate limited     ⊘ [w3] cancelled
 ── final answer from finish() ──
 ```
 
-**Handoff**: ends the current loop; successor prompt = static core + digest +
-context_summary + condensed transcript; new loop with the stronger model on the same task
-and SSE stream.
+Lines produced while awaiting a worker are queued and flushed at the next yield point, so a
+generator that is parked inside `Promise.race` still gets its narration out in order.
 
-**Cancellation**: AbortController tree (task → per-run). Client SSE disconnect starts a 30s
-grace timer (allows adoption/reconnect) before cancel; dashboard kill is immediate.
-Budget guard: soft threshold → injected system note; hard cap → forced `ask_user`.
+### Handoff
+
+Ends the current loop; the successor gets static core + digest + `context_summary` — **not**
+the predecessor's transcript, which is mostly tool plumbing it would pay input tokens to read
+and cannot act on. That economy is the whole point of a handoff. The successor continues on
+the same task and the same SSE stream. Resolution happens *before* the self-handoff check,
+because `resolve` accepts aliases and bare names and an alias of the current model would
+otherwise slip through a raw string compare and loop. `maxHandoffs` (default 2) stops two
+models passing a task back and forth.
+
+### Cancellation and budget
+
+AbortController tree: one per task, each worker's chained to it — a task abort reaches every
+worker, a worker abort does not reach the task. A cancelled task ends `message_end`/**`stop`**,
+not `error`: the user asked for it. Client SSE disconnect starts a 30s grace timer (allows
+adoption/reconnect) before cancel; dashboard kill is immediate.
+
+Budget: a soft note injected into the conversation once spending crosses 80% of
+`maxSpendUsd`, and a hard refusal in `spawn_worker` at the cap — a note the model can ignore
+is not a cap. Spend is read back from `cost_records`, never accumulated in memory, so it
+survives a restart and cannot drift. Note that **the initiator's own turns bill to the task**,
+so a task's total always exceeds the sum of its workers' spend.
 
 ## Provider adapters
 
@@ -430,8 +503,10 @@ its tests stub `globalThis.fetch` and restore it in `afterEach`; the other two S
 Implemented in M3 — `packages/server/src/router/` and `packages/server/src/http/`.
 
 This is the pass-through path: everything between an OpenAI client's HTTP request and an
-adapter's normalized chunk stream. The orchestrator (M5) will sit *beside* it, not above
-it — `auto/orchestrator` diverts before resolution and currently returns `501`.
+adapter's normalized chunk stream. The orchestrator sits *beside* it, not above it —
+`auto/orchestrator` diverts before resolution. The engine exists as of M5a and returns the
+same `AsyncIterable<StreamChunk>` this path does; the routes still answer `501` until the
+M5b wiring replaces the stubs.
 
 ### Model resolution
 
@@ -753,10 +828,10 @@ done-pattern) so any CLI harness is addable by config.
 ## API surface
 
 - `POST /v1/chat/completions` — OpenAI dialect; pass-through or orchestrator; stream +
-  non-stream. **Live.** (Orchestrator returns `501` until M5.)
+  non-stream. **Live.** (Orchestrator returns `501` until the M5b wiring.)
 - `POST /v1/messages` — Anthropic dialect over the same router; stream + non-stream.
   **Live.** Named-event SSE, no `[DONE]`; accepts `x-api-key` or `Authorization: Bearer`.
-  (Orchestrator returns `501` until M5.)
+  (Orchestrator returns `501` until the M5b wiring.)
 - `GET /v1/models` — registry + pseudo-models. **Live.** `auto/orchestrator` is listed
   **first** so it is visible in every client's model picker; disabled models are hidden.
 - `/internal`: tasks list/detail/`events?afterSeq=`, `cancel|steer|settings`, approvals

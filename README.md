@@ -66,8 +66,16 @@ Done (M4): the **model registry** the orchestrator chooses from — capability-c
 a hand correction survives card regeneration and cannot rewrite the card's provenance; the digest
 renderer that turns the registry into one compact, byte-stable line per model;
 **`rewter sync-models`**, which fills the registry from the providers' own catalogs; and
-**`rewter card`**, where one model writes the capability card for another. Next is M5, the
-orchestrator itself.
+**`rewter card`**, where one model writes the capability card for another.
+
+Done (M5a): the **orchestrator engine** — the loop that *is* `auto/orchestrator`. Parallel
+tier-1 fan-out onto a concurrency limiter, `wait` in `all`/`any` modes, summaries by default
+with full text on request, progress narrated as ordinary text down the same stream, handoff to
+a stronger model, an AbortController tree for cancellation, and a spending cap read back from
+the cost ledger rather than counted in memory. It returns the *same* stream type a plain model
+call does, so the HTTP layer needs no special case for it. Next is **M5b**: wiring it to the
+two `/v1` routes (which still answer `501`), in-band steering, and stream adoption on
+reconnect.
 
 ## Quickstart
 

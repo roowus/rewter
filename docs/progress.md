@@ -13,12 +13,76 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ✅ 2026-08-27 |
 | — | *M3 acceptance: Claude Code live on rewter, 2 providers, tool calls* | ✅ 2026-08-27 |
 | M4 | Registry + capability cards + digest renderer | ✅ 2026-08-27 |
-| M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
+| M5a | Orchestrator engine + tier-1 fan-out + handoff + cancellation + budget | ✅ 2026-08-27 |
+| M5b | Wiring: HTTP routes, in-band steering + adoption, daemon construction, eval | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M5a: the orchestrator engine and tier-1 fan-out
+
+The thing the whole project is named for. `packages/server/src/orchestrator/` — six modules,
+six test files, 111 tests. The engine is complete and driven end to end by scripted models;
+**the HTTP routes still answer `501`**, because the wiring (steering index, daemon
+construction, replacing the two stubs in `http/app.ts`) is a separable piece and is M5b. What
+follows is what the code decided, not what the plan hoped.
+
+- **`run()` returns `AsyncIterable<StreamChunk>` — the exact type `Router.stream()` returns.**
+  This is the load-bearing decision of the milestone. An orchestration is indistinguishable
+  from a model call at the HTTP boundary, so both dialect routes, both SSE translators, the
+  `[DONE]` framing, disconnect handling and `collectStream()` for the non-streaming case all
+  work on it *unchanged*. The alternative — a bespoke progress channel — is a second
+  implementation of every one of those, kept in sync by hand. Progress lines are therefore
+  ordinary `text_delta`s, and every engine test reads the run as plain text.
+- **Nothing throws for bad model behaviour.** A hallucinated model id, a tier that does not
+  exist yet, a `wait` on a label never spawned, a handoff to an alias of the model already
+  running, a spawn past the spending cap — all are *tool results* phrased back to the model,
+  and the task carries on. There is a test per path asserting the task still succeeds. A task
+  must not die because a model passed a number where a string was wanted.
+- **Two real bugs surfaced in code that had already built clean**, both found by tests written
+  bottom-up (leaves first, engine last) so that a failure at the top was unambiguously the
+  top's fault:
+  - **`wait(mode: "any")` hung forever** when one named worker had already finished before the
+    call. The engine filtered to still-*running* workers and then raced them, so a satisfied
+    "any" blocked on a second result nobody had asked for. Fixed with an explicit `satisfied`
+    check. The first regression test I wrote covered the already-settled branch but *not* the
+    race, so there is now a second one that holds both workers open and releases exactly one.
+  - **`splitSummary` mangled `**SUMMARY:**`** — both bold placements occur in the wild and
+    neither parsed. It also scans from the **end** of the text on purpose: a worker
+    summarizing a document that itself contains "SUMMARY:" would otherwise hand back a line of
+    its own input, and there is a test with exactly that shape.
+- **Two test failures that were my error, not the engine's**, both worth recording because the
+  received output taught something:
+  - A handoff test asserted the successor never sees `"context_summary"`. It always will —
+    `ORCHESTRATOR_CORE_PROMPT` uses the phrase when *describing the tool*. The real property is
+    that the successor does not see the handoff **reason**, and that is what it asserts now.
+  - A budget test expected `$0.90 of $1.00` and got `$0.95`. Correct: **the initiator's own
+    turns bill to the task**, so a task's ledger always exceeds the sum of its workers' spend.
+- **Spend is read back from `cost_records`, never accumulated in memory** — it survives a
+  restart and cannot drift from the ledger the dashboard will show.
+- **Resolution happens before the self-handoff check**, because `resolve` accepts aliases and
+  bare names: `handoff("glm-5.3")` from `zai/glm-5.3` is a loop that a raw string compare
+  would wave through. Test included.
+- **A cancelled task ends `message_end`/`stop`, not `error`.** The user asked for it. Only a
+  genuine failure gets `error`.
+- **Every worker exit path writes the run lifecycle.** `WORKER_RUN_TRANSITIONS` has no
+  `created → succeeded` edge, so a path that forgets `streaming` throws at the repo write and
+  takes the whole task down with it. All five exits (pre-aborted, throw, error-finish, success,
+  mid-flight abort) are walked against a real in-memory database. A throw *during* an abort
+  counts as cancelled, not failed — the signal is the only thing that can tell them apart, and
+  the two mean different things to the user.
+- **The client's conversation passes through untouched, system message and all.** A router that
+  quietly rewrote the caller's system prompt would be a bug the caller could never see from the
+  outside; there is a test asserting byte equality.
+- **684 tests green** (214 shared + 449 server + 21 CLI), +111. `pnpm build` again caught what
+  `pnpm test` could not — vitest transpiles without typechecking, and a test helper typed its
+  task id as `string` where the brand demands `TaskId`. Build is the gate, for the fourth time.
+
+Still open for M5b: the `LiveTaskIndex` + `x-rewter-task-id` header + stream adoption (the
+`fingerprintConversation` half exists and is tested, the index does not), the 30s
+disconnect grace, daemon construction, the two `501` stubs, and the small hand-scored eval.
 
 ### 2026-08-27 — M4c: AI card generation, and `rewter card` — **M4 complete**
 
