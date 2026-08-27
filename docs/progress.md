@@ -6,7 +6,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 | # | Milestone | Status |
 |---|---|---|
-| M0 | Repo scaffold + docs skeleton + CI + public repo | 🟡 in progress |
+| M0 | Repo scaffold + docs skeleton + CI + public repo | ✅ 2026-08-27 |
 | M1 | Shared contracts + DB (entities, state machines, drizzle schema, event bus) | ⚪ |
 | M2 | Provider adapters + contract test suite | ⚪ |
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ⚪ |
@@ -26,3 +26,5 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 - Monorepo scaffolded: pnpm workspaces (`shared`, `server`, `cli`, dashboard app slot),
   strict TS, Biome, vitest, CI workflow.
 - Name **rewter** chosen; verified free on npm and GitHub.
+- Published to [github.com/roowus/rewter](https://github.com/roowus/rewter) (public); first
+  CI run green (build + typecheck + lint + test).
