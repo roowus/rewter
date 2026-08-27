@@ -55,6 +55,15 @@ export class SseWriter {
     this.write(`data: ${JSON.stringify(payload)}\n\n`);
   }
 
+  /**
+   * A *named* event frame (`event: … / data: …`). OpenAI's stream is data-only,
+   * but Anthropic's is named — its clients dispatch on the `event:` line, and a
+   * frame without one is silently ignored.
+   */
+  sendEvent(name: string, payload: unknown): void {
+    this.write(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`);
+  }
+
   /** A comment line — ignored by SSE parsers, keeps the connection alive. */
   comment(text: string): void {
     this.write(`: ${text}\n\n`);

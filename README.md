@@ -10,8 +10,9 @@ parallel**, collects their reports, and hands itself off to a stronger model if 
 it's not fit to lead. You watch and control everything from a live dashboard.
 
 ```
-your client (Claude Code, curl, any OpenAI client)
-  │  POST /v1/chat/completions   model: "auto/orchestrator"
+your client (Claude Code, curl, any OpenAI or Anthropic client)
+  │  POST /v1/chat/completions  ·  POST /v1/messages
+  │  model: "auto/orchestrator" (or any concrete model)
   ▼
 ┌────────────────── rewter daemon ──────────────────┐
 │ plain routing (any concrete model) ──────────────▶│──▶ Anthropic / OpenAI / Z.AI / xAI /
@@ -54,12 +55,12 @@ database.
 **Early development — phase 1 (MVP) in progress.** See [docs/progress.md](docs/progress.md)
 for the milestone board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
-Working today (M0–M3): the **plain routing** path end to end — a bootable daemon
-(`rewter start`), `POST /v1/chat/completions` (streaming and not), `GET /v1/models`, model
+Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
+(`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
+`POST /v1/messages` for Anthropic ones, streaming and not), `GET /v1/models`, model
 resolution across all 27 upstreams, retry, SSE, and per-request cost metering. Verified live
 against two upstreams at once. The orchestrator pseudo-model is listed but returns `501`
-until M5, and Claude Code needs `/v1/messages` (M3d) since it speaks Anthropic's API, not
-OpenAI's.
+until M5.
 
 ## Quickstart
 
@@ -104,8 +105,20 @@ curl localhost:20130/v1/chat/completions -H 'content-type: application/json' \
   -d '{"model":"zai/glm-5.3","messages":[{"role":"user","content":"say hi"}],"stream":true}'
 ```
 
+…or any Anthropic client, including **Claude Code**, at the same daemon — `/v1/messages`
+speaks Anthropic's dialect over the same router, so every model above is reachable from it:
+
+```sh
+ANTHROPIC_BASE_URL=http://localhost:20130 ANTHROPIC_MODEL=zai/glm-5.3 claude
+
+curl localhost:20130/v1/messages -H 'content-type: application/json' \
+  -d '{"model":"zai/glm-5.3","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
+```
+
 Set `apiKeyEnv` in the config (default `REWTER_API_KEY`) and export that variable to require
-a bearer token on `/v1`; leave it unset and the local daemon is open.
+a token on `/v1`. Both header conventions work against it — `Authorization: Bearer …` (what
+OpenAI clients send) and `x-api-key` (what Anthropic clients send) — so one value covers
+both surfaces. Leave it unset and the local daemon is open.
 
 Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`.
 

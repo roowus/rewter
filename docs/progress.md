@@ -10,7 +10,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M1 | Shared contracts + DB (entities, state machines, drizzle schema, event bus) | ✅ 2026-08-27 |
 | M2 | Provider adapters + contract test suite | ✅ 2026-08-27 |
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
-| M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ⚪ |
+| M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ✅ 2026-08-27 |
 | M4 | Registry + capability cards + digest renderer | ⚪ |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
@@ -18,6 +18,43 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M3d: the dialect Claude Code actually speaks
+
+M3 says "replaces 9router", and that test could not even be run: Claude Code talks
+Anthropic's Messages API, not OpenAI's. `/v1/messages` is now live over the same router.
+See [ARCHITECTURE.md § The Anthropic surface](ARCHITECTURE.md#the-anthropic-surface-post-v1messages).
+
+- **One router, two dialects.** Everything below the parse is the same `router.complete()` /
+  `router.stream()` call the OpenAI route makes — both surfaces converge on `ChatMessage[]`
+  at the edge, so routing, retry, cost recording and cancellation have exactly one
+  implementation and cannot drift apart.
+- **Request translation** (`shared/anthropic.ts`) is a `flatMap`, not a `map`: Anthropic
+  batches several `tool_result` blocks into one user turn where we give each its own
+  message, and those results are ordered *before* the turn's own text because they answer
+  the previous assistant turn. `system` is a sibling field hoisted to a leading message.
+  Unknown blocks (`image`, `document`, `thinking`) are dropped, not rejected — vision
+  routing is M4, and dropping a block beats 400-ing a whole conversation.
+- **The stream is stateful, unlike OpenAI's.** Anthropic requires content blocks to be
+  opened and closed with at most one open at a time, so `AnthropicStreamTranslator` is a
+  class that tracks the open block and its index: a tool call after text closes the text
+  block first, parallel calls get distinct indices, and the message is *always* terminated —
+  a mid-stream error emits `error` and still closes, and `finishIfOpen()` catches a stream
+  that died with no terminal chunk. No client is ever left waiting on a `message_stop`.
+- **Framing differs too**: named `event:` lines (a data-only frame is invisible to an
+  Anthropic client) and **no `[DONE]`** — that sentinel is OpenAI's and is an unparseable
+  frame here. New `SseWriter.sendEvent()`.
+- **Auth accepts both conventions on one key** — Anthropic clients send `x-api-key` and
+  never set `Authorization`. Rejections use the error envelope of whichever surface was
+  called.
+- The M3c disconnect bug is **re-introducible here**, since `streamAnthropic` carries its
+  own copy of the listener — so the Anthropic route got its own real-socket cover rather
+  than trusting `inject()`. Negative control run: reintroducing the bug in
+  `streamAnthropic` alone fails the new socket test with the exact production symptom
+  (`"request aborted"` in place of content). Checked, not assumed.
+- 468 tests green (209 shared + 251 server + 8 CLI), +55 this milestone.
+- Still outstanding: the **live** run of M3's acceptance criterion — Claude Code pointed at
+  the daemon across two providers.
 
 ### 2026-08-27 — M3c: streaming was broken in production while 31 tests said otherwise
 

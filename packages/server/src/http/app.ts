@@ -7,12 +7,19 @@
  */
 import cors from "@fastify/cors";
 import {
+  type AnthropicMessageResponse,
+  AnthropicMessagesRequestSchema,
+  type AnthropicResponseBlock,
   type ChatResponse,
   type OpenAIChatChunk,
   type OpenAIChatCompletion,
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  fromAnthropicMessages,
+  fromAnthropicTools,
+  toAnthropicStopReason,
+  toAnthropicUsage,
   toChatMessages,
   toOpenAIFinishReason,
   toOpenAIUsage,
@@ -28,6 +35,7 @@ import {
   isOrchestratorModel,
 } from "../router/resolve.js";
 import type { RouteRequest, Router } from "../router/router.js";
+import { AnthropicStreamTranslator } from "./anthropic-stream.js";
 import { type StreamFrameContext, roleFrame, toOpenAIChunk } from "./openai-stream.js";
 import { SseWriter, type SseWriterOptions } from "./sse.js";
 
@@ -50,13 +58,20 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   app.register(cors, { origin: true });
 
   // ── Auth ──────────────────────────────────────────────────────────────────
+  // Two header conventions, one token. OpenAI clients send `Authorization:
+  // Bearer …`; Anthropic clients (Claude Code among them) send `x-api-key` and
+  // never set Authorization at all. Accepting either keeps one configured key
+  // working for both surfaces instead of forcing two.
   if (opts.apiKey !== undefined && opts.apiKey !== null && opts.apiKey !== "") {
     const expected = `Bearer ${opts.apiKey}`;
     app.addHook("onRequest", async (req, reply) => {
       if (!req.url.startsWith("/v1/")) return;
-      if (req.headers.authorization !== expected) {
-        await reply.code(401).send({ error: { message: "invalid api key", type: "auth_error" } });
-      }
+      const bearerOk = req.headers.authorization === expected;
+      const apiKeyOk = req.headers["x-api-key"] === opts.apiKey;
+      if (bearerOk || apiKeyOk) return;
+      await (req.url.startsWith("/v1/messages")
+        ? reply.code(401).send(anthropicError("authentication_error", "invalid api key"))
+        : reply.code(401).send({ error: { message: "invalid api key", type: "auth_error" } }));
     });
   }
 
@@ -147,6 +162,76 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     }
   });
 
+  // ── POST /v1/messages (Anthropic-native) ──────────────────────────────────
+  // Claude Code speaks this and only this. Everything below the parse is the
+  // same router call the OpenAI route makes — the two surfaces converge on
+  // `ChatMessage[]` at the edge and share one routing, retry and cost path.
+  app.post("/v1/messages", async (req, reply) => {
+    const parsed = AnthropicMessagesRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send(
+          anthropicError(
+            "invalid_request_error",
+            `invalid request: ${parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ")}`,
+          ),
+        );
+    }
+    const body = parsed.data;
+
+    if (isOrchestratorModel(body.model)) {
+      return reply
+        .code(501)
+        .send(
+          anthropicError(
+            "not_implemented",
+            "the orchestrator pseudo-model is not implemented yet (milestone M5)",
+          ),
+        );
+    }
+
+    const tools = fromAnthropicTools(body.tools);
+    const routeReq: RouteRequest = {
+      model: body.model,
+      messages: fromAnthropicMessages(body.messages, body.system),
+      maxTokens: body.max_tokens,
+      ...(tools !== undefined && { tools }),
+      ...(body.temperature !== undefined && { temperature: body.temperature }),
+    };
+
+    // Same reason as the OpenAI route: once SSE headers are out there is no
+    // status code left to report a bad model name with.
+    try {
+      router.resolve(body.model);
+    } catch (err) {
+      return reply
+        .code(statusForResolveError(err))
+        .send(anthropicError("invalid_request_error", (err as Error).message));
+    }
+
+    const id = `msg_${randomSuffix()}`;
+
+    if (body.stream) {
+      await streamAnthropic(reply, {
+        router,
+        routeReq,
+        ctx: { id, model: body.model },
+        ...(opts.sse !== undefined && { sse: opts.sse }),
+      });
+      return reply;
+    }
+
+    try {
+      const result = await router.complete(routeReq);
+      return toAnthropicResponse(result, { id, model: body.model });
+    } catch (err) {
+      return reply
+        .code(statusForUpstreamError(err))
+        .send(anthropicError("api_error", (err as Error).message));
+    }
+  });
+
   // ── /internal ─────────────────────────────────────────────────────────────
   app.get("/internal/health", async () => ({
     status: "ok",
@@ -215,6 +300,91 @@ async function streamCompletion(reply: FastifyReply, opts: StreamOptions): Promi
   }
   writer.done();
   writer.end();
+}
+
+interface AnthropicStreamOptions {
+  router: Router;
+  routeReq: RouteRequest;
+  ctx: { id: string; model: string };
+  sse?: SseWriterOptions;
+}
+
+async function streamAnthropic(reply: FastifyReply, opts: AnthropicStreamOptions): Promise<void> {
+  const writer = new SseWriter(reply.raw, opts.sse ?? {});
+  // Watch the response, not the request — see `streamCompletion` for why that
+  // distinction is load-bearing rather than stylistic.
+  const abort = new AbortController();
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableEnded) abort.abort();
+  });
+
+  const translator = new AnthropicStreamTranslator(opts.ctx);
+  const emit = (event: { type: string }): void => writer.sendEvent(event.type, event);
+
+  emit(translator.start());
+  try {
+    for await (const chunk of opts.router.stream(opts.routeReq, abort.signal)) {
+      for (const event of translator.next(chunk)) emit(event);
+    }
+  } catch (err) {
+    emit({
+      type: "error",
+      error: { type: "api_error", message: err instanceof Error ? err.message : String(err) },
+    } as never);
+  }
+  // A stream that died without a terminal chunk still gets a closed message,
+  // so a client is never left waiting on a `message_stop` that never comes.
+  for (const event of translator.finishIfOpen()) emit(event);
+  // No `[DONE]` here: that sentinel is OpenAI's. Anthropic clients stop at
+  // `message_stop`, and a stray `data: [DONE]` is an unparseable frame to them.
+  writer.end();
+}
+
+function toAnthropicResponse(
+  result: ChatResponse,
+  ctx: { id: string; model: string },
+): AnthropicMessageResponse {
+  const content: AnthropicResponseBlock[] = [];
+  if (result.message.content !== null && result.message.content !== "") {
+    content.push({ type: "text", text: result.message.content });
+  }
+  for (const call of result.message.toolCalls ?? []) {
+    content.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.name,
+      // Arguments cross our internal format as a JSON *string*; Anthropic wants
+      // the parsed object. A model that emits malformed JSON must not take the
+      // whole response down, so an unparseable payload degrades to `{}`.
+      input: safeJsonParse(call.arguments),
+    });
+  }
+  return {
+    id: ctx.id,
+    type: "message",
+    role: "assistant",
+    model: ctx.model,
+    content,
+    stop_reason: toAnthropicStopReason(result.finishReason),
+    stop_sequence: null,
+    usage: toAnthropicUsage(result.usage),
+  };
+}
+
+function safeJsonParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw === "" ? "{}" : raw);
+  } catch {
+    return {};
+  }
+}
+
+/** Anthropic's error envelope — `{type: "error", error: {type, message}}`. */
+function anthropicError(
+  type: string,
+  message: string,
+): { type: "error"; error: { type: string; message: string } } {
+  return { type: "error", error: { type, message } };
 }
 
 function toCompletion(result: ChatResponse, ctx: StreamFrameContext): OpenAIChatCompletion {

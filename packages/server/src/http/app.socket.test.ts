@@ -45,11 +45,11 @@ afterEach(async () => {
   await app?.close();
 });
 
-/** Boots the app on an ephemeral port and returns its completions URL. */
+/** Boots the app on an ephemeral port and returns its base URL. */
 async function listen(
   scripts: ConstructorParameters<typeof FakeAdapter>[0],
   adapterOpts: FakeAdapterOptions = {},
-): Promise<{ url: string; adapter: FakeAdapter }> {
+): Promise<{ url: string; base: string; adapter: FakeAdapter }> {
   const adapter = new FakeAdapter(scripts, adapterOpts);
   app = buildApp({
     router: new Router({ repos, createAdapter: () => adapter, sleep: async () => undefined }),
@@ -60,12 +60,22 @@ async function listen(
   await app.listen({ host: "127.0.0.1", port: 0 });
   const addr = app.server.address();
   const port = typeof addr === "object" && addr !== null ? addr.port : 0;
-  return { url: `http://127.0.0.1:${port}/v1/chat/completions`, adapter };
+  const base = `http://127.0.0.1:${port}`;
+  return { url: `${base}/v1/chat/completions`, base, adapter };
 }
 
 const body = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
     model: MODEL_ID,
+    messages: [{ role: "user", content: "hi" }],
+    stream: true,
+    ...over,
+  });
+
+const messagesBody = (over: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    model: MODEL_ID,
+    max_tokens: 1024,
     messages: [{ role: "user", content: "hi" }],
     stream: true,
     ...over,
@@ -103,6 +113,47 @@ describe("POST /v1/chat/completions (streaming, real socket)", () => {
       signal: ctl.signal,
     });
     // Read once so the upstream call is genuinely in flight before we hang up.
+    await res.body?.getReader().read();
+    ctl.abort();
+
+    await vi.waitFor(() => expect(adapter.lastSignal?.aborted).toBe(true));
+  });
+});
+
+describe("POST /v1/messages (streaming, real socket)", () => {
+  // The Anthropic route carries its own copy of the disconnect listener, so it
+  // needs its own socket-level cover — the same bug is re-introducible here,
+  // and `inject()` still cannot see it.
+  it("streams to completion rather than aborting once the request body is read", async () => {
+    const { base } = await listen([[text("hello"), text(" world"), end()]]);
+    const res = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: HEADERS,
+      body: messagesBody(),
+    });
+    const raw = await res.text();
+
+    expect(raw).not.toContain("aborted");
+    const assembled = raw
+      .split("\n\n")
+      .filter((b) => b.startsWith("event: content_block_delta"))
+      .map((b) => JSON.parse((b.split("\n")[1] as string).slice("data: ".length)))
+      .map((f: { delta: { text?: string } }) => f.delta.text ?? "")
+      .join("");
+    expect(assembled).toBe("hello world");
+    // Anthropic clients terminate on message_stop; there is no [DONE] sentinel.
+    expect(raw.trimEnd().endsWith('data: {"type":"message_stop"}')).toBe(true);
+  });
+
+  it("aborts the upstream when the client really goes away", async () => {
+    const { base, adapter } = await listen([[text("first")]], { hang: true });
+    const ctl = new AbortController();
+    const res = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: HEADERS,
+      body: messagesBody(),
+      signal: ctl.signal,
+    });
     await res.body?.getReader().read();
     ctl.abort();
 

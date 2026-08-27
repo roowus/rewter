@@ -23,11 +23,16 @@ Goals:
 
 One local daemon process serving:
 
-- **`/v1`** — OpenAI-compatible API. `POST /v1/chat/completions` either **passes through**
-  to a concrete model (plain routing) or, when `model` is the pseudo-model
-  `auto/orchestrator` (also `auto`; `auto/orchestrator:<modelId>` pins the initiator),
-  diverts into the **orchestrator engine**. `GET /v1/models` lists registry models plus
-  the pseudo-models so CLI model pickers see them.
+- **`/v1`** — two client-facing wire formats over one router.
+  - `POST /v1/chat/completions` (OpenAI) either **passes through** to a concrete model
+    (plain routing) or, when `model` is the pseudo-model `auto/orchestrator` (also `auto`;
+    `auto/orchestrator:<modelId>` pins the initiator), diverts into the **orchestrator
+    engine**.
+  - `POST /v1/messages` (Anthropic-native) is the same thing in Anthropic's dialect. Claude
+    Code speaks this and only this, so it is what makes rewter usable as a 9router
+    replacement rather than a curl toy.
+  - `GET /v1/models` lists registry models plus the pseudo-models so CLI model pickers see
+    them.
 - **`/internal`** — localhost-bound REST + WebSocket for the **dashboard** (built static,
   served by the same daemon).
 
@@ -100,7 +105,7 @@ schemas so the event/API contract cannot drift. Server module dirs are the futur
 | Concern | Choice | Why |
 |---|---|---|
 | HTTP | Fastify 5 | long-lived daemon: plugins (ws/static/cors), lifecycle hooks, pino, `app.inject()` for portless endpoint tests |
-| OpenAI SSE | hand-rolled writer over `reply.raw` | exact `data:` framing + `[DONE]`, 15s heartbeat comments, close→cancel |
+| SSE | hand-rolled writer over `reply.raw` | exact framing for **both** dialects — OpenAI's data-only frames + `[DONE]`, and Anthropic's named `event:` frames with no sentinel; 15s heartbeat comments, close→cancel |
 | Dashboard live | WebSocket (`@fastify/websocket`) | event firehose + `afterSeq` replay; approve/deny stay REST |
 | DB | better-sqlite3 + Drizzle | synchronous writes = no async races in a single process; WAL for concurrent reads; drizzle-kit migrations |
 | Dashboard | Vite + React 18, TanStack Router/Query, zustand, Tailwind | local ops UI, no SSR |
@@ -371,6 +376,69 @@ would break clients for no benefit. `max_completion_tokens` is accepted alongsid
 OpenAI has heard of it); the multi-part content array Claude Code sends is flattened to
 text.
 
+### The Anthropic surface (`POST /v1/messages`)
+
+Claude Code — the whole point of the M3 acceptance criterion — talks Anthropic's Messages
+API, not OpenAI's. The plan filed this as a "phase-2 nicety"; that was a misread, since
+without it the milestone's own "replaces 9router" test cannot be run at all. It is M3d.
+
+Everything below the parse is the **same router call** the OpenAI route makes: the two
+surfaces converge on `ChatMessage[]` at the edge and then share one routing, retry, cost
+and cancellation path. Only translation differs.
+
+**Two directions that look alike and must never be shared.**
+`providers/anthropic.ts` translates our internal format *up* to a vendor we call.
+`shared/anthropic.ts` translates a client's request *down* into ours. Merging them would
+couple "what Claude Code sends us" to "what we send Anthropic", which are free to diverge.
+
+**Request translation** (`fromAnthropicMessages`) is a `flatMap`, not a `map`, because the
+shapes genuinely disagree:
+
+- `system` is a *sibling field*, not a message — hoisted to a leading `system` message.
+  Block-array systems join with blank lines; an empty one is omitted, not emitted blank.
+- Anthropic batches several `tool_result` blocks into **one** user turn; our format gives
+  each tool response its own message, so one turn can expand to several.
+- Those tool results are emitted **before** the turn's own text: they answer the *previous*
+  assistant turn, and upstreams that pair calls to results need them adjacent to the call.
+- A turn that is *only* tool results produces no user message at all.
+- `tool_use.input` is an object on the wire and a JSON *string* internally; `tool_result`
+  block arrays are flattened to text.
+- Unknown block types (`image`, `document`, `thinking`) are **dropped, not rejected** —
+  vision routing is M4, and dropping a block is very different from 400-ing a whole
+  conversation. Unknown top-level knobs (`top_k`, `stop_sequences`, `thinking`) parse and
+  are simply not forwarded. `max_tokens` *is* required, unlike OpenAI's.
+
+**Streaming is where the two protocols diverge most.** Anthropic's stream is a **named-event**
+stream — every frame is `event: <name>\ndata: <json>\n\n` — and its clients dispatch on that
+`event:` line, so a data-only frame is invisible to them. There is **no `[DONE]` sentinel**;
+clients terminate on `message_stop`, and a stray `data: [DONE]` is an unparseable frame.
+`SseWriter.sendEvent()` exists for exactly this framing.
+
+More consequentially, **Anthropic's stream is stateful where OpenAI's is not**. OpenAI frames
+are independent — each names its own choice and tool index — so a pure function suffices.
+Anthropic requires content blocks to be explicitly opened (`content_block_start`) and closed
+(`content_block_stop`), **at most one open at a time**, with a running index. Our internal
+grammar has no such notion, so `AnthropicStreamTranslator` is a class that remembers which
+block is open. Its invariants:
+
+- A tool call arriving after text **closes the text block first** — emitting a start while
+  another block is open is a protocol violation.
+- Parallel tool calls each get their own block index; `input` opens as `{}` and is filled by
+  `input_json_delta` frames (not `text_delta`).
+- `message_start` carries **zero usage**, because real input-token counts only arrive at
+  `message_end`; the true totals ship in `message_delta`. This is what Anthropic itself
+  does, and the client adds them.
+- The message is **always terminated**. A mid-stream error emits an `error` event and then
+  still closes the message; a stream that dies with no terminal chunk is closed by
+  `finishIfOpen()`. A client must never be left waiting on a `message_stop` that never comes.
+
+Non-streaming responses mirror this: a text block only when content is non-empty, one
+`tool_use` block per call, and `input` **parsed** back into an object — a model emitting
+malformed JSON degrades that one block to `{}` rather than 500-ing the response.
+
+Errors use Anthropic's own envelope (`{type: "error", error: {type, message}}`), including
+the `401`, so an Anthropic client can parse a rejection the same way it parses a success.
+
 ### Gateway status policy
 
 We are a gateway, so an upstream that fails is a **502** from where the client sits,
@@ -384,6 +452,12 @@ generic 502 would hide the one thing they can fix.
 `/v1` takes an optional bearer token (`apiKey`); absent means open, which is the normal
 localhost-daemon case. `/internal` is never gated — it is localhost-bound and the dashboard
 holds no key.
+
+**Two header conventions, one token.** OpenAI clients send `Authorization: Bearer …`;
+Anthropic clients (Claude Code among them) send `x-api-key` and never set `Authorization`
+at all. Both are accepted against the same configured key, so one value works for both
+surfaces instead of forcing the user to configure two. The rejection is shaped to match the
+surface being called: Anthropic's error envelope on `/v1/messages`, OpenAI's elsewhere.
 
 ## Configuration and boot
 
@@ -506,7 +580,10 @@ done-pattern) so any CLI harness is addable by config.
 
 ## API surface
 
-- `POST /v1/chat/completions` — pass-through or orchestrator; stream + non-stream. **Live.**
+- `POST /v1/chat/completions` — OpenAI dialect; pass-through or orchestrator; stream +
+  non-stream. **Live.** (Orchestrator returns `501` until M5.)
+- `POST /v1/messages` — Anthropic dialect over the same router; stream + non-stream.
+  **Live.** Named-event SSE, no `[DONE]`; accepts `x-api-key` or `Authorization: Bearer`.
   (Orchestrator returns `501` until M5.)
 - `GET /v1/models` — registry + pseudo-models. **Live.** `auto/orchestrator` is listed
   **first** so it is visible in every client's model picker; disabled models are hidden.
@@ -526,8 +603,9 @@ done-pattern) so any CLI harness is addable by config.
 - **Phase 1 (MVP)**: routing + provider adapters, registry + capability cards, orchestrator
   pseudo-model, tier-1 fan-out, tier-2 loop with approval gates, dashboard (live task tree,
   approvals, kill, costs), daemonization. Milestones M0–M8 in [progress.md](progress.md).
-- **Phase 2**: tier-3 harness adapters, tmux attach/mirror, learned-from-experience stats,
-  Anthropic-native `/v1/messages` passthrough.
+- **Phase 2**: tier-3 harness adapters, tmux attach/mirror, learned-from-experience stats.
+  (The plan listed Anthropic-native `/v1/messages` here; it was pulled into phase 1 as M3d
+  once it became clear M3's own acceptance criterion depends on it.)
 - **Phase 3**: multi-initiator handoff chains, budgets, scheduling.
 
 ## Key risks
