@@ -7,7 +7,7 @@ import type { Provider } from "@rewter/shared";
 import { AnthropicAdapter } from "./anthropic.js";
 import { GoogleAdapter } from "./google.js";
 import { OpenAICompatAdapter } from "./openai-compat.js";
-import { getPreset } from "./presets.js";
+import { presetForProvider } from "./presets.js";
 import type { AdapterConfig, ProviderAdapter } from "./types.js";
 
 export class MissingApiKeyError extends Error {
@@ -27,7 +27,7 @@ export interface FactoryOptions {
 
 export function createAdapter(provider: Provider, opts: FactoryOptions = {}): ProviderAdapter {
   const env = opts.env ?? process.env;
-  const preset = getPreset(provider.name.toLowerCase()) ?? getPreset(providerSlug(provider));
+  const preset = presetForProvider(provider);
 
   let apiKey: string | null = null;
   if (provider.apiKeyRef !== null) {
@@ -53,9 +53,4 @@ export function createAdapter(provider: Provider, opts: FactoryOptions = {}): Pr
     case "openai-compat":
       return new OpenAICompatAdapter(config);
   }
-}
-
-/** Providers are usually seeded from a preset, so the name matches the slug. */
-function providerSlug(provider: Provider): string {
-  return provider.name.toLowerCase().replace(/[^a-z0-9]/g, "");
 }

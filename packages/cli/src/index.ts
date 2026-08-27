@@ -7,13 +7,28 @@
  * Background management (`stop`, `logs`, `install-service`) needs a pidfile and
  * a service definition, which is M8's job; those commands say so rather than
  * pretending.
+ *
+ * `sync-models` is a one-shot: it opens the same database the daemon uses and
+ * writes to it directly rather than going through a running server, so it works
+ * whether or not the daemon is up. SQLite in WAL mode makes that safe.
  */
-import { bootSummary, runUntilSignal, startDaemon } from "@rewter/server";
+import {
+  bootSummary,
+  formatSyncReport,
+  openRegistry,
+  presetSlugForProvider,
+  runUntilSignal,
+  startDaemon,
+  syncModels,
+} from "@rewter/server";
 
 const USAGE = `rewter — an AI model router where the AI runs the routing
 
 Usage:
   rewter start [--config <path>] [--port <n>]   run the daemon in the foreground
+  rewter sync-models [--dry-run] [--no-enrich] [--provider <slug>]
+                                                refresh the model registry from
+                                                the providers' own catalogs
   rewter version                                print the version
   rewter help                                   this message
 
@@ -27,12 +42,22 @@ API keys are read from the environment by variable *name* — the config file
 records which variable holds a key, never the key itself.
 `;
 
-export async function run(argv: string[]): Promise<number> {
+export interface RunOptions {
+  /** Injectable so tests can point the CLI at a scratch config and database. */
+  env?: NodeJS.ProcessEnv;
+  /** Injectable so tests can sync against fixtures instead of the live web. */
+  fetch?: typeof globalThis.fetch;
+}
+
+export async function run(argv: string[], opts: RunOptions = {}): Promise<number> {
   const command = argv[0] ?? "help";
 
   switch (command) {
     case "start":
       return await start(argv.slice(1));
+
+    case "sync-models":
+      return await syncCommand(argv.slice(1), opts);
 
     case "version":
     case "--version":
@@ -54,9 +79,8 @@ export async function run(argv: string[]): Promise<number> {
       process.stderr.write(`${command}: lands in M8 (daemonization)\n`);
       return 1;
 
-    case "sync-models":
     case "card":
-      process.stderr.write(`${command}: lands in M4 (registry + capability cards)\n`);
+      process.stderr.write(`${command}: lands in M4 (capability card generation)\n`);
       return 1;
 
     default:
@@ -83,6 +107,57 @@ async function start(args: string[]): Promise<number> {
   process.stdout.write(`${bootSummary(daemon)}\n`);
   // Never resolves: the process ends on SIGINT/SIGTERM, after a graceful drain.
   return await runUntilSignal(daemon);
+}
+
+/**
+ * Refresh the registry from the providers' catalogs.
+ *
+ * Enrichment (borrowing OpenRouter's prices for thin catalogs) is **on by
+ * default**: most upstreams publish an id list and nothing else, so an
+ * unenriched sync leaves the registry priceless and the orchestrator with no
+ * basis for choosing a cheap model. `--no-enrich` opts out.
+ */
+async function syncCommand(args: string[], opts: RunOptions): Promise<number> {
+  const configPath = flagValue(args, "--config");
+  const only = flagValue(args, "--provider");
+  const enrich = !args.includes("--no-enrich");
+  const registry = openRegistry({
+    ...(configPath !== undefined && { configPath }),
+    ...(opts.env !== undefined && { env: opts.env }),
+  });
+
+  try {
+    const all = registry.repos.listProviders();
+    const providers = only === undefined ? all : all.filter((p) => slugOf(p) === only);
+    if (only !== undefined && providers.length === 0) {
+      process.stderr.write(`no provider named "${only}" in the config\n`);
+      return 1;
+    }
+    // Enrichment reads OpenRouter's catalog out of the same list, so filtering
+    // it away turns the flag into a silent no-op. Say so rather than leaving the
+    // user wondering why the prices are still null.
+    if (enrich && !providers.some((p) => slugOf(p) === "openrouter")) {
+      process.stderr.write("note: no OpenRouter provider in scope — prices will not be filled\n");
+    }
+
+    const report = await syncModels(registry.repos, providers, {
+      env: registry.env,
+      enrich,
+      dryRun: args.includes("--dry-run"),
+      ...(opts.fetch !== undefined && { fetch: opts.fetch }),
+    });
+    process.stdout.write(`${formatSyncReport(report)}\n`);
+    // A provider that failed is reported, not fatal — but the exit code says so,
+    // because a cron'd sync that silently half-works is worse than a red one.
+    return report.providers.some((p) => p.error !== undefined) ? 1 : 0;
+  } finally {
+    registry.close();
+  }
+}
+
+/** Matches how sync names a provider, so `--provider` filters on what gets printed. */
+function slugOf(provider: { id: string; name: string }): string {
+  return presetSlugForProvider(provider);
 }
 
 /** `--flag value`; returns undefined when absent, and throws nothing on a trailing flag. */

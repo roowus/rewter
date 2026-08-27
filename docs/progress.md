@@ -12,13 +12,53 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
 | M3d | `/v1/messages` (Anthropic-native) — what Claude Code actually speaks | ✅ 2026-08-27 |
 | — | *M3 acceptance: Claude Code live on rewter, 2 providers, tool calls* | ✅ 2026-08-27 |
-| M4 | Registry + capability cards + digest renderer | 🟡 storage + digest done; sync + card generation left |
+| M4 | Registry + capability cards + digest renderer | 🟡 storage + digest + model sync done; AI card generation left |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M4b: model sync, and `rewter sync-models`
+
+The registry stops being hand-authored. Catalog parsing for four dialects, a policy layer over
+it, and a CLI command that writes straight into the daemon's database.
+
+- **The whole design is two rules about a row someone else may own.** *Sync never overwrites a
+  human*: a `source: "manual"` row's pricing is usually the **corrected** pricing — typed
+  because the upstream's number was absent or wrong — so sync fills its nulls and changes
+  nothing else. *Sync never deletes*: a model that vanishes from a catalog goes `enabled: false`,
+  because cost records and events hold references to it and a catalog blinking out for one
+  request must not vaporize history. Everything else is a corollary — `enabled` is the user's
+  switch and never sync's to flip; new models arrive **disabled** so a 400-row catalog is not
+  opt-out; a row whose facts match is left untouched so the report never claims work that did
+  not happen.
+- **A provider's display name is not a slug.** The first version derived the slug by lowercasing
+  the name, which round-trips for maybe two thirds of the 27-row preset table — `"Google Gemini"`
+  → `googlegemini`, `"Z.AI (GLM)"` → `zaiglm`, `"Together AI"` → `togetherai`. And because
+  `canSync(undefined)` is `false`, a failed preset lookup **silently skips** the provider rather
+  than erroring, so the bug presented as "sync did nothing" with no message. Fixed by inverting
+  the derived `prv_…` id through a reverse index (`presetSlugForProvider`), which is exact
+  because `providerIdForSlug` is deterministic.
+- **Enrichment is a bonus, and says when it didn't happen.** Most catalogs are an id list and
+  nothing else, so OpenRouter's prices fill everyone else's gaps — on by default, since an
+  unenriched sync leaves the orchestrator no basis for preferring a cheap model. If OpenRouter
+  itself fails the sync still runs and the report flag says unenriched; if `--provider` scopes
+  OpenRouter out of the list the flag becomes a no-op, and the CLI warns on stderr rather than
+  leaving you staring at null prices.
+- **A failing provider is recorded and stepped over** — one vendor rate-limiting you must not
+  block the other twenty-six — but the CLI **exits non-zero**, because a cron'd sync that
+  silently half-works is worse than a red one.
+- **`sync-models` opens the database directly**, not a running server: it has to work whether or
+  not the daemon is up, and booting a second server to read a table would fight the first for
+  the port. WAL makes that safe. `openRegistry()` is the extracted config → db → seed prefix of
+  `startDaemon`, so the CLI sees exactly the rows the daemon would.
+- **540 tests green** (214 shared + 312 server + 14 CLI), +53. The four sync tests that failed
+  first time round were three bad fixtures and one real bug: the fixtures used Baseten as the
+  "publishes no catalog" case (it *does* publish one), set a `displayName` that always diffed,
+  and put a manual row in the `openai/` namespace while syncing OpenRouter — so sync computed a
+  different id, found nothing, and created a second row instead of merging.
 
 ### 2026-08-27 — M4a: card storage and the digest renderer
 

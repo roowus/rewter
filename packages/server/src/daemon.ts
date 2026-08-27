@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { type Config, expandPath, loadConfig } from "./config/config.js";
-import { seedRegistry } from "./config/seed.js";
+import { type SeedResult, seedRegistry } from "./config/seed.js";
 import { type Db, openDb } from "./db/connection.js";
 import { Repos } from "./db/repos.js";
 import { EventBus } from "./events/bus.js";
@@ -39,7 +39,31 @@ export interface RunningDaemon {
   stop(): Promise<void>;
 }
 
-export async function startDaemon(opts: StartDaemonOptions = {}): Promise<RunningDaemon> {
+export interface OpenRegistryOptions {
+  configPath?: string | undefined;
+  config?: Config;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface OpenRegistry {
+  db: Db;
+  bus: EventBus;
+  repos: Repos;
+  config: Config;
+  seeded: SeedResult;
+  env: NodeJS.ProcessEnv;
+  close(): void;
+}
+
+/**
+ * Everything below the HTTP layer: config → database → seeded registry.
+ *
+ * One-shot CLI commands (`sync-models`, `card`) need the registry but not a
+ * listening socket, and booting a server to read a table would fight the
+ * running daemon for the port. They share the seed step with `startDaemon` so a
+ * CLI invocation sees exactly the rows the daemon would.
+ */
+export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
   const env = opts.env ?? process.env;
   const config =
     opts.config ??
@@ -56,6 +80,22 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     models: config.models,
     env,
   });
+
+  return {
+    db,
+    bus,
+    repos,
+    config,
+    seeded,
+    env,
+    close() {
+      db.$client.close();
+    },
+  };
+}
+
+export async function startDaemon(opts: StartDaemonOptions = {}): Promise<RunningDaemon> {
+  const { db, bus, repos, config, seeded, env } = openRegistry(opts);
 
   const router = new Router({ repos, env });
   // The bearer token is read from the environment by *name*, like every other

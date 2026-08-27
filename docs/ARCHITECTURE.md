@@ -169,6 +169,60 @@ Two things the patch cannot do:
 - **Invalidate the card.** The merged result is re-parsed; if it fails, the generated card is
   returned intact. A hand-edit with a typo'd tag must not take a model out of the registry.
 
+### Model sync: catalogs → registry
+
+`registry/catalog.ts` reads a provider's own model list; `registry/sync.ts` decides what that
+means for rows a human may already have touched. `rewter sync-models` drives both.
+
+**Catalogs.** Most upstreams expose `GET {baseUrl}/models` in one of three dialects — OpenAI's
+`{data:[{id}]}`, OpenRouter's richer version of the same (`pricing`, `context_length`,
+`architecture.modality`, `supported_parameters`), and Anthropic's `{data:[{id, display_name}]}`.
+Google's is `{models:[{name: "models/…", inputTokenLimit, …}]}` on a different path. Each parser
+returns the same `CatalogEntry`. A provider whose preset says `listModels: false` (Perplexity,
+Z.AI, MiniMax) is **skipped, not attempted** — `canSync(undefined)` is false too, so a preset
+lookup that fails skips rather than throws.
+
+Two parsing rules that matter downstream. A price is **per million tokens**, converted from the
+per-token decimal strings upstreams publish and rounded to 6 places, because `"0.00000125" * 1e6`
+carries float noise into a digest that has to be byte-stable. And an absent or unparseable price
+is `null` — *unknown*, never zero; `costs/compute.ts` distinguishes them, and a guessed zero
+silently under-reports spend. A catalog row we cannot parse is **counted, not thrown**: one
+malformed entry must not cost you the other four hundred.
+
+**Enrichment.** Most catalogs are an id list and nothing else, which would leave the registry
+priceless and the orchestrator with no basis for preferring a cheap model. So OpenRouter's
+catalog — which prices essentially the same models — fills the gaps in everyone else's, matching
+on the id tail with any variant suffix dropped, first writer wins. It is **on by default** in the
+CLI (`--no-enrich` opts out) and it is strictly a bonus: if OpenRouter itself fails, the sync
+still runs unenriched and the report's `enrichedFromOpenRouter` flag says so.
+
+**Two governing rules for what sync may do to an existing row:**
+
+- **Sync never overwrites a human.** A `source: "manual"` row came from the config file or the
+  dashboard, and its pricing is frequently the *corrected* pricing — typed because the upstream's
+  number was absent or wrong. Sync fills the nulls such a row left and changes nothing else; a
+  manual row with no gaps left is reported as `skippedManual`. A `synced` row is refreshed
+  wholesale **except `enabled`**, which is the user's switch and never sync's to flip.
+- **Sync never deletes.** A model that vanishes from a catalog is set `enabled: false`. Cost
+  records and events hold references to it, and a vendor's catalog blinking out for one request
+  must not vaporize history. `enabled: false` produces a 503 naming the model, which is also the
+  right outcome when a model is genuinely retired.
+
+Two smaller ones. New models arrive **disabled**: a catalog is hundreds of rows, and enabling all
+of them would flood the digest the orchestrator reads and bill against models nobody chose — the
+report says so in as many words. And `updatedAt` alone is not a change: a row whose facts match is
+left untouched, so the report never claims work that did not happen.
+
+A provider that fails is **recorded and stepped over** — half a registry refreshed beats none, and
+one vendor rate-limiting you must not block the other twenty-six. The report names who failed, and
+the CLI exits non-zero, because a cron'd sync that silently half-works is worse than a red one.
+
+Sync resolves a provider's preset **through its id**, never its display name.
+`presetSlugForProvider` inverts the derived `prv_…` id back to a slug via a reverse index;
+lowercasing a name round-trips for maybe two thirds of the preset table (`"Google Gemini"` →
+`googlegemini`, `"Z.AI (GLM)"` → `zaiglm`), and combined with `canSync(undefined) === false` a
+missed lookup would *silently skip* the provider rather than erroring.
+
 ### Registry digest renderer
 
 `renderDigest(entries, {maxTokens})` in `server/src/registry/digest.ts` renders section 2 of the
@@ -598,8 +652,18 @@ library barrel so that importing `@rewter/server` never starts a server as a sid
 shape M8 wraps in a launchd plist, and the shape you want anyway while watching logs.
 `rewter version` / `rewter help` round it out. Background management (`stop`, `status`,
 `logs`, `install-service`, `gc`) needs a pidfile and a service definition, which is M8's
-job; those commands exit 1 naming the milestone rather than pretending. `sync-models` and
-`card` do the same for M4.
+job; those commands exit 1 naming the milestone rather than pretending. `card` does the same
+for the rest of M4.
+
+`rewter sync-models [--dry-run] [--no-enrich] [--provider <slug>] [--config <path>]` refreshes
+the registry from the providers' catalogs — see [Model sync](#model-sync-catalogs--registry) for
+the policy. It is a **one-shot that opens the database directly** rather than talking to a running
+server: it has to work whether or not the daemon is up, and booting a second server to read a
+table would fight the first for the port. SQLite in WAL mode makes the concurrent write safe.
+`openRegistry()` is the extracted config → database → seeded-registry prefix of `startDaemon`, so
+a CLI invocation sees exactly the rows the daemon would. Because enrichment reads OpenRouter out
+of the same provider list, `--provider` can scope it away and turn it into a silent no-op; the CLI
+says so on stderr rather than leaving you wondering why the prices are still null.
 
 ## Tier-2 agent loop
 

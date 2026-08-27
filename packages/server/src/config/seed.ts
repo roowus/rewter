@@ -11,41 +11,14 @@
  * skipped. A disabled provider produces a loud 503 naming the model; a missing
  * one produces "unknown model", which sends you looking in the wrong place.
  */
-import {
-  type Model,
-  ModelIdSchema,
-  type ModelPricing,
-  type Provider,
-  ProviderIdSchema,
-} from "@rewter/shared";
-import { getPreset } from "../providers/presets.js";
+import { type Model, ModelIdSchema, type ModelPricing, type Provider } from "@rewter/shared";
+import { getPreset, providerIdForSlug } from "../providers/presets.js";
 import type { ModelConfig, ProviderConfig } from "./config.js";
 
-/**
- * Deterministic id from a slug, so a re-seed hits the same row rather than
- * minting a new one and orphaning its costs and events.
- *
- * The id schema wants exactly 12 chars of `[0-9a-z]`, so this is a readable
- * 6-char prefix plus 6 hash chars: `prv_anthro1f2g3h` says which provider it is
- * at a glance while keeping two long slugs sharing a prefix distinct.
- */
-export function providerIdForSlug(slug: string): Provider["id"] {
-  const prefix = slug
-    .replace(/[^a-z0-9]/g, "")
-    .slice(0, 6)
-    .padEnd(6, "0");
-  return ProviderIdSchema.parse(`prv_${prefix}${hash6(slug)}`);
-}
-
-/** FNV-1a → 6 chars of `[0-9a-z]`. Not security-relevant; just a spreader. */
-function hash6(input: string): string {
-  let h = 2_166_136_261;
-  for (let i = 0; i < input.length; i += 1) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16_777_619);
-  }
-  return (h >>> 0).toString(36).padStart(6, "0").slice(-6);
-}
+// The slug → id derivation lives with the presets, because it is what makes a
+// provider's id invertible back to its slug (`presetSlugForProvider`). Re-export
+// it here: seeding is where callers first meet it.
+export { providerIdForSlug };
 
 export interface SeedTarget {
   upsertProvider(provider: Provider): Provider;

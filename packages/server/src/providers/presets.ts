@@ -5,7 +5,7 @@
  *
  * `apiKeyEnv` is the env var *name* — raw keys never enter the DB or this file.
  */
-import type { ProviderKind } from "@rewter/shared";
+import { type ProviderId, ProviderIdSchema, type ProviderKind } from "@rewter/shared";
 import type { Quirks } from "./types.js";
 
 export interface ProviderPreset {
@@ -290,4 +290,62 @@ const BY_SLUG = new Map(PROVIDER_PRESETS.map((p) => [p.slug, p]));
 
 export function getPreset(slug: string): ProviderPreset | undefined {
   return BY_SLUG.get(slug);
+}
+
+/**
+ * Deterministic provider id from a slug, so a re-seed or a sync hits the same
+ * row rather than minting a new one and orphaning its costs and events.
+ *
+ * The id schema wants exactly 12 chars of `[0-9a-z]`, so this is a readable
+ * 6-char prefix plus 6 hash chars: `prv_anthro1f2g3h` says which provider it is
+ * at a glance while keeping two long slugs sharing a prefix distinct.
+ *
+ * It lives here rather than with the seeder because it makes the slug the
+ * provider's *identity*, which is what lets `presetSlugForProvider` invert it.
+ */
+export function providerIdForSlug(slug: string): ProviderId {
+  const prefix = slug
+    .replace(/[^a-z0-9]/g, "")
+    .slice(0, 6)
+    .padEnd(6, "0");
+  return ProviderIdSchema.parse(`prv_${prefix}${hash6(slug)}`);
+}
+
+/** FNV-1a → 6 chars of `[0-9a-z]`. Not security-relevant; just a spreader. */
+function hash6(input: string): string {
+  let h = 2_166_136_261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16_777_619);
+  }
+  return (h >>> 0).toString(36).padStart(6, "0").slice(-6);
+}
+
+/**
+ * Recover a provider's preset slug from its row.
+ *
+ * The display **name** is not a reliable source: `"Google Gemini"` normalizes
+ * to `googlegemini` and `"Z.AI (GLM)"` to `zaiglm`, neither of which is a
+ * preset slug — a name-based lookup silently finds no preset for a third of the
+ * table, which for sync means skipping those providers entirely. The **id** is
+ * reliable, because `providerIdForSlug` derives it from the slug, so a reverse
+ * index over the preset table is exact for anything that came from a preset.
+ * The normalized name remains the fallback for a hand-rolled provider.
+ */
+export function presetSlugForProvider(provider: { id: string; name: string }): string {
+  return byId().get(provider.id) ?? provider.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** The preset itself, or `undefined` for a provider that isn't one of ours. */
+export function presetForProvider(provider: {
+  id: string;
+  name: string;
+}): ProviderPreset | undefined {
+  return getPreset(presetSlugForProvider(provider));
+}
+
+let idIndex: Map<string, string> | undefined;
+function byId(): Map<string, string> {
+  idIndex ??= new Map(PROVIDER_PRESETS.map((p) => [providerIdForSlug(p.slug), p.slug]));
+  return idIndex;
 }

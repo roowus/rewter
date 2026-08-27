@@ -64,8 +64,9 @@ orchestrator pseudo-model is listed but returns `501` until M5.
 
 Landing now (M4): the **model registry** the orchestrator will choose from — capability-card
 storage, where a hand correction survives card regeneration and cannot rewrite the card's
-provenance, and the digest renderer that turns the registry into one compact, byte-stable line
-per model. Model sync and AI card generation are next.
+provenance; the digest renderer that turns the registry into one compact, byte-stable line per
+model; and **`rewter sync-models`**, which fills the registry from the providers' own catalogs.
+AI card generation is next.
 
 ## Quickstart
 
@@ -129,6 +130,28 @@ OpenAI clients send) and `x-api-key` (what Anthropic clients send) — so one va
 both surfaces. Leave it unset and the local daemon is open.
 
 Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`.
+
+### Filling the registry automatically
+
+Hand-writing the `models` array gets old fast. `sync-models` reads each provider's own catalog
+instead — it opens the same database the daemon uses, so it works whether or not the daemon is
+running:
+
+```sh
+node packages/cli/dist/index.js sync-models
+# openai: 84 added, 0 updated
+# openrouter: 319 added, 0 updated
+# New models arrive disabled; enable the ones you want in the config or dashboard.
+```
+
+New models arrive **disabled** — a catalog is hundreds of rows, and enabling all of them would
+bill against models you never chose. Most upstreams publish an id list and nothing else, so
+OpenRouter's prices fill the gaps in the others by default (`--no-enrich` opts out). Sync never
+overwrites a model you wrote by hand — it only fills the fields you left blank — and never
+deletes: a model that disappears upstream is disabled, so the cost records pointing at it keep
+their referent.
+
+`--dry-run` reports without writing; `--provider <slug>` scopes to one.
 
 ## Development
 

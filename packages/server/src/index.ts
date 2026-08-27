@@ -14,7 +14,13 @@ export {
 } from "./providers/factory.js";
 export { GoogleAdapter } from "./providers/google.js";
 export { OpenAICompatAdapter } from "./providers/openai-compat.js";
-export { PROVIDER_PRESETS, getPreset, type ProviderPreset } from "./providers/presets.js";
+export {
+  PROVIDER_PRESETS,
+  getPreset,
+  presetForProvider,
+  presetSlugForProvider,
+  type ProviderPreset,
+} from "./providers/presets.js";
 export {
   AdapterError,
   isRetryableStatus,
@@ -26,6 +32,26 @@ export {
 } from "./providers/types.js";
 
 export { FREE_PRICING, computeCost, type CostBreakdown } from "./costs/compute.js";
+
+export {
+  CatalogError,
+  canSync,
+  catalogUrl,
+  enrichFromOpenRouter,
+  fetchCatalog,
+  type CatalogEntry,
+  type CatalogOptions,
+  type CatalogResult,
+} from "./registry/catalog.js";
+export { renderDigest, type DigestEntry, type DigestOptions } from "./registry/digest.js";
+export {
+  formatSyncReport,
+  syncModels,
+  type ProviderSyncReport,
+  type SyncOptions,
+  type SyncReport,
+  type SyncTarget,
+} from "./registry/sync.js";
 
 export {
   AmbiguousModelError,
@@ -71,8 +97,11 @@ export {
 } from "./config/seed.js";
 export {
   bootSummary,
+  openRegistry,
   runUntilSignal,
   startDaemon,
+  type OpenRegistry,
+  type OpenRegistryOptions,
   type RunningDaemon,
   type SignalHandlerOptions,
   type StartDaemonOptions,
