@@ -12,6 +12,10 @@ import {
   type ApprovalStatus,
   type CostRecord,
   CostRecordSchema,
+  type Model,
+  ModelSchema,
+  type Provider,
+  ProviderSchema,
   type Task,
   TaskSchema,
   type TaskStatus,
@@ -26,10 +30,18 @@ import {
   assertWorkItemTransition,
   assertWorkerRunTransition,
 } from "@rewter/shared";
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import type { EventBus } from "../events/bus.js";
 import type { Db } from "./connection.js";
-import { approvals, costRecords, tasks, workItems, workerRuns } from "./schema.js";
+import {
+  approvals,
+  costRecords,
+  models,
+  providers,
+  tasks,
+  workItems,
+  workerRuns,
+} from "./schema.js";
 
 const TERMINAL_TASK: readonly TaskStatus[] = ["succeeded", "failed", "cancelled"];
 
@@ -39,6 +51,99 @@ export class Repos {
     private readonly bus: EventBus,
     private readonly clock: () => number = Date.now,
   ) {}
+
+  // ── Providers ────────────────────────────────────────────────────────────
+  //
+  // Registry rows (providers, models) carry no lifecycle status and emit no
+  // events: they are configuration, not task history. Upserts are idempotent so
+  // `sync-models` (M4) can re-run without churning ids.
+
+  upsertProvider(provider: Provider): Provider {
+    const p = ProviderSchema.parse(provider);
+    this.db
+      .insert(providers)
+      .values(p)
+      .onConflictDoUpdate({
+        target: providers.id,
+        set: {
+          name: p.name,
+          kind: p.kind,
+          baseUrl: p.baseUrl,
+          apiKeyRef: p.apiKeyRef,
+          enabled: p.enabled,
+          updatedAt: p.updatedAt,
+        },
+      })
+      .run();
+    return p;
+  }
+
+  getProvider(id: string): Provider | undefined {
+    const row = this.db.select().from(providers).where(eq(providers.id, id)).get();
+    return row === undefined ? undefined : ProviderSchema.parse(row);
+  }
+
+  listProviders(opts: { enabledOnly?: boolean } = {}): Provider[] {
+    const rows = this.db
+      .select()
+      .from(providers)
+      .orderBy(asc(providers.name))
+      .all()
+      .map((r) => ProviderSchema.parse(r));
+    return opts.enabledOnly === true ? rows.filter((p) => p.enabled) : rows;
+  }
+
+  deleteProvider(id: string): void {
+    this.db.delete(providers).where(eq(providers.id, id)).run();
+  }
+
+  // ── Models ───────────────────────────────────────────────────────────────
+
+  upsertModel(model: Model): Model {
+    const m = ModelSchema.parse(model);
+    const values = modelToRow(m);
+    this.db
+      .insert(models)
+      .values(values)
+      .onConflictDoUpdate({
+        target: models.id,
+        set: {
+          providerId: values.providerId,
+          upstreamId: values.upstreamId,
+          displayName: values.displayName,
+          contextWindow: values.contextWindow,
+          maxOutputTokens: values.maxOutputTokens,
+          pricingJson: values.pricingJson,
+          modalitiesJson: values.modalitiesJson,
+          supportsJson: values.supportsJson,
+          source: values.source,
+          enabled: values.enabled,
+          updatedAt: values.updatedAt,
+        },
+      })
+      .run();
+    return m;
+  }
+
+  getModel(id: string): Model | undefined {
+    const row = this.db.select().from(models).where(eq(models.id, id)).get();
+    return row === undefined ? undefined : rowToModel(row);
+  }
+
+  listModels(opts: { enabledOnly?: boolean; providerId?: string } = {}): Model[] {
+    const rows = this.db
+      .select()
+      .from(models)
+      .orderBy(asc(models.id))
+      .all()
+      .map(rowToModel)
+      .filter((m) => opts.providerId === undefined || m.providerId === opts.providerId);
+    return opts.enabledOnly === true ? rows.filter((m) => m.enabled) : rows;
+  }
+
+  deleteModel(id: string): void {
+    this.db.delete(models).where(eq(models.id, id)).run();
+  }
 
   // ── Tasks ────────────────────────────────────────────────────────────────
 
@@ -277,6 +382,33 @@ export class Repos {
         CostRecordSchema.parse({ ...r, pricingSnapshot: JSON.parse(r.pricingSnapshotJson) }),
       );
   }
+}
+
+function modelToRow(m: Model): typeof models.$inferInsert {
+  return {
+    id: m.id,
+    providerId: m.providerId,
+    upstreamId: m.upstreamId,
+    displayName: m.displayName,
+    contextWindow: m.contextWindow,
+    maxOutputTokens: m.maxOutputTokens,
+    pricingJson: JSON.stringify(m.pricing),
+    modalitiesJson: JSON.stringify(m.modalities),
+    supportsJson: JSON.stringify(m.supports),
+    source: m.source,
+    enabled: m.enabled,
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
+  };
+}
+
+function rowToModel(row: typeof models.$inferSelect): Model {
+  return ModelSchema.parse({
+    ...row,
+    pricing: JSON.parse(row.pricingJson),
+    modalities: JSON.parse(row.modalitiesJson),
+    supports: JSON.parse(row.supportsJson),
+  });
 }
 
 function rowToTask(row: typeof tasks.$inferSelect): Task {

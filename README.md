@@ -54,6 +54,11 @@ database.
 **Early development — phase 1 (MVP) in progress.** See [docs/progress.md](docs/progress.md)
 for the milestone board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
+Working today (M0–M3): the **plain routing** path end to end — `POST /v1/chat/completions`
+(streaming and not) and `GET /v1/models`, model resolution across all 27 upstreams, retry,
+SSE, and per-request cost metering. The orchestrator pseudo-model is listed but returns
+`501` until M5.
+
 ## Development
 
 ```sh

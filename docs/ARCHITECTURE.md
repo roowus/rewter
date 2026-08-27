@@ -273,6 +273,108 @@ whole events arriving in one read.
 its tests stub `globalThis.fetch` and restore it in `afterEach`; the other two SDKs take a
 `fetch` through `AdapterConfig`.
 
+## Router and the OpenAI surface
+
+Implemented in M3 — `packages/server/src/router/` and `packages/server/src/http/`.
+
+This is the pass-through path: everything between an OpenAI client's HTTP request and an
+adapter's normalized chunk stream. The orchestrator (M5) will sit *beside* it, not above
+it — `auto/orchestrator` diverts before resolution and currently returns `501`.
+
+### Model resolution
+
+Clients name models loosely. Claude Code sends `claude-sonnet-5`; a curl user copies
+`anthropic/claude-sonnet-5` off the dashboard; someone with two keys for the same weights
+wants `openrouter/anthropic/claude-sonnet-5`. `resolveModel()` tries four tiers, in
+decreasing confidence:
+
+1. **Exact registry id** — always wins, and is the only form that cannot be ambiguous.
+2. **Exact upstream id** — what the vendor's own docs call it.
+3. **Bare name** — the segment after the provider namespace.
+4. **Suffix match**, anchored on `/`, so `openrouter/anthropic/claude-x` finds
+   `anthropic/claude-x` and vice versa (and `sonnet-5` never matches `not-sonnet-5`).
+
+Each tier is tried *whole*: if the bare-name tier yields two hits, that is an
+`AmbiguousModelError` (→ HTTP 400), not a drop to a fuzzier tier that might yield one — a
+coincidence is not a disambiguation, and guessing here silently bills the wrong account.
+Disabled models are invisible to resolution; a model whose provider is disabled resolves and
+then fails loudly (`ProviderDisabledError` → 503) rather than vanishing into "unknown
+model".
+
+### Retry belongs to the router, not the adapter
+
+Adapters translate wire formats; only the router knows whether anything has been
+**delivered**. So retry lives here, and the rule is:
+
+> Retry the *connection attempt*. Stop the moment the first chunk escapes.
+
+A stream that has already emitted text cannot be retried — the client rendered those bytes,
+and replaying the call would duplicate them. A pre-emission error is therefore captured
+rather than yielded, and the retry-or-surface decision is made **once**, after the attempt
+loop, so there is a single give-up path:
+
+- Retryable and attempts remain → sleep `min(250·2ⁿ⁻¹, 4000)` ms and try again.
+- Otherwise → yield the upstream's **own message and `statusCode`**, annotated with
+  `(after N attempts)` when N > 1. The vendor's words are what a user can act on; how hard
+  we tried is the part they cannot see from outside.
+- A stream that yields **nothing at all** is a contract violation, but the caller still
+  needs a terminal chunk: the silence is treated as retryable, and after the last attempt
+  becomes a synthetic `produced no output in N attempts` error rather than a hang.
+- An adapter that *throws* instead of yielding an error chunk is a bug; it is caught and
+  converted to a terminal error chunk for the same reason.
+- **Aborts are never retried** — a cancelled request must not be resurrected.
+
+`Router.complete()` folds `Router.stream()` rather than calling `adapter.complete()`, so
+retry and cost recording have exactly one implementation and cannot drift between the
+streaming and non-streaming request shapes.
+
+### Cost recording
+
+On `message_end`, the router computes cost from a **snapshot** of the model's pricing and
+appends a `CostRecord` (+ `cost.recorded` event). Recorded once per request, not per
+attempt. `taskId` is nullable, so plain pass-through calls are metered too — the dashboard
+can price a bare routing session, not just orchestrations. A stream that dies before
+reporting usage records nothing rather than guessing.
+
+### SSE and the OpenAI wire format
+
+`SseWriter` writes `data: <json>\n\n` frames straight to `reply.raw`, ends with the literal
+`data: [DONE]\n\n`, and emits `: ping` comment lines every 15s while idle (an orchestration
+can think for minutes before its first token, and proxies cut idle sockets long before
+that). Client disconnect aborts the upstream call — nobody is waiting for those tokens, and
+on a paid upstream generating them costs real money.
+
+Two mismatches between our internal grammar and OpenAI's, both deliberate:
+
+- **Resolution happens before any bytes go out.** A bad model name must be a clean `404`;
+  once SSE headers are written there is no status code left to say it with.
+- **OpenAI's chunk schema has no error member**, but our `StreamChunk` grammar has a
+  terminal `error`. A mid-stream failure ships as a final frame with
+  `finish_reason: "stop"` plus a non-standard `error` field, followed by `[DONE]` — strict
+  clients still terminate cleanly, and clients that look find the reason. Usage is omitted
+  from the stream unless `stream_options.include_usage` asks for it.
+
+Requests are parsed permissively: unknown knobs (`top_p`, `seed`, `presence_penalty`, …) are
+ignored rather than rejected, because 400-ing over a parameter we merely don't forward yet
+would break clients for no benefit. `max_completion_tokens` is accepted alongside
+`max_tokens`; the `developer` role is normalized to `system` at the edge (no upstream but
+OpenAI has heard of it); the multi-part content array Claude Code sends is flattened to
+text.
+
+### Gateway status policy
+
+We are a gateway, so an upstream that fails is a **502** from where the client sits,
+whatever status the vendor chose. The exceptions are statuses that describe the *caller's*
+request — `400, 401, 403, 404, 413, 422, 429` — which are forwarded verbatim, because the
+client is the one who can act on them. Burying a rate limit or a rejected key under a
+generic 502 would hide the one thing they can fix.
+
+### Auth
+
+`/v1` takes an optional bearer token (`apiKey`); absent means open, which is the normal
+localhost-daemon case. `/internal` is never gated — it is localhost-bound and the dashboard
+holds no key.
+
 ## Tier-2 agent loop
 
 `WorkerAdapter` interface abstracts tiers (`run(ctx)`, optional `send()` for follow-up
@@ -301,11 +403,17 @@ done-pattern) so any CLI harness is addable by config.
 
 ## API surface
 
-- `POST /v1/chat/completions` — pass-through or orchestrator; stream + non-stream.
-- `GET /v1/models` — registry + pseudo-models.
+- `POST /v1/chat/completions` — pass-through or orchestrator; stream + non-stream. **Live.**
+  (Orchestrator returns `501` until M5.)
+- `GET /v1/models` — registry + pseudo-models. **Live.** `auto/orchestrator` is listed
+  **first** so it is visible in every client's model picker; disabled models are hidden.
 - `/internal`: tasks list/detail/`events?afterSeq=`, `cancel|steer|settings`, approvals
   list/resolve, models CRUD + `sync` + `generate-card`, provider CRUD, `costs?groupBy=`,
   `health`, and `WS /internal/ws` (`{subscribe, afterSeq?}` → replay then live).
+  Live today: `health` (with registry counts), `providers`, `models` (**including**
+  disabled ones, unlike `/v1/models`), `events?afterSeq=` (a non-numeric `afterSeq` reads
+  as 0 rather than erroring). Providers are safe to serve as-is: only the env var *name* is
+  ever stored.
 - Event envelope `{seq, ts, taskId, type, payload}`. The dashboard task tree is a **pure
   fold over the event stream**; the fold function lives in `shared`, tested once, used by
   both sides.

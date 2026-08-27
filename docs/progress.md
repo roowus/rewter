@@ -9,7 +9,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M0 | Repo scaffold + docs skeleton + CI + public repo | ✅ 2026-08-27 |
 | M1 | Shared contracts + DB (entities, state machines, drizzle schema, event bus) | ✅ 2026-08-27 |
 | M2 | Provider adapters + contract test suite | ✅ 2026-08-27 |
-| M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ⚪ |
+| M3 | Pass-through router + OpenAI endpoint + SSE + cost recording | ✅ 2026-08-27 |
 | M4 | Registry + capability cards + digest renderer | ⚪ |
 | M5 | Orchestrator + tier-1 fan-out + steering/handoff/cancellation | ⚪ |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
@@ -17,6 +17,55 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M3: pass-through router + OpenAI endpoint + SSE + cost recording
+
+rewter now answers OpenAI clients. See
+[ARCHITECTURE.md § Router and the OpenAI surface](ARCHITECTURE.md#router-and-the-openai-surface).
+
+- **Model resolution** (`router/resolve.ts`) — four tiers, decreasing confidence: exact
+  registry id → exact upstream id → bare name → `/`-anchored suffix match. Each tier is
+  tried *whole*, so two bare-name hits are a 400 `AmbiguousModelError`, never a drop to a
+  fuzzier tier that happens to yield one. A disabled provider is a loud 503, not a
+  disappearing model.
+- **Router** (`router/router.ts`) — retry lives here, not in adapters, because only this
+  layer knows whether bytes have been *delivered*. Retry applies to the connection attempt
+  and stops the instant the first chunk escapes; a pre-emission error is captured and the
+  retry-or-surface decision is made once, after the loop, so the upstream's own message and
+  `statusCode` survive (annotated `(after N attempts)` only when N > 1). Backoff
+  `min(250·2ⁿ⁻¹, 4000)`ms, injectable so tests never sleep. A silent stream and a throwing
+  adapter are both contract violations, and both still terminate the caller rather than
+  hanging. `complete()` folds `stream()` so retry and cost recording have one
+  implementation.
+- **Cost recording** — computed at `message_end` from a **pricing snapshot** (a later price
+  change cannot rewrite history), once per request rather than per attempt, and with a
+  nullable `taskId` so plain pass-through calls are metered too. A stream that dies before
+  reporting usage records nothing.
+- **SSE writer** (`http/sse.ts`) — byte-exact `data: …\n\n` framing over `reply.raw`,
+  literal `data: [DONE]\n\n` terminator, 15s `: ping` heartbeats (an orchestration can think
+  for minutes; proxies cut idle sockets long before that). Client disconnect aborts the
+  upstream call — on a paid upstream those tokens cost real money.
+- **`POST /v1/chat/completions`** — stream and non-stream. Resolution happens *before* any
+  bytes go out, because after SSE headers there is no status code left for a bad model name.
+  Permissive parsing: unknown knobs (`top_p`, `seed`, …) ignored rather than 400'd;
+  `max_completion_tokens` accepted; `developer` role normalized to `system`; Claude Code's
+  multi-part content array flattened.
+- **`GET /v1/models`** — `auto/orchestrator` listed first so it shows up in every model
+  picker; disabled models hidden. The pseudo-model itself returns a `501 not_implemented`
+  until M5, rather than silently routing to some arbitrary concrete model.
+- **Gateway status policy** — an upstream failure is a 502 from where the client sits,
+  *except* statuses that describe the caller's own request (400/401/403/404/413/422/429),
+  which are forwarded verbatim. A rate limit buried under a generic 502 hides the one thing
+  the client can fix.
+- **Bearer auth** on `/v1` (optional; absent = open localhost daemon). `/internal` stays
+  open — localhost-bound, and the dashboard holds no key.
+- Two bugs the new tests caught rather than review: the router's give-up branch was
+  **unreachable** for a final-attempt error (it fell through and lost the attempt count),
+  and the HTTP layer passed an upstream 500 straight through as a 500 instead of a 502.
+  Both fixed, both now pinned by tests.
+- 349 tests green (185 shared + 164 server; 95 of the server tests are M3, including 31
+  `app.inject()` wire-format tests asserting raw SSE bytes — the milestone's own
+  verification criterion).
 
 ### 2026-08-27 — M2: provider adapters + contract test suite
 

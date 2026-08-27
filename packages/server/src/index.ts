@@ -25,4 +25,27 @@ export {
   type Quirks,
 } from "./providers/types.js";
 
+export { FREE_PRICING, computeCost, type CostBreakdown } from "./costs/compute.js";
+
+export {
+  AmbiguousModelError,
+  ModelNotFoundError,
+  ORCHESTRATOR_MODEL,
+  ProviderDisabledError,
+  isOrchestratorModel,
+  pinnedInitiator,
+  resolveModel,
+  type Registry,
+  type Resolution,
+} from "./router/resolve.js";
+export { Router, type RouteRequest, type RouterOptions } from "./router/router.js";
+
+export { buildApp, type AppOptions } from "./http/app.js";
+export {
+  roleFrame,
+  toOpenAIChunk,
+  type StreamFrameContext,
+} from "./http/openai-stream.js";
+export { HEARTBEAT_MS, SseWriter, type SseWriterOptions } from "./http/sse.js";
+
 export const SERVER_VERSION = REWTER_VERSION;
