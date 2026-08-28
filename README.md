@@ -84,7 +84,7 @@ to the stream already in flight. A client that drops and comes back **adopts** i
 replaying everything it missed; one that stays gone has 30 seconds before the task is
 cancelled, so a Ctrl-C does not leave workers billing to nobody.
 
-In progress (M6): the **safety layer** tier-2 workers run inside, and the tools they run
+Also working (M6): the **safety layer** tier-2 workers run inside, and the tools they run
 with. The sandbox answers one question, *is this path inside the auto-approve zone*, on
 symlink-resolved paths, and refuses nothing: pointing a task at a real project directory is
 meant to put every write outside the zone, because that is exactly when you want to be
@@ -154,6 +154,17 @@ All three ran live on 2026-08-28, which is what closes M6. A `uname -a` parked, 
 retrying or dying; and an in-band `approve apr_…` re-POSTed with `x-rewter-task-id` both resolved
 the card and adopted the task, so the second stream replayed the feed and carried on while the
 original one also finished with the answer.
+
+In progress (M7): the **dashboard**. The first piece is the fold — `EventEnvelope[]` → task
+tree, in `@rewter/shared` so the daemon and the browser run one implementation and cannot
+disagree about what a task is doing. It folds one event at a time, because a dashboard replays
+history once and then lives on single events forever, and it drops anything at or below the
+`seq` it has already seen: replay and the live subscription overlap by design, and a
+re-delivered cost record must not bill you twice on screen. What it cannot reconstruct it says
+so about rather than inventing — worker labels are re-derived from creation order, results and
+errors are not in the stream at all, and an event for something it never saw created is counted
+in `orphanedEvents` instead of quietly dropped, so a fold that joined a task late cannot be
+mistaken for a complete one.
 
 ## Quickstart
 

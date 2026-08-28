@@ -25,10 +25,49 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6f | Approval routes + in-band `approve`/`deny` twin | ✅ 2026-08-28 |
 | M6g | `send_to_worker` (engine-side inbox, turn-boundary injection) | ✅ 2026-08-28 |
 | M6 | *acceptance: a gated shell command approved by curl mid-task* | ✅ 2026-08-28 |
-| M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
+| M7a | The fold: `EventEnvelope[]` → task tree, in `shared` | ✅ 2026-08-28 |
+| M7 | Dashboard (WS replay, task tree, approvals, kill, costs, registry editor) | 🟡 |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M7a: the fold, in `shared`, folding one event at a time
+
+`shared/src/fold.ts` reduces an `EventEnvelope[]` to a task tree. Both sides import it, which is
+the point: the daemon can fold to answer a question and the dashboard folds a WS replay, and
+neither can drift from the other. It is also why `GET /internal/tasks/:id` still does not exist.
+
+The unit is `applyEvent(state, event)` rather than a batch function, because a dashboard's life
+is one replay followed by a long tail of single events, and the same state has to survive that
+handover. Replay and the live subscription overlap by design, so an event at or below `lastSeq`
+returns the *identical* state object — a store can skip the render by identity, and a
+re-delivered `cost.recorded` cannot bill twice on screen.
+
+Three things the fold refuses to fake:
+
+- **Labels.** The engine's `w1`/`w2` never enter an event, so the fold re-derives them from
+  `work_item.created` order — correct only if it saw every creation.
+- **Results.** Transitions carry `{from, to}` and nothing else, so `status`/`updatedAt`/
+  `finishedAt` are patched (terminality read from the lifecycle maps, not a second hardcoded
+  list) and `resultSummary`/`error` stay `null`. The answer text lives in the response stream.
+- **Completeness.** An event for an entity it never saw created increments `orphanedEvents`
+  instead of vanishing, and `lastSeq` advances anyway. A mid-stream fold is legitimate; one that
+  *looks* complete is not.
+
+Cost splits initiator from workers (`initiatorCostUsd`), because "the planner cost more than the
+work" is the question this design exists to answer. Spend naming an unseen run still counts
+toward the task total — understating a bill is the one direction that display must not be wrong
+in.
+
+18 tests, built on a `seq`-assigning stream builder so inserting an event mid-fixture cannot
+silently renumber the ordering contract under test. The load-bearing one is the batch split:
+`fold([0,6))` then `fold([6,…))` must deep-equal `fold(all)`, since replay-then-live *is* that
+split. Shared 214 → 232; 947 across the workspace.
+
+Two events in the schema, `steering.received` and `worker_run.progress`, are folded but not yet
+emitted by the server — tier-2 narrates progress into the SSE feed without appending an event.
+The dashboard will show nothing for them until the engine appends; noted here so the gap is a
+decision and not a bug report later.
 
 ### 2026-08-28 — **M6 acceptance met live**: approve, deny, and the in-band reply
 

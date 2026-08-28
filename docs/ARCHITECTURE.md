@@ -1243,9 +1243,51 @@ conversation's* task, never another's.
 A denial comes back to the worker as a tool **result**, not an exception:
 `command not run: denied by the user: use the fixture instead`. A worker told why can adapt;
 one handed a crash cannot.
-- Event envelope `{seq, ts, taskId, type, payload}`. The dashboard task tree is a **pure
-  fold over the event stream**; the fold function lives in `shared`, tested once, used by
-  both sides.
+
+### The fold: events → task tree (M7a)
+
+The event envelope is `{seq, ts, taskId, payload}`, with the discriminator nested one level
+down on `payload.type`. The dashboard's view of a task is a **pure reduction over that
+stream** — `shared/src/fold.ts`, imported by both sides, which is the same reason there is no
+`GET /internal/tasks/:id`: two implementations of "what is this task doing" is two things that
+can disagree, and the one the user is looking at would be the one nobody tested.
+
+**Incremental by construction.** The unit is `applyEvent(state, event)`; `foldEvents` is a
+loop over it. A dashboard replays `events?afterSeq=N`, then receives live events one at a
+time, and the same `FoldState` survives that handover — a client never re-folds from zero to
+show one new line. Replay and the live subscription *overlap* by design (an event appended
+between the query and the subscribe arrives twice), so anything at or below `lastSeq` is
+dropped and returns the **identical state object**, which lets a store skip the render by
+identity. Without that guard a re-delivered `cost.recorded` bills the user twice on screen.
+
+**What the fold cannot know.** Status transitions travel as `{from, to}` and nothing else, so
+a folded entity gets `status`, `updatedAt` and `finishedAt` patched — all three derivable from
+the transition and the envelope's `ts`, with terminality read from the lifecycle maps
+(`isTerminal`) rather than a second hardcoded list — while `resultSummary` and `error` stay as
+they were at creation, i.e. `null`. The final answer is read from the response stream, not
+from here.
+
+**Labels are derived, not transmitted.** The engine names workers `w1`, `w2`, … by spawn
+order and that name appears in the user's feed, but it is engine-local state that never enters
+an event. The fold reassigns it from `work_item.created` order — the same order, *provided the
+fold saw every creation*.
+
+**`orphanedEvents` is the honesty counter.** An event naming a task, work item or run this
+fold never saw created is counted, not dropped, and `lastSeq` still advances (refusing to
+record a seen event would make the next `?afterSeq=` ask for it forever). A fold that starts
+mid-stream is a legitimate thing to want; it just cannot be complete, and silently discarding
+the evidence would make an incomplete tree look like a complete one — including its labels.
+
+**Cost is split, not just totalled.** Records land on the run that spent them and roll up to
+the work item and the task. A record with no `workerRunId` is the **initiator's own**, tracked
+separately because "the planner cost more than the work" is the question this whole design
+exists to answer and a single total hides it. A record naming a run the fold never saw still
+counts toward the task total — dropping money because the fold started late would understate
+the bill, which is the one direction a cost display must not be wrong in.
+
+Tested in `fold.test.ts` against a `seq`-assigning stream builder rather than hand-numbered
+fixtures. The load-bearing case is the batch split: folding `[0,6)` then `[6,…)` must deep-equal
+folding all of it at once, because replay-then-live *is* that split.
 
 ## Phases
 
