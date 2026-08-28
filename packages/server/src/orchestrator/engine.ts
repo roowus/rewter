@@ -204,6 +204,26 @@ export class Orchestrator {
   }
 
   /**
+   * Kill a running task: abort its controller and let its own stream finish.
+   *
+   * Deliberately *only* aborts. The row write is the driving stream's job — it
+   * already ends with `transitionTask(…, "cancelled")` and a `⊘ task cancelled`
+   * line carrying what was spent. Writing the row here too would race that, and
+   * the loser gets `IllegalTransitionError: cancelled → cancelled` thrown into a
+   * generator nobody is catching for.
+   *
+   * Returns false when there is no live session, which is not an error: the task
+   * may have finished, or predate a restart. The caller settles the row itself
+   * and says which happened — the same honesty `resumedWorker` gives approvals.
+   */
+  cancel(taskId: TaskId): boolean {
+    const session = this.sessions.get(taskId);
+    if (session === undefined) return false;
+    session.abort();
+    return true;
+  }
+
+  /**
    * Tell the engine where it is reachable.
    *
    * Separate from the constructor because of a boot ordering fact: the daemon
@@ -418,6 +438,14 @@ class Session {
   /** The approval gate, if this task has ever needed one. */
   gate(): Approvals | null {
     return this.tier2?.approvals ?? null;
+  }
+
+  /**
+   * Collapse the worker tree. The stream sees the aborted signal at its next
+   * step and writes the terminal row itself, so nothing here touches the DB.
+   */
+  abort(): void {
+    this.o.abort.abort();
   }
 
   /**

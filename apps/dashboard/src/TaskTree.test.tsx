@@ -21,8 +21,8 @@ import {
   newWorkItemId,
   newWorkerRunId,
 } from "@rewter/shared";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskTree } from "./TaskTree.js";
 
 const now = 1_756_252_800_000;
@@ -136,7 +136,16 @@ const foldOne = (events: EventEnvelope[]) => {
   return task;
 };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+const okResponse = (body: unknown): Response =>
+  new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 
 describe("TaskTree", () => {
   it("renders the task, its worker, and the worker's own progress note", () => {
@@ -214,5 +223,94 @@ describe("TaskTree", () => {
     );
 
     expect(screen.getByText("2 attempts")).toBeDefined();
+  });
+});
+
+describe("TaskTree — the kill button", () => {
+  /** The same scenario, taken to a terminal status through the real fold. */
+  const finished = (): EventEnvelope[] => [
+    ...scenario(),
+    envelope({ type: "task.status_changed", taskId, from: "running", to: "succeeded" }),
+  ];
+
+  it("posts a cancel for the task it is rendered inside", async () => {
+    const fetchImpl = vi.fn(async () => okResponse({ aborted: true }));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Kill"));
+
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`/internal/tasks/${taskId}/cancel`);
+    expect(init.method).toBe("POST");
+  });
+
+  it("is absent on a task that has already finished", () => {
+    // Offering it would be offering the 409, and the status beside it already
+    // says the task is over.
+    render(<TaskTree task={foldOne(finished())} now={now} />);
+    expect(screen.queryByText("Kill")).toBeNull();
+    expect(screen.getByText("succeeded")).toBeDefined();
+  });
+
+  it("leaves the task showing running until the fold says otherwise", async () => {
+    // Same rule as the approval card: the click does not recolour the status.
+    // A kill the daemon refused must not leave the UI claiming a dead task.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => okResponse({ aborted: true })),
+    );
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Kill"));
+
+    await screen.findByText("cancelling");
+    expect(screen.getByText("running")).toBeDefined();
+  });
+
+  it("says when the row was settled but nothing was actually running", async () => {
+    // A task from before a restart: the row said running, but no session
+    // existed. Reported rather than flattened into "cancelled" — they are
+    // different things to have done.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => okResponse({ aborted: false })),
+    );
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Kill"));
+
+    await screen.findByText("recorded — nothing was running");
+  });
+
+  it("re-enables itself when the daemon could not be reached", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    const kill = screen.getByText("Kill") as HTMLButtonElement;
+    fireEvent.click(kill);
+
+    await screen.findByText("daemon unreachable");
+    expect(kill.disabled).toBe(false);
+  });
+
+  it("stays disabled once a kill landed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => okResponse({ aborted: true })),
+    );
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    const kill = screen.getByText("Kill") as HTMLButtonElement;
+    fireEvent.click(kill);
+
+    await screen.findByText("cancelling");
+    expect(kill.disabled).toBe(true);
   });
 });

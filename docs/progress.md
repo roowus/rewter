@@ -28,10 +28,42 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7a | The fold: `EventEnvelope[]` → task tree, in `shared` | ✅ 2026-08-28 |
 | M7b | `WS /internal/ws` — replay then live, over one socket | ✅ 2026-08-28 |
 | M7c | Dashboard app: store, task tree, approval cards | ✅ 2026-08-28 |
-| M7 | Dashboard (+ kill, costs page, registry editor) | 🟡 |
+| M7d | Kill: `POST /internal/tasks/:id/cancel` + the button | ✅ 2026-08-28 |
+| M7 | Dashboard (+ costs page, registry editor) | 🟡 |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M7d: kill, and the question of who writes the row
+
+`POST /internal/tasks/:id/cancel`, plus the button in the task header. 1025 tests green
+(from 929). Closes the first third of [#6](https://github.com/roowus/rewter/issues/6).
+
+The route is four lines of intent and one real hazard. A live orchestration's driving stream
+**already** writes its own terminal row — `transitionTask(…, "cancelled")` and a
+`⊘ task cancelled (spent …)` line. A route that wrote that row too would race it, and because
+`cancelled` is terminal in `TASK_TRANSITIONS` the loser gets `IllegalTransitionError:
+cancelled → cancelled` thrown into a generator with no catch anywhere above it. So
+`Orchestrator.cancel()` **only** aborts the task's controller and touches no tables; the
+stream finishes its own sentence.
+
+That gives three outcomes, reported rather than flattened into "cancelled":
+
+- **live** → `200 {aborted: true}` — the tree is collapsing; the row lands a moment later.
+- **no session** → `200 {aborted: false}` — a task from before a restart, whose `running` was
+  a lie on disk. The route settles it here. Same honesty `resumedWorker` gives approvals: "I
+  cut off your workers" and "I tidied a stale row" are different things to have done.
+- **already terminal** → `409` — the double-click, or the task finishing between render and
+  click. Refusing is how the state machine is kept from seeing a transition that would throw.
+
+The live-kill test hangs the worker's upstream call until its signal aborts, which is the only
+state where a kill is distinguishable from a no-op — verified by mutation: deleting
+`session.abort()` from `cancel()` hangs the test rather than passing it. A worker that had
+already reported would have left nothing to collapse.
+
+The button reuses the approval card's rule — no optimistic hiding, no recolouring the status,
+buttons back only on failure — and is absent entirely on a terminal task, since offering it
+would be offering the 409.
 
 ### 2026-08-28 — known gaps moved into the issue tracker
 

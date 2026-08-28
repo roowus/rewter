@@ -22,9 +22,11 @@ import {
   SocketClientMessageSchema,
   type SocketServerMessage,
   type StreamChunk,
+  TASK_TRANSITIONS,
   type TaskId,
   fromAnthropicMessages,
   fromAnthropicTools,
+  isTerminal,
   toAnthropicStopReason,
   toAnthropicUsage,
   toChatMessages,
@@ -467,6 +469,50 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       // False here means the row was settled for the audit trail but no worker
       // was released — see `resolveApproval`.
       resumedWorker: outcome.parked,
+    };
+  });
+
+  // ── Kill ──────────────────────────────────────────────────────────────────
+  /**
+   * Cancel a task. Two paths, and the response says which one ran.
+   *
+   * A **live** task is only *aborted* here: its own stream owns the row write
+   * and ends with `transitionTask(…, "cancelled")` plus a `⊘ task cancelled`
+   * line carrying what was spent. Writing the row from both places races, and
+   * the loser throws `cancelled → cancelled` into a generator with no catch.
+   * So `aborted: true` means "the tree is collapsing", not "the row says
+   * cancelled" — those are milliseconds apart and the second is not ours.
+   *
+   * A task with **no** live session (finished, or from before a restart) has
+   * nothing to abort. If its row is still non-terminal it is a lie a restart
+   * left behind, so we settle it; if it is already terminal we report that
+   * rather than claiming a kill that killed nothing.
+   */
+  app.post("/internal/tasks/:id/cancel", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const task = repos.getTask(id);
+    if (task === undefined) {
+      return reply.code(404).send({ error: { message: `no such task: ${id}` } });
+    }
+
+    const aborted = orchestrator?.cancel(id as TaskId) ?? false;
+    if (aborted) return { task: repos.getTask(id), aborted: true, alreadyFinished: false };
+
+    if (isTerminal(TASK_TRANSITIONS, task.status)) {
+      // 409 rather than 200: the caller asked for something that cannot happen,
+      // and a 200 would read as "killed" in a log.
+      return reply.code(409).send({
+        error: { message: `task is already ${task.status}` },
+        task,
+        aborted: false,
+        alreadyFinished: true,
+      });
+    }
+
+    return {
+      task: repos.transitionTask(id, "cancelled", { error: "cancelled from the dashboard" }),
+      aborted: false,
+      alreadyFinished: false,
     };
   });
 

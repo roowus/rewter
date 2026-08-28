@@ -1211,7 +1211,9 @@ done-pattern) so any CLI harness is addable by config.
   disabled ones, unlike `/v1/models`), `events?afterSeq=[&taskId=]` (a non-numeric
   `afterSeq` reads as 0 rather than erroring), approvals — `GET
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
-  and `WS /internal/ws` (see below).
+  `POST /internal/tasks/:id/cancel` (`{task, aborted, alreadyFinished}`; 404 unknown, 409
+  already terminal — see [Kill](#kill-who-writes-the-row-m7d)), and `WS /internal/ws`
+  (see below).
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -1390,9 +1392,45 @@ Component tests drive `foldEvents` over real envelopes rather than hand-built `F
 literals — a hand-built one is a second opinion about what the fold produces, and those tests
 would keep passing after the fold changed shape.
 
-Still unbuilt in M7, and server work first in each case: the kill button needs
-`POST /internal/tasks/:id/cancel`, the costs page needs `GET /internal/costs?groupBy=`, and
-the registry editor needs the models CRUD routes.
+### Kill: who writes the row (M7d)
+
+`POST /internal/tasks/:id/cancel` is the dashboard's kill button, and the whole design of it
+is a single question — **who writes the terminal row.**
+
+A live orchestration's driving stream already ends with `transitionTask(…, "cancelled")` and a
+`⊘ task cancelled (spent …)` line. So the route must **not** also write that row. Two writers
+race, and because `cancelled` is terminal in `TASK_TRANSITIONS`, the loser gets
+`IllegalTransitionError: cancelled → cancelled` thrown into a generator nobody is catching
+for. `Orchestrator.cancel(taskId)` therefore only aborts — one `signal.abort()` on the task's
+controller, which the worker tree is chained to — and touches no tables at all.
+
+That leaves the route with two outcomes it reports rather than flattens:
+
+| | | |
+|---|---|---|
+| live session | `200 {aborted: true}` | tree collapsing; **its own stream** settles the row |
+| no session | `200 {aborted: false}` | the route settles the row itself |
+| terminal | `409` | nothing to kill |
+
+The middle case is a task from before a restart: the row says `running` but no session exists,
+so the `running` is a lie on disk and settling it here is the repair. It looks identical in
+the tree a second later and is a very different thing to have done, so the button says which
+one happened — the same honesty `resumedWorker` gives approvals. The 409 covers both the
+double-click and the task finishing between render and click; refusing is how the state
+machine is protected from a request that would throw at it.
+
+The button (`KillButton` in `TaskTree.tsx`) follows the approval card's rule: it does not
+recolour the status or remove itself on click. The kill returns as a `task.status` event and
+the fold changes the tree — so a POST the daemon refused leaves the UI still showing a running
+task, which is the truth. It is absent entirely on a terminal task, because offering it would
+be offering the 409.
+
+The engine-side test hangs a worker's upstream call until its signal aborts, which is the only
+state where a kill is distinguishable from a no-op: a worker that had already reported leaves
+nothing to collapse, and the test would pass against a `cancel()` that did nothing.
+
+Still unbuilt in M7, and server work first in each case: the costs page needs
+`GET /internal/costs?groupBy=`, and the registry editor needs the models CRUD routes.
 
 ## Phases
 

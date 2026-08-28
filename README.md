@@ -185,8 +185,17 @@ approval card does **not** hide itself when you click it — it disables its but
 tells you what the daemon said; the card leaves when the resolution folds. Hiding on click
 would leave the UI claiming an approval that a failed POST never recorded.
 
-Still to come in M7 — each blocked on a route that does not exist yet: kill, a costs page, and
-the registry editor.
+The kill button follows the same rule, and it is worth saying what it does *not* do: it does
+not write the cancelled row. A live task's own stream already ends by writing that row and
+saying what it spent, so a second writer would race it — and since `cancelled` is terminal,
+the loser throws at the state machine. The route just aborts the task's controller and lets
+the stream finish its own sentence. When there is no live session — a task from before a
+restart, whose `running` is a lie left on disk — the route settles the row itself and says so,
+because "I cut off your workers" and "I tidied up a stale row" are different things to have
+done. Clicking a task that already finished gets a 409 rather than a fake success.
+
+Still to come in M7 — each blocked on a route that does not exist yet: a costs page and the
+registry editor.
 
 ## Quickstart
 

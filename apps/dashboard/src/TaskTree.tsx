@@ -7,8 +7,16 @@
  * (`resultSummary`, `error` — see `fold.ts`) this shows what it does have rather
  * than inventing a placeholder.
  */
-import { type FoldedTask, type FoldedWorkItem, pendingApprovals } from "@rewter/shared";
+import {
+  type FoldedTask,
+  type FoldedWorkItem,
+  TASK_TRANSITIONS,
+  isTerminal,
+  pendingApprovals,
+} from "@rewter/shared";
+import { useState } from "react";
 import { ApprovalCard } from "./ApprovalCard.js";
+import { cancelTask } from "./cancel.js";
 import { clockTime, elapsed, shortModelId, usd } from "./format.js";
 
 /** Status drives colour via a data attribute; the CSS owns the palette. */
@@ -53,8 +61,43 @@ function WorkItemRow({ item, now }: { item: FoldedWorkItem; now: number }): JSX.
   );
 }
 
+/**
+ * The kill button.
+ *
+ * Same rule as the approval card: it does not remove itself or recolour the
+ * status on click. The kill travels to the daemon, comes back as a `task.status`
+ * event, and the fold is what changes the tree — so a POST the daemon refused
+ * leaves the UI still showing a running task, which is the truth.
+ *
+ * It stays disabled after a successful click because the task is on its way to
+ * terminal, and a second click on a cancelled task is the 409 case.
+ */
+function KillButton({ taskId }: { taskId: string }): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<string | null>(null);
+
+  async function kill(): Promise<void> {
+    setBusy(true);
+    const result = await cancelTask(taskId);
+    setOutcome(result.message);
+    if (!result.ok) setBusy(false);
+  }
+
+  return (
+    <>
+      <button type="button" className="kill" onClick={() => void kill()} disabled={busy}>
+        Kill
+      </button>
+      {outcome !== null && <span className="kill-outcome">{outcome}</span>}
+    </>
+  );
+}
+
 export function TaskTree({ task, now }: { task: FoldedTask; now: number }): JSX.Element {
   const pending = pendingApprovals(task);
+  // A finished task has nothing to kill, and offering the button anyway would
+  // be offering the 409.
+  const live = !isTerminal(TASK_TRANSITIONS, task.task.status);
 
   return (
     <section className="task" aria-label={task.task.title}>
@@ -63,6 +106,7 @@ export function TaskTree({ task, now }: { task: FoldedTask; now: number }): JSX.
         <Status value={task.task.status} />
         <span className="model">{shortModelId(task.task.initiatorModelId)}</span>
         <span className="elapsed">{elapsed(task.task, now)}</span>
+        {live && <KillButton taskId={task.task.id} />}
       </header>
 
       {/* The split this design exists to justify: if the planner outspends the
