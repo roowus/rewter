@@ -61,6 +61,29 @@ export function askUserLine(question: string, taskId: string): string {
   return `${GLYPH.paused} ${question}\n   (reply in this conversation, or answer in the dashboard — task ${taskId})`;
 }
 
+/**
+ * A worker's own `report_progress` note.
+ *
+ * Labelled by worker rather than merged into the feed anonymously: a tier-2 loop
+ * runs for minutes alongside three others, and "wrote the fixture" means nothing
+ * if you cannot tell which of them wrote it.
+ */
+export function workerNoteLine(opts: { label: string; note: string }): string {
+  return `${GLYPH.note} [${opts.label}] ${firstLine(opts.note)}`;
+}
+
+/**
+ * A parked approval, shown in the feed with the two ways to answer it.
+ *
+ * The full id is printed, not the label, because the REST route and the in-band
+ * reply both address it by id — and a user who is about to authorize a shell
+ * command should be reading the same identifier the audit row carries.
+ */
+export function approvalLine(opts: { approvalId: string; summary: string }): string {
+  const how = `reply "approve ${opts.approvalId}" or "deny ${opts.approvalId}", or answer in the dashboard`;
+  return `${GLYPH.paused} approval needed — ${firstLine(opts.summary)}\n   (${how})`;
+}
+
 export function handoffLine(opts: { toModel: string; reason: string }): string {
   return `${GLYPH.handoff} handing off to ${opts.toModel}: ${firstLine(opts.reason)}`;
 }

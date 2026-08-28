@@ -11,10 +11,10 @@
  *  - The engine yields `StreamChunk`s indistinguishable from a model call's, so
  *    progress lines are ordinary `text_delta`s and the HTTP layer needs no
  *    special case. Every test reads the feed as text.
- *  - Bad model behaviour never throws. A hallucinated model id, an unavailable
- *    tier, an unknown worker label and a self-handoff are all *tool results*, and
- *    the task carries on. A task that dies because a model guessed wrong would
- *    be the worst possible trade.
+ *  - Bad model behaviour never throws. A hallucinated model id, a tier that does
+ *    not exist yet, an unknown worker label and a self-handoff are all *tool
+ *    results*, and the task carries on. A task that dies because a model guessed
+ *    wrong would be the worst possible trade.
  */
 import {
   type ChatMessage,
@@ -525,18 +525,39 @@ describe("failures the initiator can recover from", () => {
     );
   });
 
-  it("explains that tiers 2 and 3 have not arrived yet", async () => {
+  it("spawns a tier-2 worker and labels the feed line with its tier", async () => {
     const h = makeHarness([
       turn({
         name: "spawn_worker",
-        args: { title: "x", model: SMALL, instructions: "x", tier: 2 },
+        args: { title: "patch the config", model: SMALL, instructions: "x", tier: 2 },
+      }),
+      turn({ name: "wait", args: {} }),
+      turn({ name: "finish", args: { answer: "patched" } }),
+    ]);
+
+    const { feed } = await drive(h);
+    // The stub runner stands in for the real loop; what is under test is that the
+    // engine routes tier 2 to *a* runner and narrates the tier it was given.
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]?.workItem.tier).toBe(2);
+    expect(feed).toContain(`[w1 · ${SMALL} · tier2]`);
+    expect(repos.listWorkItems(only(tasks())?.id ?? "")[0]?.tier).toBe(2);
+  });
+
+  it("explains that tier 3 has not arrived yet, and points at tier 2", async () => {
+    const h = makeHarness([
+      turn({
+        name: "spawn_worker",
+        args: { title: "x", model: SMALL, instructions: "x", tier: 3 },
       }),
       turn({ name: "finish", args: { answer: "did it myself" } }),
     ]);
 
     await drive(h);
     expect(h.spawned).toHaveLength(0);
-    expect(JSON.stringify(h.adapter.requests.at(-1)?.messages ?? [])).toContain("milestone M6");
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("tier 3 workers");
+    expect(sent).toContain("Use tier 2");
   });
 
   it("nudges a model that answered in prose, then accepts the prose", async () => {

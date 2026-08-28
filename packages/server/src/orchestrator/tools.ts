@@ -13,15 +13,16 @@
  * the same "unreliable narrator" discipline `registry/cards.ts` applies to card
  * generation, applied to arguments instead of output.
  *
- * `send_to_worker` from the design is deliberately absent in M5: a tier-1 worker
+ * `send_to_worker` from the design is still deliberately absent: a tier-1 worker
  * is a single model call with no inbox, so declaring the tool would be offering
- * the initiator something that cannot work. It arrives with tier 2.
+ * the initiator something that cannot work for most of what it spawns. It lands
+ * once a tier-2 loop can take a mid-run message.
  */
 import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 1;
+export const ORCHESTRATOR_TOOLS_VERSION = 2;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -125,8 +126,10 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
             type: "integer",
             enum: [1, 2, 3],
             description:
-              "1 = one model call, no tools (default). 2 = agent loop with file/shell/web " +
-              "tools. 3 = external coding harness. Tiers 2 and 3 are not available yet.",
+              "1 = one model call, no tools (default) — use it for anything that is just " +
+              "thinking, writing or summarizing. 2 = agent loop with file, shell and web " +
+              "tools in a workspace — use it when the subtask has to read or change something. " +
+              "3 = external coding harness, not available yet.",
           },
         },
         required: ["title", "model", "instructions"],

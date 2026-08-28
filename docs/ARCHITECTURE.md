@@ -411,8 +411,20 @@ caller typed.
 `plan_note`, `spawn_worker` (returns a label **immediately** — parallel fan-out is several
 spawns in one turn onto a p-limit scheduler, default concurrency 4), `wait({labels?,
 mode:"all"|"any"})`, `get_result`, `cancel_worker`, `ask_user`, `handoff({to_model, reason,
-context_summary})`, `finish({summary})`. (`send_to_worker` arrives with tier 2 in M6; a
-tier-1 worker has nothing to receive.)
+context_summary})`, `finish({summary})`. (`send_to_worker` is still absent: a tier-1 worker
+has no inbox, and the tier-2 loop does not yet read one mid-run.)
+
+`spawn_worker`'s `tier` accepts **1 or 2**; 3 comes back as a tool *result* explaining that
+external harnesses are not available and pointing at tier 2, because a refusal the model can
+read and re-spawn from costs one turn where a thrown error costs the task. The description the
+model sees says what each tier is *for* — tier 1 for thinking, writing, summarizing; tier 2
+when the subtask has to read or change something — since the initiator picks the cheapest
+sufficient tier and cannot do that from a bare number. `ORCHESTRATOR_TOOLS_VERSION` is 2.
+
+Now that tier 2 exists, `concurrency` (default 4) bounds **agent loops**, not just single
+calls. The same number that used to cap four simultaneous one-shot completions now caps four
+simultaneous multi-minute loops, each with its own shell and file access — a materially
+larger thing to have four of, and the reason the default did not go up with the new tier.
 
 `wait` returns **summaries**, not full text: the initiator pulls the body with `get_result`
 only for the workers whose detail it actually needs. In `"any"` mode a worker that finished
@@ -439,13 +451,23 @@ signal is the only thing that can tell them apart.
 ```
 ◆ plan: split into 3 subtasks          (dashboard: http://localhost:PORT/t/task_x)
 ▶ [w1 · gemini-flash · tier1] summarize repo docs — started
-⏸ approval needed: shell `pnpm test` — approve in dashboard or reply "approve w2"
-✔ [w1] done ($0.002, 3.1s)     ✖ [w2] failed: 429 rate limited     ⊘ [w3] cancelled
+▶ [w2 · claude-sonnet-5 · tier2] patch the failing test — started
+· [w2] read src/foo.ts, found the off-by-one
+⏸ approval needed — shell: pnpm test
+   (reply "approve apr_x" or "deny apr_x", or answer in the dashboard)
+✔ [w1] done ($0.002, 3.1s)     ✖ [w3] failed: 429 rate limited     ⊘ [w4] cancelled
 ── final answer from finish() ──
 ```
 
 Lines produced while awaiting a worker are queued and flushed at the next yield point, so a
 generator that is parked inside `Promise.race` still gets its narration out in order.
+
+Two of those lines come from *inside* a tier-2 worker rather than from the initiator. A
+worker's `report_progress` note is labelled with its own `w<n>` (`workerNoteLine`), because
+four loops running for minutes make an unlabelled "wrote the fixture" meaningless. An approval
+prints the **full approval id**, not the label: the REST route and the in-band reply both
+address it by id, and someone about to authorize a shell command should be reading the same
+identifier the audit row carries.
 
 ### Handoff
 
@@ -824,6 +846,7 @@ Everything has a default, so the file is optional and an empty `{}` is valid.
   "port": 20130,                    // not 20128 — that is 9router's, so both can run at once
   "host": "127.0.0.1",
   "dbPath": "~/.rewter/rewter.db",  // a leading ~ is expanded; ":memory:" works for throwaway runs
+  "workspacesDir": "~/.rewter/workspaces",  // one dir per task; NOT under dbPath, on purpose
   "apiKeyEnv": "REWTER_API_KEY",    // env var NAME holding the bearer token /v1 requires
   "providers": [
     { "preset": "anthropic" },
@@ -1072,6 +1095,48 @@ ungated for temporaries and needs telling that its own working directory is not 
 two are the same, a second path would only suggest they differ.
 `ORCHESTRATOR_PROMPT_VERSION` is 2 — the tier ladder no longer says tier 2 is unavailable, and
 now warns that work outside the workspace may pause for approval.
+
+### Wiring tier 2 into the engine (M6e)
+
+The engine picks a runner **per work item, by tier**, in `Session.runnerFor`. Tier 1 goes
+straight to `runTier1Worker`; tier 2 goes to a runner built from the task's workspace and
+approval gate. An explicit `runWorker` option overrides *every* tier — that is the test seam,
+and a dispatcher that honoured it for tier 1 but quietly ignored it for tier 2 would make a
+tier-2 engine test reach the real filesystem.
+
+- **The workspace and gate are opened on the first tier-2 spawn, not in the constructor.**
+  Opening a workspace mkdirs a directory, and the overwhelming majority of tasks are pure
+  tier-1 fan-outs that would otherwise leave an empty directory behind each.
+- **Both are per-task, shared by every tier-2 worker on it.** Two workers on one task write
+  to the same directory, and a denial one of them collected is a denial the other must not
+  re-ask for — which is exactly the memory `Approvals` already keeps.
+- **The runner is resolved before the concurrency limiter, not inside it.** A queued tier-2
+  worker's workspace therefore exists — and its gate is reachable over HTTP — from the moment
+  it is spawned rather than from whenever a slot frees up.
+- **`autoApprove` is read through a closure, not captured.** The user may flip the per-task
+  toggle in the dashboard while the task runs, and the next gate check should see it.
+
+`Orchestrator.sessions` is a `Map<TaskId, Session>` of live orchestrations, and
+`approvalsFor(taskId)` is what makes the M6 approval route possible: the pending Approval row
+is in the database either way, but the **promise the worker is parked on only exists in
+memory**, so resolving the row alone would leave the worker waiting forever. `null` is the
+ordinary answer for a task that has finished or predates a restart — the caller then resolves
+the row through `repos` and reports that no worker was waiting, rather than pretending it
+unblocked something.
+
+Registration is torn down from two places, because the two failure modes are different: the
+stream's `finally` covers normal completion, and an `abort` listener covers a `start()` whose
+stream is never pulled (which never runs that `finally`). `dispose` is idempotent, and it also
+calls `approvals.cancel()` — cancelling workers aborts their signals, but a worker parked in
+`approvals.require` is waiting on a *promise*, not a signal, and without that it would hold
+the stream open for a click that is never coming. A task cancelled before its first tier-2
+worker parks gets a gate that refuses rather than one that waits.
+
+Where the workspaces live is config: `workspacesDir` (default `~/.rewter/workspaces`).
+Deliberately **not** under `dbPath` — a worker that gets creative with a relative path should
+not be able to walk into the database file. The engine's own fallback, used when an embedder
+or a test never configures one, is under `tmpdir()` rather than `~/.rewter`, so an omission
+cannot put a worker's writes in a real home directory.
 
 ## Tier-3 seam (phase 2, types committed in phase 1)
 

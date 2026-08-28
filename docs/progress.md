@@ -21,11 +21,59 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6b | Approval choke point (`approvals.require`, read-only allowlist) | ✅ 2026-08-28 |
 | M6c | Tier-2 tool surface + executor (10 tools, every one gated) | ✅ 2026-08-28 |
 | M6d | Tier-2 agent loop (`runTier2Worker`) + its system prompt | ✅ 2026-08-28 |
-| M6 | Tier-2 engine wiring + `send_to_worker` + approval routes | 🟡 in progress |
+| M6e | Tier-2 engine wiring (tier dispatcher, per-task gate, feed lines) | ✅ 2026-08-28 |
+| M6 | `send_to_worker` + approval routes + the gated-shell acceptance | 🟡 in progress |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M6e: tier 2, spawnable
+
+The loop existed; nothing could ask for it. `spawn_worker` refused every tier above 1, so
+M6a–M6d were four green modules the initiator had no way to reach. Now the engine picks a
+runner **by tier** (`Session.runnerFor`): tier 1 to `runTier1Worker`, tier 2 to a runner bound
+to the task's workspace and approval gate, and only tier 3 still comes back as a refusal —
+worded to point at tier 2 rather than to say "not yet", since a refusal the model can act on
+costs one turn.
+
+- **The workspace and gate open on the first tier-2 spawn, not in the constructor.** Opening a
+  workspace mkdirs a directory, and most tasks are pure tier-1 fan-outs that would each leave
+  an empty one behind.
+- **Both are per-task**, shared by every tier-2 worker on it: two workers write to the same
+  directory, and a denial one collected must not be re-asked by the other.
+- **The runner resolves before the concurrency limiter**, so a queued worker's gate is
+  reachable over HTTP from the moment it is spawned, not from whenever a slot frees up.
+- **`Orchestrator.sessions` + `approvalsFor(taskId)`** is what makes the approval route
+  possible at all: the pending row is in the database, but the *promise the worker is parked
+  on* only exists in memory, so resolving the row alone would leave it waiting forever. `null`
+  for a finished or pre-restart task is the honest answer, not a failure.
+- **Two teardown paths, because there are two failure modes**: the stream's `finally` for
+  normal completion, and an `abort` listener for a `start()` whose stream is never pulled (that
+  `finally` never runs). `dispose` also cancels the gate — aborting a worker's signal does not
+  wake one parked on a promise, and it would hold the stream open for a click never coming.
+- **An explicit `runWorker` overrides every tier**, not just tier 1. A dispatcher that ignored
+  the test seam for tier 2 would send engine tests at the real filesystem.
+
+Two new feed lines come from *inside* a worker: `· [w2] <note>` for its own
+`report_progress`, labelled because four concurrent loops make an unlabelled note meaningless,
+and `⏸ approval needed — …` carrying the **full approval id** rather than the label, since the
+REST route, the in-band reply and the audit row all address it by id.
+
+Config gained `workspacesDir` (default `~/.rewter/workspaces`), deliberately *not* under
+`dbPath`: a worker creative with a relative path should not be able to reach the database file.
+The engine's own fallback is under `tmpdir()`, so an embedder that configures nothing cannot
+have a worker write into a real home directory.
+
+One meaning changed quietly and is worth naming: `concurrency` (default 4) now bounds
+**agent loops**, not just single model calls. Four simultaneous multi-minute loops each with a
+shell is a materially larger thing to have four of than four one-shot completions — which is
+why the default did not rise with the tier.
+
+- 893 tests green (214 shared + 658 server + 21 CLI). The tier test that asserted "tier 2 is
+  not available" became two: one that spawns tier 2 and asserts it *ran* and that the feed
+  says `tier2`, one that spawns tier 3 and asserts the refusal still names tier 2 as the way
+  forward.
 
 ### 2026-08-28 — M6d: the tier-2 agent loop
 

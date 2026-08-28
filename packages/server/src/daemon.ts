@@ -112,6 +112,10 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     repos,
     bus,
     defaultInitiatorModel: config.orchestrator.initiatorModel,
+    // Not created here: `openWorkspace` mkdirs the per-task directory (and its
+    // parents) on the first tier-2 spawn, so a daemon that never orchestrates
+    // never makes the directory.
+    workspacesDir: expandPath(config.workspacesDir),
     maxTurns: config.orchestrator.maxTurns,
     maxHandoffs: config.orchestrator.maxHandoffs,
     defaultSettings: {

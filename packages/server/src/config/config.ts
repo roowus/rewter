@@ -107,6 +107,14 @@ export const ConfigSchema = z.object({
   host: z.string().min(1).default("127.0.0.1"),
   port: z.number().int().min(0).max(65_535).default(DEFAULT_PORT),
   dbPath: z.string().min(1).default("~/.rewter/rewter.db"),
+  /**
+   * Where tier-2 workers get their per-task workspace. One directory per task
+   * under here, and — unless a task points itself at a real project — the only
+   * place a worker may write without asking. Deliberately *not* under `dbPath`:
+   * a worker that gets creative with a relative path should not be able to walk
+   * into the database file.
+   */
+  workspacesDir: z.string().min(1).default("~/.rewter/workspaces"),
   /** Env var NAME holding the bearer token clients must send to `/v1`. */
   apiKeyEnv: z.string().min(1).default("REWTER_API_KEY"),
   logger: z.boolean().default(true),

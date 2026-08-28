@@ -4,9 +4,10 @@
  * A tier-1 worker is deliberately the thinnest thing that can be a worker — the
  * router already does retry, cost recording and error normalization, so this
  * layer only owns the lifecycle writes and the summary extraction. Tier 2 (an
- * agent loop with tools) implements the same `runWorker` shape in M6, which is
- * why the engine talks to a `WorkerRunner` function type rather than to this
- * module directly.
+ * agent loop with tools, in `workers/tier2.ts`) implements the same `runWorker`
+ * shape, which is why the engine talks to a `WorkerRunner` function type rather
+ * than to this module directly — choosing a tier is one lookup, not a branch
+ * threaded through `spawn`.
  *
  * The lifecycle is not optional decoration: `WORKER_RUN_TRANSITIONS` has no
  * `created → succeeded` edge, so a run that skipped `streaming` would throw at

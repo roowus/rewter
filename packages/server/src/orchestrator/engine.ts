@@ -20,6 +20,8 @@
  * where a string was wanted.
  */
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type ChatMessage,
   type ModelId,
@@ -41,8 +43,12 @@ import type { EventBus } from "../events/bus.js";
 import { renderDigest } from "../registry/digest.js";
 import { pinnedInitiator } from "../router/resolve.js";
 import type { Router } from "../router/router.js";
+import { Approvals } from "../workers/approvals.js";
+import { createTier2Runner } from "../workers/tier2.js";
+import { type Workspace, openWorkspace } from "../workers/workspace.js";
 import {
   ANSWER_SEPARATOR,
+  approvalLine,
   askUserLine,
   formatCost,
   handoffLine,
@@ -51,6 +57,7 @@ import {
   workerCancelledLine,
   workerDoneLine,
   workerFailedLine,
+  workerNoteLine,
   workerStartLine,
 } from "./narrate.js";
 import { buildInitiatorMessages } from "./prompt.js";
@@ -70,8 +77,18 @@ export interface OrchestratorOptions {
   repos: Repos;
   bus: EventBus;
   clock?: () => number;
-  /** Swapped for a stub in tests; tier 2 supplies its own in M6. */
+  /**
+   * Overrides the runner for **every** tier. Tests use it to intercept spawns;
+   * production leaves it unset and gets the tier dispatcher — tier 1 straight to
+   * `runTier1Worker`, tier 2 into an agent loop bound to the task's workspace.
+   */
   runWorker?: WorkerRunner;
+  /**
+   * Parent of the per-task tier-2 workspaces. Defaults to a temp directory so a
+   * test that spawns tier 2 without saying where does not write into the user's
+   * home; the daemon passes the configured path.
+   */
+  workspacesDir?: string | undefined;
   /** Model that leads when nothing is pinned or configured. */
   defaultInitiatorModel?: string | null;
   /** Printed at the top of the feed so the user can open the task. */
@@ -123,6 +140,12 @@ export interface StartedOrchestration {
 
 const DEFAULT_MAX_TURNS = 24;
 const DEFAULT_MAX_HANDOFFS = 2;
+/**
+ * Fallback workspace parent. Under `tmpdir()` rather than `~/.rewter` so a test
+ * (or an embedder) that never configures one cannot have a worker write into a
+ * real home directory by omission.
+ */
+const DEFAULT_WORKSPACES_DIR = join(tmpdir(), "rewter-workspaces");
 /** The initiator plans and stitches; it never needs to emit a long document. */
 const INITIATOR_MAX_TOKENS = 4_000;
 const DEFAULT_DIGEST_MAX_TOKENS = 4_000;
@@ -139,14 +162,35 @@ interface Worker {
 export class Orchestrator {
   private readonly opts: OrchestratorOptions;
   private readonly clock: () => number;
-  private readonly runWorker: WorkerRunner;
+  private readonly runWorker: WorkerRunner | null;
+  private readonly workspacesDir: string;
   private dashboardUrl: string | null;
+  /**
+   * Live sessions, so an approval arriving over HTTP can find the in-memory gate
+   * its worker is parked on. The row is in the database either way, but the
+   * *promise* only exists here — resolving the row alone would leave the worker
+   * waiting forever.
+   */
+  private readonly sessions = new Map<TaskId, Session>();
 
   constructor(opts: OrchestratorOptions) {
     this.opts = opts;
     this.clock = opts.clock ?? Date.now;
-    this.runWorker = opts.runWorker ?? runTier1Worker;
+    this.runWorker = opts.runWorker ?? null;
+    this.workspacesDir = opts.workspacesDir ?? DEFAULT_WORKSPACES_DIR;
     this.dashboardUrl = opts.dashboardUrl ?? null;
+  }
+
+  /**
+   * The approval gate of a running task, or null if it is not running here.
+   *
+   * Null is the ordinary case for a task that finished, or one from before a
+   * restart: the pending rows survive but nothing is parked on them, so the
+   * caller resolves the row through `repos` and reports that no worker was
+   * waiting rather than pretending it unblocked something.
+   */
+  approvalsFor(taskId: TaskId): Approvals | null {
+    return this.sessions.get(taskId)?.gate() ?? null;
   }
 
   /**
@@ -243,6 +287,7 @@ export class Orchestrator {
       bus: this.opts.bus,
       clock: this.clock,
       runWorker: this.runWorker,
+      workspacesDir: this.workspacesDir,
       abort: taskAbort,
       maxTurns: this.opts.maxTurns ?? DEFAULT_MAX_TURNS,
       maxHandoffs: this.opts.maxHandoffs ?? DEFAULT_MAX_HANDOFFS,
@@ -251,13 +296,27 @@ export class Orchestrator {
       conversation: req.conversation,
       steering: req.steering ?? null,
     });
+    this.sessions.set(task.id, session);
+    // Also on abort, because a `start()` whose stream is never pulled never runs
+    // the `finally` below — and a registry entry for a task nobody is driving
+    // would hand HTTP a gate with no worker behind it. `dispose` is idempotent.
+    taskAbort.signal.addEventListener(
+      "abort",
+      () => {
+        session.dispose();
+        this.sessions.delete(task.id);
+      },
+      { once: true },
+    );
 
+    const sessions = this.sessions;
     async function* stream(): AsyncIterable<StreamChunk> {
       try {
         yield* session.drive();
       } finally {
         req.signal?.removeEventListener("abort", onAbort);
         session.dispose();
+        sessions.delete(task.id);
       }
     }
 
@@ -294,7 +353,9 @@ interface SessionOptions {
   repos: Repos;
   bus: EventBus;
   clock: () => number;
-  runWorker: WorkerRunner;
+  /** Null means "use the tier dispatcher"; a value overrides every tier. */
+  runWorker: WorkerRunner | null;
+  workspacesDir: string;
   abort: AbortController;
   maxTurns: number;
   maxHandoffs: number;
@@ -329,12 +390,88 @@ class Session {
   private handoffs = 0;
   private nudged = false;
   private budgetWarned = false;
+  /**
+   * Built on the first tier-2 spawn, not in the constructor: opening a workspace
+   * mkdirs a directory, and the overwhelming majority of tasks are pure tier-1
+   * fan-outs that would leave an empty directory behind for every one.
+   */
+  private tier2: { workspace: Workspace; approvals: Approvals; runner: WorkerRunner } | null = null;
+  private disposed = false;
 
   constructor(opts: SessionOptions) {
     this.o = opts;
     this.initiatorModel = opts.initiatorModel;
     this.limiter = createLimiter(opts.settings.concurrency);
     this.messages = this.buildMessages(opts.conversation);
+  }
+
+  /** The approval gate, if this task has ever needed one. */
+  gate(): Approvals | null {
+    return this.tier2?.approvals ?? null;
+  }
+
+  /**
+   * Runner for one work item, chosen by its tier.
+   *
+   * An explicit `runWorker` wins for every tier — that is the test seam, and a
+   * dispatcher that quietly ignored it for tier 2 would make a tier-2 engine test
+   * reach the real filesystem.
+   */
+  private runnerFor(tier: WorkerTier): WorkerRunner {
+    if (this.o.runWorker !== null) return this.o.runWorker;
+    if (tier === 1) return runTier1Worker;
+    return this.openTier2().runner;
+  }
+
+  /**
+   * Open (once) the workspace and approval gate this task's tier-2 workers share.
+   *
+   * Shared per task rather than per worker, and that is the point of both: two
+   * workers on the same task write to the same directory, and a denial one of
+   * them collected is a denial the other should not re-ask for.
+   */
+  private openTier2(): { workspace: Workspace; approvals: Approvals; runner: WorkerRunner } {
+    const existing = this.tier2;
+    if (existing !== null) return existing;
+
+    const workspace = openWorkspace({
+      taskId: this.o.task.id,
+      baseDir: this.o.workspacesDir,
+      workspaceDir: this.o.settings.workspaceDir,
+    });
+    const approvals = new Approvals({
+      repos: this.o.repos,
+      taskId: this.o.task.id,
+      // Read through rather than captured: the user may flip auto-approve in the
+      // dashboard while a task is running, and the next gate check should see it.
+      autoApprove: () => this.o.settings.autoApprove,
+      clock: this.o.clock,
+      announce: (approval) => {
+        this.lines.push(approvalLine({ approvalId: approval.id, summary: approval.summary }));
+      },
+    });
+    const runner = createTier2Runner({
+      workspace,
+      approvals,
+      onProgress: (note, workItem) => {
+        this.lines.push(workerNoteLine({ label: this.labelOf(workItem.id), note }));
+      },
+    });
+
+    const opened = { workspace, approvals, runner };
+    this.tier2 = opened;
+    // A task cancelled before its first tier-2 worker parks still has to leave a
+    // gate that refuses rather than one that waits.
+    if (this.disposed || this.o.abort.signal.aborted) approvals.cancel();
+    return opened;
+  }
+
+  /** `w2` for a work item id, so a worker's own notes carry the feed's name. */
+  private labelOf(workItemId: string): string {
+    for (const worker of this.workers.values()) {
+      if (worker.workItem.id === workItemId) return worker.label;
+    }
+    return "w?";
   }
 
   private buildMessages(conversation: ChatMessage[], contextSummary?: string): ChatMessage[] {
@@ -531,8 +668,8 @@ class Session {
    * the model sees as the tool's result.
    *
    * Nothing in here throws for bad model behaviour — an unknown tool, a bad
-   * model id, an unavailable tier and a label that does not exist are all
-   * *results*. The one thing that does end the loop is `finish`.
+   * model id, a tier that does not exist yet and a label that was never spawned
+   * are all *results*. The one thing that does end the loop is `finish`.
    */
   private async *executeTool(call: ToolCall): AsyncGenerator<StreamChunk, ToolOutcome> {
     const parsed = parseToolArgs(call.name, call.arguments);
@@ -556,11 +693,11 @@ class Session {
           instructions: string;
           tier: WorkerTier;
         };
-        if (args.tier !== 1) {
+        if (args.tier === 3) {
           return {
             result: [
-              `tier ${args.tier} workers are not available yet (they arrive in milestone M6).`,
-              "Re-spawn with tier 1, or do this part yourself.",
+              "tier 3 workers (external coding harnesses) are not available yet.",
+              "Use tier 2 for anything that needs files or a shell, or do this part yourself.",
             ].join(" "),
           };
         }
@@ -587,7 +724,9 @@ class Session {
         }
 
         const worker = this.spawn({ ...args, model: modelId });
-        yield chunk(workerStartLine({ label: worker.label, modelId, tier: 1, title: args.title }));
+        yield chunk(
+          workerStartLine({ label: worker.label, modelId, tier: args.tier, title: args.title }),
+        );
         return {
           result: [
             `started as ${worker.label}. It is running in the background;`,
@@ -739,9 +878,14 @@ class Session {
     this.o.abort.signal.addEventListener("abort", () => abort.abort(), { once: true });
     if (this.o.abort.signal.aborted) abort.abort();
 
+    // Resolved before the limiter, so a tier-2 workspace exists (and its gate is
+    // reachable over HTTP) from the moment the worker is queued rather than from
+    // whenever a slot frees up.
+    const runner = this.runnerFor(args.tier);
+
     const promise = this.limiter.run(async () => {
       this.o.repos.transitionWorkItem(workItem.id, "running");
-      const outcome = await this.o.runWorker({
+      const outcome = await runner({
         workItem,
         taskId: this.o.task.id,
         router: this.o.router,
@@ -963,7 +1107,12 @@ class Session {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.cancelAllWorkers();
+    // Cancelling the workers aborts their signals, but a worker parked in
+    // `approvals.require` is waiting on a promise, not a signal — without this it
+    // would hold the stream open for a click that is never coming.
+    this.tier2?.approvals.cancel();
   }
 }
 

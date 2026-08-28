@@ -120,9 +120,21 @@ as a turn the model can answer, since being told is the only way it fixes anythi
 is walked against a real database, because the lifecycle has no shortcut edge and a forgotten
 transition would surface as a crashed task rather than a failed test.
 
-Still to come in M6: wiring the loop into the engine (plus `send_to_worker`), the
-`/internal/approvals/:id` route and its in-band `approve`/`deny` twin, and the acceptance — a
-gated shell command approved by curl mid-task.
+And as of M6e the initiator can actually **ask** for one. `spawn_worker` takes `tier: 2`, and
+the engine picks the runner by tier — only tier 3 still refuses, worded to point at tier 2
+rather than to say "not yet". The workspace and approval gate open on the first tier-2 spawn
+(most tasks are pure tier-1 fan-outs and would otherwise each leave an empty directory behind)
+and are shared by every tier-2 worker on the task, because two of them write to the same place
+and a denial one collected should not be put in front of you twice. Workers narrate into the
+same feed you are already reading: `· [w2] read src/foo.ts, found the off-by-one`, and
+`⏸ approval needed` carrying the full approval id — the id the route, the in-band reply and
+the audit row all use. Their scratch space is `workspacesDir` (default `~/.rewter/workspaces`),
+which is deliberately not under the database file. One meaning shifted with the tier:
+`concurrency` now bounds four simultaneous *agent loops*, each with a shell, rather than four
+one-shot completions — which is why the default stayed at 4.
+
+Still to come in M6: `send_to_worker`, the `/internal/approvals/:id` route and its in-band
+`approve`/`deny` twin, and the acceptance — a gated shell command approved by curl mid-task.
 
 ## Quickstart
 
