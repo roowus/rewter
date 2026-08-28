@@ -1169,8 +1169,36 @@ done-pattern) so any CLI harness is addable by config.
   `health`, and `WS /internal/ws` (`{subscribe, afterSeq?}` → replay then live).
   Live today: `health` (with registry counts), `providers`, `models` (**including**
   disabled ones, unlike `/v1/models`), `events?afterSeq=` (a non-numeric `afterSeq` reads
-  as 0 rather than erroring). Providers are safe to serve as-is: only the env var *name* is
-  ever stored.
+  as 0 rather than erroring), and approvals — `GET /internal/approvals[?taskId=]` plus
+  `POST /internal/approvals/:id` `{approved, note?}`. Providers are safe to serve as-is:
+  only the env var *name* is ever stored.
+
+### Resolving an approval
+
+An approval is two things: a **row** in SQLite, and a **promise** a tier-2 worker is parked
+on. Only the row is reachable from an HTTP request, and settling it alone would look exactly
+like success while leaving the worker hung forever. So one resolution path serves all three
+entry points — the dashboard's buttons, `curl`, and an in-band `approve <id>` reply — and it
+tries the live gate first (`Orchestrator.approvalsFor(taskId)`), falling back to a direct row
+write only when there is no session: a task that has finished, or one from before a restart.
+
+The response says which happened. `resumedWorker: false` means the audit trail was settled
+but no worker was released; claiming otherwise would send a reader looking for one. The list
+route reports the same fact per card as `parked`. Status codes distinguish the two ways to be
+wrong: **404** for an id never seen, **409** for one already settled — a race the caller lost,
+not a mistake it made — and **400** for a body that does not say yes or no.
+
+**In-band replies** are parsed by `orchestrator/steering.ts`, deliberately conservative: a
+line is a command only if it is `approve`/`deny`/`reject` followed by approval ids or the
+literal `all`, optionally then `: note`. Consuming a line hides it from the initiator, so
+anything ambiguous ("please approve whichever you think is right") stays steering. One message
+can be both — `approve apr_x` on one line and an instruction on the next does both things, and
+only the remainder reaches the initiator. `approve all` is scoped to the pending rows of *that
+conversation's* task, never another's.
+
+A denial comes back to the worker as a tool **result**, not an exception:
+`command not run: denied by the user: use the fixture instead`. A worker told why can adapt;
+one handed a crash cannot.
 - Event envelope `{seq, ts, taskId, type, payload}`. The dashboard task tree is a **pure
   fold over the event stream**; the fold function lives in `shared`, tested once, used by
   both sides.

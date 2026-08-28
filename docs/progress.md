@@ -22,11 +22,45 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6c | Tier-2 tool surface + executor (10 tools, every one gated) | ✅ 2026-08-28 |
 | M6d | Tier-2 agent loop (`runTier2Worker`) + its system prompt | ✅ 2026-08-28 |
 | M6e | Tier-2 engine wiring (tier dispatcher, per-task gate, feed lines) | ✅ 2026-08-28 |
-| M6 | `send_to_worker` + approval routes + the gated-shell acceptance | 🟡 in progress |
+| M6f | Approval routes + in-band `approve`/`deny` twin | ✅ 2026-08-28 |
+| M6 | `send_to_worker` + the gated-shell acceptance | 🟡 in progress |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M6f: answering the card
+
+M6e could raise an approval; nothing could answer one. A worker parked and stayed parked. The
+gate now has three entrances and one resolution path behind them: `POST /internal/approvals/:id`
+(dashboard buttons and `curl`), `GET /internal/approvals[?taskId=]` to see what is waiting, and
+`approve <id>` / `deny <id>: why` typed as the next user turn.
+
+- **The row/promise split is the whole problem.** An approval is a row in SQLite *and* a promise
+  a worker is parked on; only the row is reachable from HTTP. Settling it alone looks exactly
+  like success and leaves the worker hung forever. So the resolver tries the live gate first
+  (`approvalsFor(taskId)`) and writes the row directly only when there is no session — a
+  finished task, or one from before a restart.
+- **`resumedWorker` is reported, not hidden.** "Approved, but nobody was waiting" is a different
+  fact from "approved and the worker resumed"; a caller told the first knows to go look. Same
+  fact per card as `parked` on the list route, which is what `Approvals.isParked` exists for —
+  distinct from the row being `pending`.
+- **404 vs 409 vs 400.** Never seen, already settled, malformed body. The middle one is a race
+  the caller lost, not a mistake it made, so it is not an error the dashboard should shout about.
+- **The parser is conservative on purpose** (`orchestrator/steering.ts`). Consuming a line hides
+  it from the initiator, so "please approve whichever you think is right" must survive as
+  steering. A line is a command only if it is `approve`/`deny`/`reject` + ids or `all`, and one
+  message can be both — only the remainder is injected.
+- **`approve all` is scoped to that conversation's task.** Typing it into one chat must not clear
+  another's cards.
+- **A denial is a tool result, not a throw**, carrying the note: `command not run: denied by the
+  user: use the fixture instead`.
+
+The tests (`http/app.approvals.test.ts`, 12) run a **real tier-2 worker** — no stub runner —
+because `Session.runnerFor` returns an injected runner for *every* tier, so a test that stubs the
+worker never opens a workspace, never builds a gate, and asserts against a `null` that always
+agrees with it. They assert on disk: the shell command's file does not exist before the approval
+and does after, and never appears at all on a denial. 742 tests green.
 
 ### 2026-08-28 — M6e: tier 2, spawnable
 

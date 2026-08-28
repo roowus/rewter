@@ -10,6 +10,7 @@ import {
   type AnthropicMessageResponse,
   AnthropicMessagesRequestSchema,
   type AnthropicResponseBlock,
+  type ApprovalId,
   type ChatMessage,
   type ChatResponse,
   type OpenAIChatChunk,
@@ -18,6 +19,7 @@ import {
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
   type StreamChunk,
+  type TaskId,
   fromAnthropicMessages,
   fromAnthropicTools,
   toAnthropicStopReason,
@@ -32,6 +34,7 @@ import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
 import { type Orchestrator, OrchestratorError } from "../orchestrator/engine.js";
 import { type LiveTask, LiveTaskIndex, conversationKey } from "../orchestrator/live.js";
+import { type ApprovalCommand, parseSteering } from "../orchestrator/steering.js";
 import { collectStream } from "../providers/collect.js";
 import {
   AmbiguousModelError,
@@ -99,9 +102,14 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       const { task, newMessages } = existing;
       live.cancelGrace(task.taskId);
       for (const m of newMessages) {
-        if (m.role === "user" && m.content !== null && m.content.trim() !== "") {
-          task.steer(m.content);
-        }
+        if (m.role !== "user" || m.content === null || m.content.trim() === "") continue;
+        // A follow-up is allowed to be both an answer to an approval card and an
+        // instruction. The parser is what separates them; what is left over —
+        // and only what is left over — reaches the initiator, so a line that
+        // resolved an approval is not also read as a plan change.
+        const { commands, remainder } = parseSteering(m.content);
+        for (const command of commands) applyApprovalCommand(task.taskId, command, "in_band");
+        if (remainder !== "") task.steer(remainder);
       }
       return { taskId: task.taskId, stream: task.subscribe(clientSignal) };
     }
@@ -125,6 +133,63 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       source: started.stream,
     });
     return { taskId: started.taskId, stream: box.subscribe(clientSignal) };
+  }
+
+  /**
+   * Resolve one approval, wherever it lives.
+   *
+   * Two half-truths have to be reconciled. The *row* is in the database and can
+   * always be settled; the *promise* a worker is parked on only exists in this
+   * process, inside the engine's session for that task. Resolving the row alone
+   * would look like success and leave the worker waiting forever, so the gate is
+   * tried first and the row is only touched directly when there is no gate — a
+   * task that has finished, or one from before a restart.
+   *
+   * `parked` is reported rather than hidden: "approved, but nobody was waiting"
+   * is a different fact from "approved and the worker resumed", and a user who
+   * is told the first one knows to look at why.
+   */
+  function resolveApproval(
+    id: ApprovalId,
+    approved: boolean,
+    by: "dashboard" | "in_band",
+    note: string | null,
+  ): { ok: boolean; parked: boolean; reason?: string } {
+    const row = repos.getApproval(id);
+    if (row === undefined) return { ok: false, parked: false, reason: "no such approval" };
+    if (row.status !== "pending") {
+      return { ok: false, parked: false, reason: `already ${row.status}` };
+    }
+
+    const gate = orchestrator?.approvalsFor(row.taskId) ?? null;
+    if (gate !== null) {
+      const parked = gate.isParked(id);
+      // `resolve` re-checks the row and can still decline — a dashboard click and
+      // an in-band reply racing each other is ordinary, not an error.
+      if (gate.resolve(id, approved, by, note ?? undefined)) return { ok: true, parked };
+      return { ok: false, parked: false, reason: "already resolved" };
+    }
+
+    repos.resolveApproval(id, approved ? "approved" : "denied", by, note);
+    return { ok: true, parked: false };
+  }
+
+  /** Apply one parsed in-band command; unknown or stale ids are ignored quietly. */
+  function applyApprovalCommand(
+    taskId: TaskId,
+    command: ApprovalCommand,
+    by: "dashboard" | "in_band",
+  ): void {
+    const approved = command.decision === "approve";
+    if (command.ids === "all") {
+      // Deliberately scoped to *this* task's pending rows. "approve all" typed
+      // into one conversation must not clear cards belonging to another.
+      for (const row of repos.listPendingApprovals(taskId)) {
+        resolveApproval(row.id, approved, by, command.note);
+      }
+      return;
+    }
+    for (const id of command.ids) resolveApproval(id, approved, by, command.note);
   }
 
   app.register(cors, { origin: true });
@@ -354,6 +419,52 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   );
 
   app.get("/internal/models", async () => ({ models: repos.listModels() }));
+
+  // ── Approvals ─────────────────────────────────────────────────────────────
+  // The dashboard's buttons and `curl` reach the same gate the in-band
+  // `approve <id>` reply does — one resolution path, three ways in.
+  app.get("/internal/approvals", async (req) => {
+    const q = req.query as { taskId?: string };
+    const approvals = repos.listPendingApprovals(q.taskId);
+    return {
+      approvals: approvals.map((a) => ({
+        ...a,
+        // Whether a worker in *this* process is actually waiting on it. A row
+        // left pending by a restart still lists, and says so.
+        parked: orchestrator?.approvalsFor(a.taskId)?.isParked(a.id) ?? false,
+      })),
+    };
+  });
+
+  app.post("/internal/approvals/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { approved?: unknown; note?: unknown };
+    if (typeof body.approved !== "boolean") {
+      return reply.code(400).send({ error: { message: "approved must be a boolean" } });
+    }
+    if (body.note !== undefined && typeof body.note !== "string") {
+      return reply.code(400).send({ error: { message: "note must be a string" } });
+    }
+
+    const outcome = resolveApproval(
+      id as ApprovalId,
+      body.approved,
+      "dashboard",
+      body.note ?? null,
+    );
+    if (!outcome.ok) {
+      // 404 for an id we have never seen, 409 for one that is settled — the
+      // second is a race the caller lost, not a mistake it made.
+      const code = outcome.reason === "no such approval" ? 404 : 409;
+      return reply.code(code).send({ error: { message: outcome.reason ?? "could not resolve" } });
+    }
+    return {
+      approval: repos.getApproval(id),
+      // False here means the row was settled for the audit trail but no worker
+      // was released — see `resolveApproval`.
+      resumedWorker: outcome.parked,
+    };
+  });
 
   app.get("/internal/events", async (req) => {
     const q = req.query as { afterSeq?: string; taskId?: string };

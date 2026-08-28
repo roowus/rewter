@@ -133,8 +133,16 @@ which is deliberately not under the database file. One meaning shifted with the 
 `concurrency` now bounds four simultaneous *agent loops*, each with a shell, rather than four
 one-shot completions — which is why the default stayed at 4.
 
-Still to come in M6: `send_to_worker`, the `/internal/approvals/:id` route and its in-band
-`approve`/`deny` twin, and the acceptance — a gated shell command approved by curl mid-task.
+Answering a card works three ways, all of them one code path: `POST /internal/approvals/:id`
+with `{"approved": true}` (the dashboard's buttons, and `curl`), or `approve <id>` / `deny <id>:
+why not` typed as the next user turn in whatever client you are already in. An in-band reply
+can be both — `approve apr_x` on one line and an instruction on the next does both things, and
+only the instruction reaches the initiator. Denials carry your note down to the model as a tool
+result (`command not run: denied by the user: use the fixture instead`), because a worker told
+why can pick something else and a worker handed a crash cannot.
+
+Still to come in M6: `send_to_worker`, and the acceptance — a gated shell command approved by
+curl mid-task.
 
 ## Quickstart
 

@@ -166,6 +166,18 @@ export class Approvals {
   }
 
   /**
+   * Is a worker in *this process* parked on this id?
+   *
+   * Distinct from the row being `pending`, and the difference is what a caller
+   * reports back: a pending row with nobody parked (a daemon restart, a worker
+   * that has since been cancelled) resolves the audit trail without unblocking
+   * anything, and saying so beats implying a worker just resumed.
+   */
+  isParked(id: ApprovalId): boolean {
+    return this.waiting.has(id);
+  }
+
+  /**
    * Why this action needs no human, or null if it does.
    *
    * The string is stored as the resolution note, so the audit trail says *which*
