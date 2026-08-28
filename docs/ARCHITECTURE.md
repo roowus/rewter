@@ -84,6 +84,56 @@ All risky actions flow through one choke point (`approvals.require`):
 Risk classes: `shell` gated unless allowlisted-readonly; file writes gated iff outside the
 task workspace; `web_fetch` logged, ungated.
 
+### As built (M6a/M6b)
+
+`workers/workspace.ts` and `workers/approvals.ts` implement steps 1–4 above, split so that
+**neither one decides alone**:
+
+- **`classify(ws, path)` answers exactly one question** — is this path inside the
+  auto-approve zone? — and never refuses. Refusal is a policy call made one layer up with
+  the task's `autoApprove` in hand; a sandbox that refuses on its own is a sandbox you
+  cannot point at a repo, which is precisely what `workspaceDir` is for.
+- **`root` and `cwd` are separate fields on purpose.** `root` is
+  `~/.rewter/workspaces/<taskId>/`, the auto-approve zone. `cwd` is where relative paths
+  resolve and `shell` runs — equal to `root` unless the task names a real project
+  directory, in which case every write is outside the zone *by construction*. That is the
+  intended reading: pointing a worker at your repo is exactly when you want to be asked.
+- **Containment is checked on symlink-resolved paths, with the separator appended.** The
+  cheap string test is defeated twice over — by `root/../etc/passwd`, and by a symlink
+  inside the workspace pointing out of it — and without the separator
+  `/workspaces/task-1-evil` counts as inside `/workspaces/task-1`. A path whose parent does
+  not exist yet (the ordinary `write_file` case) is resolved as far up as it does exist,
+  because you cannot `realpath` a file you are about to create, and skipping the check for
+  those is the only hole that would matter.
+- Both `Workspace` fields are stored resolved, and must be: on macOS `/var` is a symlink to
+  `/private/var`, so a resolved `root` and an unresolved `cwd` name the same directory and
+  compare unequal — `contains(root, cwd)` would then report the workspace as outside itself.
+
+The gate itself is one `require()` method, and there being exactly one is the safety
+property: a second path to the disk is a second place to forget it. Callers `await` a
+verdict and either act or hand the denial to the model — they never read `autoApprove` and
+never learn whether a human was involved.
+
+- **Auto-approval is recorded, not skipped.** Every allowed-without-asking action writes a
+  row whose note names *which* rule let it through ("auto-approve is on for this task",
+  "inside the task workspace", "read-only command"), so "nothing needed asking" and "the
+  user turned the gate off" are distinguishable afterwards. `autoApprove` is read fresh per
+  call, since the user may flip it mid-task.
+- **A denial is not an error.** It returns `{ok: false, reason}`, and the reason carries the
+  user's note: a worker told "denied: use the test fixture instead" adapts, where one told
+  "denied" retries the identical command and one that throws dies.
+- **Cancellation denies everything parked**, and refuses later requests before consulting
+  policy at all — a torn-down task must not leave a worker awaiting a human who has closed
+  the tab, however harmless the individual step looks.
+- **The read-only allowlist is an allowlist, and forfeits on any shell metacharacter.** You
+  cannot enumerate every way to write to a disk, but you can enumerate the handful of
+  commands whose whole job is to look. `ls; rm -rf ~` begins with `ls`, so the check is
+  "this is one simple command from the list" rather than "it starts with one"; `-o` and
+  `--output` are rejected too, since those flags write from a verb that reads.
+- The `approval.requested` / `approval.resolved` events are emitted by `repos`, as part of
+  the write — the gate deliberately does not append its own, or one prompt would produce two
+  dashboard cards.
+
 ## Monorepo layout
 
 ```
@@ -92,7 +142,8 @@ packages/shared/     @rewter/shared — THE contract package: zod entities + lif
                      contract), dashboard API schemas, branded IDs (task_, run_, apr_, evt_)
 packages/server/     @rewter/server — the daemon:
                      config, db, providers, registry, router, orchestrator,
-                     workers/{tier1,tier2,tier3-stub}, approvals, events, costs, http, openai
+                     workers/{workspace,approvals,tier2,tier3-stub}, events, costs, http, openai
+                     (tier 1 lives in orchestrator/worker.ts — it is one chat call)
 packages/cli/        rewter — start|stop|status|logs|sync-models|card <m>|install-service|gc
 apps/dashboard/      Vite + React SPA, built static, served by the daemon
 ```

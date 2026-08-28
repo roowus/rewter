@@ -84,6 +84,17 @@ to the stream already in flight. A client that drops and comes back **adopts** i
 replaying everything it missed; one that stays gone has 30 seconds before the task is
 cancelled, so a Ctrl-C does not leave workers billing to nobody.
 
+In progress (M6): the **safety layer** tier-2 workers will run inside — the workspace
+sandbox and the single approval gate. The sandbox answers one question, *is this path inside
+the auto-approve zone*, on symlink-resolved paths, and refuses nothing: pointing a task at a
+real project directory is meant to put every write outside the zone, because that is exactly
+when you want to be asked. The gate is one function, and there being exactly one is the
+point — a second path to the disk is a second place to forget it. Auto-approvals are logged
+rather than skipped, so "nothing needed asking" and "the gate was off" stay distinguishable;
+a denial comes back as a *result* carrying your note, so a worker told "use the test fixture
+instead" adapts rather than dying; and the read-only allowlist forfeits on any shell
+metacharacter, since `ls; rm -rf ~` does begin with `ls`.
+
 ## Quickstart
 
 ```sh

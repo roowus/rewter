@@ -17,11 +17,65 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M5b | Wiring: HTTP routes, in-band steering + adoption, daemon construction | ✅ 2026-08-27 |
 | — | *M5 acceptance: live 3-way parallel fan-out through `auto/orchestrator`* | ✅ 2026-08-28 |
 | — | *M4 acceptance: real cards for 3 models, written and eyeballed* | ✅ 2026-08-28 |
-| M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
+| M6a | Workspace sandbox (`classify`, symlink-resolved containment) | ✅ 2026-08-28 |
+| M6b | Approval choke point (`approvals.require`, read-only allowlist) | ✅ 2026-08-28 |
+| M6 | Tier-2 agent loop + tools + wiring | 🟡 in progress |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M6a+M6b: the sandbox and the gate
+
+The two pieces every tier-2 tool will depend on, built before the tools that use them,
+because a file tool written against a wrong `inside` boolean is a file tool that has already
+escaped.
+
+**The sandbox** (`workers/workspace.ts`) answers one question and refuses nothing:
+`classify(ws, path).inside`. Policy lives one layer up, with `autoApprove` in hand — a
+sandbox that refuses on its own could not be pointed at a real project directory, which is
+the case `workspaceDir` exists for. `root` (the auto-approve zone) and `cwd` (where relative
+paths resolve) are separate fields precisely so that a task working in the user's repo gets
+`inside: false` for its own relative paths.
+
+- **A real bug the tests caught, not a test artifact.** `openWorkspace` returned a resolved
+  `root` and a raw-`resolve()` `cwd`. On macOS `/var` is a symlink to `/private/var`, so the
+  two fields named the same directory and compared unequal — `contains(root, cwd)` reported
+  the workspace as being outside itself. Both fields are now realpath'd, which is the
+  invariant the comment now states.
+- Containment is checked on **symlink-resolved** paths with the separator appended: the
+  string test is defeated by `root/../etc/passwd`, by a symlink inside the workspace
+  pointing out, and by `/workspaces/task-1-evil` sorting as a prefix of `/workspaces/task-1`.
+- A path whose parent does not exist yet is resolved as far up as it does exist. You cannot
+  `realpath` a file you are about to create, and skipping the check for those would be the
+  one hole that matters — that *is* the write case.
+- An empty-string `workspaceDir` means unset, not `resolve("")`. A config field left as `""`
+  must not silently point a worker at wherever the daemon happens to be running.
+- `workspaceDir` is resolved but deliberately **not created**: a typo in a project path
+  should fail loudly on first use, not `mkdir` a new directory beside the one meant.
+
+**The gate** (`workers/approvals.ts`) is one `require()` method, and there being exactly one
+is the safety property — a second path to the disk is a second place to forget it.
+
+- **Auto-approval is logged, never silent.** The row's note names which rule let the action
+  through, so "nothing needed asking" and "the user turned the gate off" are distinguishable
+  in the audit trail afterwards. `autoApprove` is read fresh per call, so flipping it
+  mid-task takes effect.
+- **A denial is a result, not an exception**, and carries the user's note: "denied: use the
+  test fixture instead" redirects a worker, where bare "denied" invites the identical retry
+  and a throw kills it.
+- **Cancellation is checked before policy.** Everything parked is denied, and later requests
+  are refused without writing a row — a task being torn down must not leave a worker
+  awaiting a human who has closed the tab, however safe the step looks in isolation.
+- **The read-only allowlist forfeits on any shell metacharacter.** `ls; rm -rf ~` starts with
+  `ls`; the check is "one simple command from the list", not "begins with one". `-o` /
+  `--output` are refused as well — the verb reads, the flag writes.
+- The two approval events are emitted by `repos` as part of the write; the gate appends
+  none of its own, or one prompt would render two dashboard cards.
+
+36 new tests (14 sandbox + 22 gate) — nearly all of them attempts to get `inside: true` for
+a path that is not, or a `true` out of the allowlist for something that writes. **756 green**
+(214 + 521 + 21), build and lint clean.
 
 ### 2026-08-28 — three real cards, eyeballed — **M4 acceptance met**
 
