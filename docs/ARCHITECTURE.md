@@ -294,9 +294,8 @@ that cannot see a model will not choose it, and it should know that is why.
 
 ## Orchestrator engine
 
-Implemented in M5a — `packages/server/src/orchestrator/`. The engine is built and tested;
-**the HTTP routes still return `501`** until the M5b wiring (steering index, daemon
-construction) lands. See [progress.md](progress.md) for the split.
+Implemented in M5a (the engine) and M5b (the wiring) — `packages/server/src/orchestrator/`.
+`auto/orchestrator` is live on both dialects, streaming and not.
 
 ### The one decision everything else follows from
 
@@ -404,6 +403,55 @@ is not a cap. Spend is read back from `cost_records`, never accumulated in memor
 survives a restart and cannot drift. Note that **the initiator's own turns bill to the task**,
 so a task's total always exceeds the sum of its workers' spend.
 
+### Wiring it to HTTP (M5b)
+
+`Orchestrator.run()` being a plain `AsyncIterable<StreamChunk>` is what makes the route code
+uneventful — but a bare async generator does not run its body until the first pull, and by
+then it is too late to set a header. `start()` therefore does the eager part up front
+(resolve the initiator, parse task settings, write the task row) and returns
+`{ taskId, abort, stream }`. The route sets **`x-rewter-task-id`** from it *before* the SSE
+writer touches the socket, because a header set after the first byte is a header nobody
+receives. A bad `:pin` or an empty registry consequently fails as a clean JSON `404`/`503`
+rather than as a truncated event stream.
+
+**The engine's stream is not the client's stream.** A `LiveTask`
+(`orchestrator/live.ts`) pumps the engine into an unbounded replay buffer and broadcasts to
+whatever subscribers exist at that moment — *possibly none*. That is the load-bearing part:
+a client that disconnects loses nothing, because the pump never stops. Original client,
+reconnecting client and steering follow-up are then all the same thing — a subscriber that
+replays the buffer and then follows live.
+
+**Steering by re-POST.** An OpenAI client has no channel for "say something to a request
+already in flight"; all it can do is POST the conversation again, one turn longer. So that is
+the protocol. `LiveTaskIndex.match()` resolves a request against what is running, preferring
+the `x-rewter-task-id` header when the client can echo it and falling back to the
+conversation itself: `continuationKeys()` hashes the request's *prefixes*, longest first and
+bounded at 8, and looks each up. A hit means this request grew out of that task; the messages
+added since are injected as `[USER STEERING] …` at the next turn boundary, and the new
+request attaches to the existing stream instead of starting a second task. An identical
+re-POST with nothing new is deliberately *not* a match against itself — that is a retry, and
+matching it would inject the whole conversation back into the task as steering. A conversation
+that continues a task which already **finished** starts a fresh task: `onIdle` forgets a task
+the moment it completes.
+
+**Disconnect grace.** Losing the last subscriber starts a 30-second timer, not a cancel — the
+window in which a reconnect can adopt the task. A subscriber arriving inside it calls
+`cancelGrace` and the task never notices. Nobody arriving means the abort fires, so a Ctrl-C
+does not leave a fan-out billing to an audience of none. `shutdown()` collapses every live
+task, which is why `daemon.stop()` runs it *before* closing the HTTP server.
+
+Note the cycle this creates and how it is broken: the engine needs somewhere to read steering
+from, and the `LiveTask` that holds it does not exist until the engine's stream does.
+`beginOrchestration` passes a `() => box?.drainSteering() ?? []` closure over a
+`let box: LiveTask | null`, filled in by `register()` immediately after — the engine only
+reads it between turns, long after that.
+
+Two behaviours here are testable only over a **real socket**: `app.inject()` serializes
+in-flight streaming requests, so a second `inject()` call's handler does not run until the
+first stream has finished — and a finished task is not a task you can steer. The steering
+tests in `app.orchestrator.test.ts` bind an ephemeral port for exactly that reason, as the
+disconnect tests in `app.socket.test.ts` already did.
+
 ## Provider adapters
 
 Implemented in M2 — `packages/server/src/providers/`.
@@ -504,9 +552,10 @@ Implemented in M3 — `packages/server/src/router/` and `packages/server/src/htt
 
 This is the pass-through path: everything between an OpenAI client's HTTP request and an
 adapter's normalized chunk stream. The orchestrator sits *beside* it, not above it —
-`auto/orchestrator` diverts before resolution. The engine exists as of M5a and returns the
-same `AsyncIterable<StreamChunk>` this path does; the routes still answer `501` until the
-M5b wiring replaces the stubs.
+`auto/orchestrator` diverts before resolution. The engine returns the same
+`AsyncIterable<StreamChunk>` this path does, which is why the divert costs the route code
+almost nothing — see [Wiring it to HTTP](#wiring-it-to-http-m5b). A daemon built without an
+engine answers `501` there rather than silently routing to some arbitrary concrete model.
 
 ### Model resolution
 
@@ -828,10 +877,11 @@ done-pattern) so any CLI harness is addable by config.
 ## API surface
 
 - `POST /v1/chat/completions` — OpenAI dialect; pass-through or orchestrator; stream +
-  non-stream. **Live.** (Orchestrator returns `501` until the M5b wiring.)
+  non-stream. **Live**, orchestrator included. Sends `x-rewter-task-id` on an orchestration;
+  accepts it back to steer or reattach.
 - `POST /v1/messages` — Anthropic dialect over the same router; stream + non-stream.
-  **Live.** Named-event SSE, no `[DONE]`; accepts `x-api-key` or `Authorization: Bearer`.
-  (Orchestrator returns `501` until the M5b wiring.)
+  **Live**, orchestrator included. Named-event SSE, no `[DONE]`; accepts `x-api-key` or
+  `Authorization: Bearer`; same `x-rewter-task-id` contract.
 - `GET /v1/models` — registry + pseudo-models. **Live.** `auto/orchestrator` is listed
   **first** so it is visible in every client's model picker; disabled models are hidden.
 - `/internal`: tasks list/detail/`events?afterSeq=`, `cancel|steer|settings`, approvals

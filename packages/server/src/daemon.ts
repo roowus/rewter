@@ -14,6 +14,8 @@ import { type Db, openDb } from "./db/connection.js";
 import { Repos } from "./db/repos.js";
 import { EventBus } from "./events/bus.js";
 import { buildApp } from "./http/app.js";
+import { Orchestrator } from "./orchestrator/engine.js";
+import { LiveTaskIndex } from "./orchestrator/live.js";
 import { Router } from "./router/router.js";
 
 export interface StartDaemonOptions {
@@ -32,6 +34,9 @@ export interface RunningDaemon {
   repos: Repos;
   bus: EventBus;
   router: Router;
+  orchestrator: Orchestrator;
+  /** Tasks still running, so a shutdown can collapse them. */
+  live: LiveTaskIndex;
   config: Config;
   /** The address actually bound — resolves port 0 to the real number. */
   url: string;
@@ -101,13 +106,32 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   // The bearer token is read from the environment by *name*, like every other
   // secret here — the config file holds the variable name, never the value.
   const apiKey = env[config.apiKeyEnv] ?? null;
-  const app = buildApp({ router, repos, bus, apiKey, logger: config.logger });
+
+  const orchestrator = new Orchestrator({
+    router,
+    repos,
+    bus,
+    defaultInitiatorModel: config.orchestrator.initiatorModel,
+    maxTurns: config.orchestrator.maxTurns,
+    maxHandoffs: config.orchestrator.maxHandoffs,
+  });
+  const live = new LiveTaskIndex();
+  const app = buildApp({
+    router,
+    repos,
+    bus,
+    apiKey,
+    logger: config.logger,
+    orchestrator,
+    live,
+  });
 
   const port = opts.port ?? config.port;
   await app.listen({ host: config.host, port });
   const address = app.server.address();
   const boundPort = typeof address === "object" && address !== null ? address.port : port;
   const url = `http://${config.host}:${boundPort}`;
+  orchestrator.setDashboardUrl(url);
 
   for (const warning of seeded.warnings) app.log.warn({ warning }, "config");
   for (const { slug, env: name } of seeded.missingKeys) {
@@ -120,9 +144,15 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     repos,
     bus,
     router,
+    orchestrator,
+    live,
     config,
     url,
     async stop() {
+      // Tasks first: a running orchestration holds upstream calls open, and
+      // closing the socket out from under it would leave them billing with
+      // nobody left to read the answer.
+      live.shutdown();
       await app.close();
       db.$client.close();
     },

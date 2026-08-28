@@ -14,12 +14,51 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | — | *M3 acceptance: Claude Code live on rewter, 2 providers, tool calls* | ✅ 2026-08-27 |
 | M4 | Registry + capability cards + digest renderer | ✅ 2026-08-27 |
 | M5a | Orchestrator engine + tier-1 fan-out + handoff + cancellation + budget | ✅ 2026-08-27 |
-| M5b | Wiring: HTTP routes, in-band steering + adoption, daemon construction, eval | ⚪ |
+| M5b | Wiring: HTTP routes, in-band steering + adoption, daemon construction | ✅ 2026-08-27 |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-27 — M5b: `auto/orchestrator` goes live — **M5 complete**
+
+The engine existed and answered `501`. Now both dialect routes serve it, streaming and not,
+and a client can steer a task it already started. `orchestrator/live.ts` + the wiring in
+`http/app.ts` and `daemon.ts`; +23 tests (13 `live.test.ts`, 12 `app.orchestrator.test.ts`,
+minus overlap), **717 green** (214 shared + 482 server + 21 CLI).
+
+- **`start()` exists because a header has one moment.** M5a's `run()` is a plain async
+  generator, so its body does not execute until the first pull — and by then the response has
+  begun and `x-rewter-task-id` can no longer be set. `start()` does the eager part (resolve
+  the initiator, parse settings, write the task row) and hands back
+  `{ taskId, abort, stream }`. The side benefit is the one that matters more: a bad `:pin`
+  now fails as a clean JSON `404` instead of as a truncated event stream, and there is a test
+  asserting no task-id header goes out on that path.
+- **The engine's stream is not the client's stream.** A `LiveTask` pumps the engine into an
+  unbounded replay buffer and broadcasts to whatever subscribers exist *at that moment,
+  possibly none*. Pumping with nobody attached is the whole design: it makes disconnect,
+  reconnect and steering the same mechanism — a subscriber that replays the buffer, then
+  follows live — rather than three features.
+- **Steering is a re-POST, because that is the only thing an OpenAI client can do.** There is
+  no channel for "say something to a request in flight"; there is only posting the
+  conversation again, one turn longer. `continuationKeys()` hashes the request's *prefixes*
+  (longest first, bounded at 8) and looks each up, so the newest task wins. Two edges got
+  tests because both are silent when wrong: an identical re-POST must **not** match itself
+  (that is a retry, and matching it would replay the entire conversation into the task as
+  steering), and a conversation continuing a task that already **finished** must start a
+  fresh one.
+- **`app.inject()` cannot test any of this, and that took five instrumentation passes to
+  see.** Two steering tests kept starting a second task. The index had the right key; the
+  follow-up's `continuationKeys` contained it; `match` still missed — because `live.size`
+  logged *from inside the route* was 0. `inject()` serializes in-flight streaming requests:
+  the second handler does not run until the first stream has finished, and `onIdle` has by
+  then forgotten the completed task. Not a production bug — a test-harness one, and the same
+  blind spot `app.socket.test.ts` was written for. Those two tests now bind an ephemeral port.
+  The follow-up's `fetch` must also be *awaited* before the parked worker is released, or the
+  first task wins the race and there is nothing left to steer.
+- **`daemon.stop()` collapses live tasks before closing the socket.** Closing first would
+  leave a fan-out's upstream calls billing with nobody left to read the answer.
 
 ### 2026-08-27 — M5a: the orchestrator engine and tier-1 fan-out
 
@@ -82,7 +121,8 @@ follows is what the code decided, not what the plan hoped.
 
 Still open for M5b: the `LiveTaskIndex` + `x-rewter-task-id` header + stream adoption (the
 `fingerprintConversation` half exists and is tested, the index does not), the 30s
-disconnect grace, daemon construction, the two `501` stubs, and the small hand-scored eval.
+disconnect grace, daemon construction, and the two `501` stubs. *(All done — see M5b below.
+The small hand-scored eval slipped past M5 and is still open.)*
 
 ### 2026-08-27 — M4c: AI card generation, and `rewter card` — **M4 complete**
 

@@ -10,12 +10,14 @@ import {
   type AnthropicMessageResponse,
   AnthropicMessagesRequestSchema,
   type AnthropicResponseBlock,
+  type ChatMessage,
   type ChatResponse,
   type OpenAIChatChunk,
   type OpenAIChatCompletion,
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  type StreamChunk,
   fromAnthropicMessages,
   fromAnthropicTools,
   toAnthropicStopReason,
@@ -28,6 +30,9 @@ import {
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
+import { type Orchestrator, OrchestratorError } from "../orchestrator/engine.js";
+import { type LiveTask, LiveTaskIndex, conversationKey } from "../orchestrator/live.js";
+import { collectStream } from "../providers/collect.js";
 import {
   AmbiguousModelError,
   ModelNotFoundError,
@@ -48,12 +53,79 @@ export interface AppOptions {
   logger?: boolean;
   clock?: () => number;
   sse?: SseWriterOptions;
+  /**
+   * Absent = `auto/orchestrator` still answers 501. The daemon always supplies
+   * one; tests that only exercise plain routing need not.
+   */
+  orchestrator?: Orchestrator | null;
+  /** Injectable so tests need not wait out a 30-second grace period. */
+  live?: LiveTaskIndex;
 }
+
+/** The header carrying the task id back to the client, and back to us. */
+export const TASK_ID_HEADER = "x-rewter-task-id";
 
 export function buildApp(opts: AppOptions): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
   const clock = opts.clock ?? Date.now;
   const { router, repos } = opts;
+  const orchestrator = opts.orchestrator ?? null;
+  const live = opts.live ?? new LiveTaskIndex();
+
+  /**
+   * Turn an orchestrator request into a stream to write, resolving it against
+   * whatever is already running.
+   *
+   * Three cases collapse into one return type. A follow-up to a live task is
+   * *steering*: its new messages go to the engine and the client attaches to
+   * the stream in flight — it does not start a second task, which is what a
+   * naive reading of "a new POST" would do and would double the bill. A
+   * re-POST with nothing new is a reconnect, and attaches with no injection.
+   * Anything else starts a task.
+   *
+   * Returns the task id so the caller can set the header before writing, which
+   * is the only moment it can.
+   */
+  function beginOrchestration(
+    conversation: ChatMessage[],
+    requestedModel: string,
+    taskIdHeader: string | undefined,
+    clientSignal: AbortSignal,
+  ): { taskId: string; stream: AsyncIterable<StreamChunk> } {
+    if (orchestrator === null) throw new OrchestratorUnavailable();
+
+    const existing = live.match({ taskIdHeader, conversation });
+    if (existing !== null) {
+      const { task, newMessages } = existing;
+      live.cancelGrace(task.taskId);
+      for (const m of newMessages) {
+        if (m.role === "user" && m.content !== null && m.content.trim() !== "") {
+          task.steer(m.content);
+        }
+      }
+      return { taskId: task.taskId, stream: task.subscribe(clientSignal) };
+    }
+
+    // The engine needs somewhere to read steering from, and the LiveTask that
+    // holds it does not exist until the engine's stream does. The box breaks
+    // the cycle: the engine only ever reads it between turns, long after
+    // `register` has filled it in.
+    let box: LiveTask | null = null;
+    // The task row is written here, eagerly, so a bad pin or an empty registry
+    // throws while a JSON error is still possible.
+    const started = orchestrator.start({
+      conversation,
+      requestedModel,
+      steering: () => box?.drainSteering() ?? [],
+    });
+    box = live.register({
+      taskId: started.taskId,
+      key: conversationKey(conversation),
+      abort: started.abort,
+      source: started.stream,
+    });
+    return { taskId: started.taskId, stream: box.subscribe(clientSignal) };
+  }
 
   app.register(cors, { origin: true });
 
@@ -108,14 +180,35 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const body = parsed.data;
 
     if (isOrchestratorModel(body.model)) {
-      // The engine lands in M5; until then the pseudo-model is honest about it
-      // rather than silently routing to some arbitrary concrete model.
-      return reply.code(501).send({
-        error: {
-          message: "the orchestrator pseudo-model is not implemented yet (milestone M5)",
-          type: "not_implemented",
-        },
-      });
+      const conversation = toChatMessages(body.messages);
+      const header = headerValue(req.headers[TASK_ID_HEADER]);
+      const id = `chatcmpl-${randomSuffix()}`;
+      const created = Math.floor(clock() / 1000);
+      const ctx = { id, model: body.model, created };
+
+      if (body.stream) {
+        await streamOrchestration(reply, {
+          begin: (signal) => beginOrchestration(conversation, body.model, header, signal),
+          ctx,
+          includeUsage: body.stream_options?.include_usage === true,
+          ...(opts.sse !== undefined && { sse: opts.sse }),
+        });
+        return reply;
+      }
+
+      // Non-streaming: fold the whole orchestration into one response. Every
+      // progress line is ordinary text, so this is the same fold a plain model
+      // call gets — the client just waits longer and sees the narration inline.
+      const abort = new AbortController();
+      try {
+        const begun = beginOrchestration(conversation, body.model, header, abort.signal);
+        reply.header(TASK_ID_HEADER, begun.taskId);
+        return toCompletion(await collectStream(begun.stream), ctx);
+      } catch (err) {
+        return reply
+          .code(statusForOrchestratorError(err))
+          .send({ error: { message: (err as Error).message, type: errorTypeFor(err) } });
+      }
     }
 
     const tools = toToolDefinitions(body.tools);
@@ -181,14 +274,29 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const body = parsed.data;
 
     if (isOrchestratorModel(body.model)) {
-      return reply
-        .code(501)
-        .send(
-          anthropicError(
-            "not_implemented",
-            "the orchestrator pseudo-model is not implemented yet (milestone M5)",
-          ),
-        );
+      const conversation = fromAnthropicMessages(body.messages, body.system);
+      const header = headerValue(req.headers[TASK_ID_HEADER]);
+      const id = `msg_${randomSuffix()}`;
+
+      if (body.stream) {
+        await streamOrchestrationAnthropic(reply, {
+          begin: (signal) => beginOrchestration(conversation, body.model, header, signal),
+          ctx: { id, model: body.model },
+          ...(opts.sse !== undefined && { sse: opts.sse }),
+        });
+        return reply;
+      }
+
+      const abort = new AbortController();
+      try {
+        const begun = beginOrchestration(conversation, body.model, header, abort.signal);
+        reply.header(TASK_ID_HEADER, begun.taskId);
+        return toAnthropicResponse(await collectStream(begun.stream), { id, model: body.model });
+      } catch (err) {
+        return reply
+          .code(statusForOrchestratorError(err))
+          .send(anthropicError(errorTypeFor(err), (err as Error).message));
+      }
     }
 
     const tools = fromAnthropicTools(body.tools);
@@ -299,6 +407,116 @@ async function streamCompletion(reply: FastifyReply, opts: StreamOptions): Promi
     writer.send(frame);
   }
   writer.done();
+  writer.end();
+}
+
+interface OrchestrationStreamOptions {
+  /** Deferred so the client's abort signal exists before the task attaches. */
+  begin: (signal: AbortSignal) => { taskId: string; stream: AsyncIterable<StreamChunk> };
+  ctx: StreamFrameContext;
+  includeUsage: boolean;
+  sse?: SseWriterOptions;
+}
+
+/**
+ * Stream an orchestration to an OpenAI client.
+ *
+ * The shape differs from `streamCompletion` in exactly two ways, both forced by
+ * the task outliving the request. The abort signal means "this client left",
+ * not "cancel the work" — the grace period decides that. And `begin` runs
+ * *before* the SSE headers go out, because `x-rewter-task-id` is what the
+ * client needs to steer or reconnect, and a header set after the first byte is
+ * a header nobody receives.
+ */
+async function streamOrchestration(
+  reply: FastifyReply,
+  opts: OrchestrationStreamOptions,
+): Promise<void> {
+  const gone = new AbortController();
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableEnded) gone.abort();
+  });
+
+  let stream: AsyncIterable<StreamChunk>;
+  try {
+    const begun = opts.begin(gone.signal);
+    // Before `SseWriter` touches the socket — see above.
+    reply.raw.setHeader(TASK_ID_HEADER, begun.taskId);
+    stream = begun.stream;
+  } catch (err) {
+    await reply
+      .code(statusForOrchestratorError(err))
+      .send({ error: { message: (err as Error).message, type: errorTypeFor(err) } });
+    return;
+  }
+
+  const writer = new SseWriter(reply.raw, opts.sse ?? {});
+  writer.send(roleFrame(opts.ctx));
+  try {
+    for await (const chunk of stream) {
+      const frame = toOpenAIChunk(chunk, opts.ctx, { includeUsage: opts.includeUsage });
+      if (frame !== null) writer.send(frame);
+    }
+  } catch (err) {
+    writer.send({
+      ...opts.ctx,
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      error: {
+        message: err instanceof Error ? err.message : String(err),
+        type: "internal_error",
+        code: null,
+      },
+    } satisfies OpenAIChatChunk);
+  }
+  writer.done();
+  writer.end();
+}
+
+interface AnthropicOrchestrationStreamOptions {
+  begin: (signal: AbortSignal) => { taskId: string; stream: AsyncIterable<StreamChunk> };
+  ctx: { id: string; model: string };
+  sse?: SseWriterOptions;
+}
+
+/** The same two departures from `streamAnthropic` as above, for the same reasons. */
+async function streamOrchestrationAnthropic(
+  reply: FastifyReply,
+  opts: AnthropicOrchestrationStreamOptions,
+): Promise<void> {
+  const gone = new AbortController();
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableEnded) gone.abort();
+  });
+
+  let stream: AsyncIterable<StreamChunk>;
+  try {
+    const begun = opts.begin(gone.signal);
+    reply.raw.setHeader(TASK_ID_HEADER, begun.taskId);
+    stream = begun.stream;
+  } catch (err) {
+    await reply
+      .code(statusForOrchestratorError(err))
+      .send(anthropicError(errorTypeFor(err), (err as Error).message));
+    return;
+  }
+
+  const writer = new SseWriter(reply.raw, opts.sse ?? {});
+  const translator = new AnthropicStreamTranslator(opts.ctx);
+  const emit = (event: { type: string }): void => writer.sendEvent(event.type, event);
+
+  emit(translator.start());
+  try {
+    for await (const chunk of stream) {
+      for (const event of translator.next(chunk)) emit(event);
+    }
+  } catch (err) {
+    emit({
+      type: "error",
+      error: { type: "api_error", message: err instanceof Error ? err.message : String(err) },
+    } as never);
+  }
+  for (const event of translator.finishIfOpen()) emit(event);
   writer.end();
 }
 
@@ -425,6 +643,34 @@ function statusForUpstreamError(err: unknown): number {
   const status = (err as { statusCode?: number | null }).statusCode;
   if (typeof status !== "number") return 502;
   return FORWARDED_UPSTREAM_STATUS.has(status) ? status : 502;
+}
+
+/** Thrown when a build has no engine wired — a 501 the client can act on. */
+class OrchestratorUnavailable extends Error {
+  constructor() {
+    super("the orchestrator pseudo-model is not enabled on this daemon");
+    this.name = "OrchestratorUnavailable";
+  }
+}
+
+function statusForOrchestratorError(err: unknown): number {
+  if (err instanceof OrchestratorUnavailable) return 501;
+  // Everything the engine throws before its first chunk is about the request:
+  // a pin naming a model that does not exist, or a registry with nothing that
+  // can lead. Both are 4xx/503 by the same table plain routing uses.
+  if (err instanceof OrchestratorError) return 400;
+  return statusForResolveError(err);
+}
+
+function errorTypeFor(err: unknown): string {
+  if (err instanceof OrchestratorUnavailable) return "not_implemented";
+  return "invalid_request_error";
+}
+
+/** Fastify hands a repeated header back as an array; take the first. */
+function headerValue(raw: string | string[] | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  return Array.isArray(raw) ? raw[0] : raw;
 }
 
 function statusForResolveError(err: unknown): number {

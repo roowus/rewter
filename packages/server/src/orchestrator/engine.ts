@@ -25,6 +25,7 @@ import {
   type ModelId,
   type StreamChunk,
   type Task,
+  type TaskId,
   type TaskSettings,
   TaskSettingsSchema,
   type ToolCall,
@@ -88,6 +89,29 @@ export interface OrchestrationRequest {
   requestedModel: string;
   settings?: Partial<TaskSettings> | undefined;
   signal?: AbortSignal | undefined;
+  /**
+   * Consulted at every turn boundary for messages to inject. This is how a
+   * steering follow-up reaches a task that is already mid-flight; see
+   * `LiveTask.drainSteering`.
+   */
+  steering?: (() => string[]) | undefined;
+}
+
+/**
+ * A task whose row exists and whose id is therefore known, but which has not
+ * produced a chunk yet.
+ *
+ * The split matters because of one HTTP fact: a response header cannot be set
+ * once the body has begun. `x-rewter-task-id` is the client's handle for
+ * steering and reconnection, so the id has to be knowable *before* the first
+ * chunk — which a bare `AsyncIterable` cannot offer, since its body does not
+ * run until the first pull.
+ */
+export interface StartedOrchestration {
+  taskId: TaskId;
+  /** The task's own controller — cancels the whole worker tree. */
+  abort: AbortController;
+  stream: AsyncIterable<StreamChunk>;
 }
 
 const DEFAULT_MAX_TURNS = 24;
@@ -109,11 +133,25 @@ export class Orchestrator {
   private readonly opts: OrchestratorOptions;
   private readonly clock: () => number;
   private readonly runWorker: WorkerRunner;
+  private dashboardUrl: string | null;
 
   constructor(opts: OrchestratorOptions) {
     this.opts = opts;
     this.clock = opts.clock ?? Date.now;
     this.runWorker = opts.runWorker ?? runTier1Worker;
+    this.dashboardUrl = opts.dashboardUrl ?? null;
+  }
+
+  /**
+   * Tell the engine where it is reachable.
+   *
+   * Separate from the constructor because of a boot ordering fact: the daemon
+   * must build the app — and therefore the engine — before it listens, but with
+   * `port: 0` the URL is not knowable until the socket is bound. No task can
+   * exist in between, so filling it in afterwards is in time for every one.
+   */
+  setDashboardUrl(url: string | null): void {
+    this.dashboardUrl = url;
   }
 
   /**
@@ -156,7 +194,23 @@ export class Orchestrator {
     return best.id;
   }
 
+  /**
+   * The whole orchestration as one stream — what a plain model call returns,
+   * deliberately. Callers that need the task id up front use `start`.
+   */
   async *run(req: OrchestrationRequest): AsyncIterable<StreamChunk> {
+    yield* this.start(req).stream;
+  }
+
+  /**
+   * Create the task row and build its stream, without starting it.
+   *
+   * Everything before the generator — resolving the initiator, parsing settings,
+   * writing the row — happens eagerly, so a bad pin or an empty registry throws
+   * *here*, while the caller can still send a JSON error. Once the generator is
+   * pulled, the only way to report a problem is a text line inside a 200.
+   */
+  start(req: OrchestrationRequest): StartedOrchestration {
     const initiatorModel = this.pickInitiator(req.requestedModel);
     const settings = TaskSettingsSchema.parse(req.settings ?? {});
     const task = this.createTask(req, initiatorModel, settings);
@@ -182,16 +236,21 @@ export class Orchestrator {
       maxTurns: this.opts.maxTurns ?? DEFAULT_MAX_TURNS,
       maxHandoffs: this.opts.maxHandoffs ?? DEFAULT_MAX_HANDOFFS,
       digestMaxTokens: this.opts.digestMaxTokens ?? DEFAULT_DIGEST_MAX_TOKENS,
-      dashboardUrl: this.opts.dashboardUrl ?? null,
+      dashboardUrl: this.dashboardUrl,
       conversation: req.conversation,
+      steering: req.steering ?? null,
     });
 
-    try {
-      yield* session.drive();
-    } finally {
-      req.signal?.removeEventListener("abort", onAbort);
-      session.dispose();
+    async function* stream(): AsyncIterable<StreamChunk> {
+      try {
+        yield* session.drive();
+      } finally {
+        req.signal?.removeEventListener("abort", onAbort);
+        session.dispose();
+      }
     }
+
+    return { taskId: task.id, abort: taskAbort, stream: stream() };
   }
 
   private createTask(
@@ -231,6 +290,7 @@ interface SessionOptions {
   digestMaxTokens: number;
   dashboardUrl: string | null;
   conversation: ChatMessage[];
+  steering: (() => string[]) | null;
 }
 
 interface ToolOutcome {
@@ -312,6 +372,8 @@ class Session {
           failure = "cancelled";
           break;
         }
+
+        yield* this.injectSteering();
 
         const reply = await this.callInitiator();
         yield* this.flush();
@@ -791,6 +853,31 @@ class Session {
   private cancelAllWorkers(): void {
     for (const worker of this.workers.values()) {
       if (worker.outcome === null && !worker.abort.signal.aborted) worker.abort.abort();
+    }
+  }
+
+  // ── Steering ──────────────────────────────────────────────────────────────
+
+  /**
+   * Inject anything a follow-up request queued, at the turn boundary.
+   *
+   * The boundary is the point: an initiator mid-turn has a tool call in flight
+   * and a message list the upstream has already been shown, so splicing a
+   * message in there would either be ignored or corrupt the exchange. Waiting
+   * costs one turn of latency and keeps the transcript coherent.
+   *
+   * It goes in as a `user` message because that is what it is — the user spoke.
+   * The tag tells the model this arrived mid-task rather than being part of the
+   * original request, which is the difference between "also do X" and "you
+   * misread the request".
+   */
+  private *injectSteering(): Generator<StreamChunk, void> {
+    const pending = this.o.steering?.() ?? [];
+    for (const message of pending) {
+      const text = message.trim();
+      if (text === "") continue;
+      this.messages.push({ role: "user", content: `[USER STEERING] ${text}` });
+      yield chunk(noteLine(`steering: ${clampLine(text, 160)}`));
     }
   }
 

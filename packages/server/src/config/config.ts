@@ -78,6 +78,30 @@ export type ModelConfig = z.infer<typeof ModelConfigSchema>;
 /** Not 20128 — that is 9router's, and both should be able to run at once. */
 export const DEFAULT_PORT = 20130;
 
+/**
+ * Orchestrator knobs. All optional: the engine has defaults for every one, and
+ * a config file that has never heard of orchestration must still boot a daemon
+ * that can orchestrate.
+ */
+export const OrchestratorConfigSchema = z
+  .object({
+    /**
+     * Who leads when the request pins nobody. Left null, the engine falls back
+     * to "priciest enabled model that supports tools" — a defensible guess, but
+     * a guess, and it changes the day a new model syncs into the registry.
+     */
+    initiatorModel: z.string().min(1).nullable().default(null),
+    /** Default `concurrency` for tasks that do not ask for one. */
+    concurrency: z.number().int().positive().max(16).default(4),
+    /** Default spending cap per task, in USD. Null = uncapped. */
+    maxSpendUsd: z.number().positive().nullable().default(null),
+    /** Runaway guards, not targets. */
+    maxTurns: z.number().int().positive().max(200).default(24),
+    maxHandoffs: z.number().int().min(0).max(10).default(2),
+  })
+  .default({});
+export type OrchestratorConfig = z.infer<typeof OrchestratorConfigSchema>;
+
 export const ConfigSchema = z.object({
   /** Loopback by default: the daemon holds provider keys and gates nothing else. */
   host: z.string().min(1).default("127.0.0.1"),
@@ -88,6 +112,7 @@ export const ConfigSchema = z.object({
   logger: z.boolean().default(true),
   providers: z.array(ProviderConfigSchema).default([]),
   models: z.array(ModelConfigSchema).default([]),
+  orchestrator: OrchestratorConfigSchema,
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

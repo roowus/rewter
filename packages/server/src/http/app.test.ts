@@ -389,8 +389,10 @@ describe("POST /v1/chat/completions — request errors", () => {
     expect(res.statusCode).toBe(503);
   });
 
-  it("501s the orchestrator pseudo-model until M5 lands", async () => {
+  it("501s the orchestrator pseudo-model when no engine is wired", async () => {
     // Honest, rather than silently routing to some arbitrary concrete model.
+    // The daemon always supplies an engine; this path is for tests that only
+    // exercise plain routing, and for a daemon built without one.
     setup([[text("x"), end()]]);
     const res = await app.inject({
       method: "POST",

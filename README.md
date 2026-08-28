@@ -59,8 +59,7 @@ Working today (M0–M3d): the **plain routing** path end to end — a bootable d
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
 `POST /v1/messages` for Anthropic ones, streaming and not), `GET /v1/models`, model
 resolution across all 27 upstreams, retry, SSE, and per-request cost metering. **Claude Code
-runs on it** — verified live end to end, tool calls included, against two upstreams. The
-orchestrator pseudo-model is listed but returns `501` until M5.
+runs on it** — verified live end to end, tool calls included, against two upstreams.
 
 Done (M4): the **model registry** the orchestrator chooses from — capability-card storage, where
 a hand correction survives card regeneration and cannot rewrite the card's provenance; the digest
@@ -73,9 +72,17 @@ tier-1 fan-out onto a concurrency limiter, `wait` in `all`/`any` modes, summarie
 with full text on request, progress narrated as ordinary text down the same stream, handoff to
 a stronger model, an AbortController tree for cancellation, and a spending cap read back from
 the cost ledger rather than counted in memory. It returns the *same* stream type a plain model
-call does, so the HTTP layer needs no special case for it. Next is **M5b**: wiring it to the
-two `/v1` routes (which still answer `501`), in-band steering, and stream adoption on
-reconnect.
+call does, so the HTTP layer needs no special case for it.
+
+Done (M5b): `auto/orchestrator` is **live on both dialects**, streaming and not. Ask any
+OpenAI or Anthropic client for it and you get a real orchestration — narrated progress down
+the response, the same wire format as any other model. Every response carries
+`x-rewter-task-id`, set before the first byte because that is the only moment a header can be
+set. Re-POSTing a conversation that is still running is **steering**, not a second task: the
+new message reaches the initiator at the next turn boundary and the follow-up request attaches
+to the stream already in flight. A client that drops and comes back **adopts** its task,
+replaying everything it missed; one that stays gone has 30 seconds before the task is
+cancelled, so a Ctrl-C does not leave workers billing to nobody.
 
 ## Quickstart
 
@@ -191,6 +198,34 @@ tags are dropped, a fenced or prose-wrapped reply is dug out, an over-long summa
 and a tag claimed as both a strength and a weakness is kept as the **weakness** — a false
 strength gets a model picked for work it bills for and fails at, while a false weakness only
 costs an option. Everything it discarded is printed, not swallowed.
+
+### Orchestrating
+
+Ask for the model `auto/orchestrator` and you get an orchestration instead of a model call —
+same endpoint, same wire format, any client:
+
+```sh
+curl -N localhost:20130/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"auto/orchestrator","stream":true,
+       "messages":[{"role":"user","content":"summarize these 3 URLs and compare them"}]}'
+# ◆ plan: fetch each page, then compare
+# ▶ [w1 · zai/glm-5.3 · tier1] summarize URL 1 — started
+# ▶ [w2 · zai/glm-5.3 · tier1] summarize URL 2 — started
+# ✔ [w1] done ($0.0021, 3.4s)
+# …then the synthesized answer
+```
+
+Progress arrives as ordinary assistant text, so a client needs no rewter awareness to show it.
+`auto/orchestrator:<model-id>` pins the initiator; otherwise the configured default is used,
+falling back to the most expensive enabled model that supports tools.
+
+Every orchestration response carries an **`x-rewter-task-id`** header. Re-POST the same
+conversation with one more user turn while it is still running and that turn is delivered to
+the initiator as steering — the task carries on, and the new request attaches to the stream
+already in flight rather than starting a second, separately-billed orchestration. Echoing the
+header back does the same thing without relying on the conversation matching. Disconnect and
+reconnect within 30 seconds and you adopt your task, replaying whatever you missed; stay gone
+and it is cancelled, so an interrupted client does not leave workers billing to nobody.
 
 ## Development
 
