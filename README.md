@@ -199,6 +199,11 @@ and a tag claimed as both a strength and a weakness is kept as the **weakness** 
 strength gets a model picked for work it bills for and fails at, while a false weakness only
 costs an option. Everything it discarded is printed, not swallowed.
 
+The prompt also forbids stating any specification it was not given — parameter counts, cutoffs,
+benchmark numbers. A bad tag gets dropped; invented prose gets stored and quoted back as fact,
+and the router cannot check it. Judgement about what a model is good at is the job; the specs we
+already have are handed to the generator rather than asked for.
+
 ### Orchestrating
 
 Ask for the model `auto/orchestrator` and you get an orchestration instead of a model call —

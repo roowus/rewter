@@ -30,7 +30,7 @@ import {
 import { z } from "zod";
 
 /** Bumped when the prompt changes shape; snapshot-tested for stability. */
-export const CARD_PROMPT_VERSION = 1;
+export const CARD_PROMPT_VERSION = 2;
 
 /**
  * A summary is one clause on one digest line. Longer, and a hundred models push
@@ -39,8 +39,14 @@ export const CARD_PROMPT_VERSION = 1;
  */
 const SUMMARY_MAX_CHARS = 180;
 const NOTES_MAX_CHARS = 600;
-/** Cards are ~80 tokens of JSON; the ceiling is a runaway guard, not a target. */
-const MAX_TOKENS = 800;
+/**
+ * Cards are ~80 tokens of JSON, so this is a runaway guard rather than a target
+ * — but it has to clear the *thinking* a reasoning model does first, which is
+ * charged as completion tokens and emitted before a single byte of the answer.
+ * At 800 a card generator would truncate mid-JSON and report "no JSON object",
+ * blaming the model for what was our ceiling.
+ */
+const MAX_TOKENS = 4_000;
 
 export class CardError extends Error {
   constructor(message: string) {
@@ -86,6 +92,10 @@ Rules:
   that can answer questions" is useless; "cheap 1M-context workhorse, weak at math" is not.
 - "notes" is for anything a router should know that the tags cannot express — quirks,
   rate limits, prompt-format sensitivities. Use null when there is nothing.
+- State no specification you were not given. Parameter counts, training-data cutoffs,
+  architectures and benchmark numbers are exactly the details that get invented; the router
+  cannot check them, and a wrong one is quoted back as fact. Judgement about what the model
+  is good at is what you are here for.
 - If you do not know this model, say so in "summary" and leave the tag lists empty.
   A card that admits ignorance is useful; a fabricated one is worse than none.`;
 
@@ -338,7 +348,19 @@ export async function generateCard(
   try {
     parsed = parseCardJson(response.message.content ?? "");
   } catch (err) {
-    return { modelId: model.id, unknownTags: [], contradictions: [], error: message(err) };
+    // A generator that ran out of room did not "produce no JSON" — it produced
+    // half of one, and the ceiling is ours. Say which it was, or the next person
+    // debugs the model instead of the cap.
+    const truncated =
+      response.finishReason === "length"
+        ? ` (the reply hit the ${MAX_TOKENS}-token ceiling and was cut off — a reasoning model may spend it all before answering)`
+        : "";
+    return {
+      modelId: model.id,
+      unknownTags: [],
+      contradictions: [],
+      error: `${message(err)}${truncated}`,
+    };
   }
 
   const card = CapabilityCardSchema.parse({

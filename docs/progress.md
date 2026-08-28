@@ -16,11 +16,41 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M5a | Orchestrator engine + tier-1 fan-out + handoff + cancellation + budget | ✅ 2026-08-27 |
 | M5b | Wiring: HTTP routes, in-band steering + adoption, daemon construction | ✅ 2026-08-27 |
 | — | *M5 acceptance: live 3-way parallel fan-out through `auto/orchestrator`* | ✅ 2026-08-28 |
+| — | *M4 acceptance: real cards for 3 models, written and eyeballed* | ✅ 2026-08-28 |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — three real cards, eyeballed — **M4 acceptance met**
+
+M4's last open item was "real cards for 3 models eyeballed", and it earned its place on the
+board: reading the output found two defects that no fixture could have.
+
+Cards written by `nine/gemini-3-flash` for `nine/glm-5.3`, `nine/claude-sonnet-4-6`, and by
+`glm-5.3` for the flash model — three real generations against a live upstream.
+
+- **`MAX_TOKENS` cleared the answer but not the thinking.** A card is ~80 tokens of JSON, so 800
+  looked generous. A reasoning generator spends its budget reasoning *first*, charged as
+  completion tokens and emitted before a single answer byte; the reply came back cut off at 796
+  tokens with `finish_reason: "length"`. Raised to 4,000.
+- **…and the error blamed the wrong layer.** All the caller saw was "no JSON object in the
+  generator's reply", which reads as a bad model. It was our ceiling. `generateCard` now appends
+  the truncation explicitly when `finishReason === "length"`, so the next reader raises the cap
+  instead of debugging the generator. +1 test, +1 negative assertion that an *untruncated*
+  failure does **not** mention the ceiling.
+- **A card invented a specification.** It described glm-5.3 as a "9B-parameter" model — a number
+  that appears nowhere in the registry, in the prompt, or (as far as anyone can check) in
+  reality. The old prompt asked for honesty about *ignorance* but never forbade fabricating
+  *specs*, and a spec is worse than a bad tag: unknown tags get dropped by the parser, while
+  prose is stored verbatim and quoted back as fact. `CARD_PROMPT_VERSION 2` adds an explicit rule
+  — state no specification you were not given; judgement is the job. Regenerating with it
+  produced a card that sticks to registry facts and opinion, and the invented parameter count
+  was gone.
+
+**720 green** (214 + 485 + 21), build and lint clean. Still open from M5: the tiny hand-scored
+eval (5–10 canned tasks).
 
 ### 2026-08-28 — M5 acceptance met live, and the cap that wasn't
 

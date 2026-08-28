@@ -231,6 +231,27 @@ describe("generateCard", () => {
   it("reports an unparseable reply as a result, not a throw", async () => {
     const result = await generateCard(scripted(["nope"]), target(), GLM, OPTS);
     expect(result.error).toContain("no JSON object");
+    // Nothing was truncated, so nothing should blame the ceiling.
+    expect(result.error).not.toContain("ceiling");
+  });
+
+  it("blames the token ceiling, not the model, when the reply was cut off", async () => {
+    // What a reasoning generator actually does: spends the budget thinking, then
+    // gets cut mid-JSON. Reporting only "no JSON object" sends the next reader
+    // to debug the model instead of raising the cap.
+    const generator = {
+      resolve: (id: string) => ({ model: fixtureModel(id) }),
+      async complete(): Promise<ChatResponse> {
+        return {
+          message: { role: "assistant", content: '{\n  "summary": "half a card' },
+          finishReason: "length" as const,
+          usage: { inputTokens: 10, outputTokens: 4000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      },
+    };
+    const result = await generateCard(generator, target(), GLM, OPTS);
+    expect(result.error).toMatch(/ceiling/);
+    expect(result.card).toBeUndefined();
   });
 
   it("asks the generator by resolved id, so a bare name is not sent upstream", async () => {

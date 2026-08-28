@@ -242,6 +242,22 @@ price sitting in the database. The card carries no pricing, so it cannot overwri
 Generation runs at `temperature: 0` — two runs should differ because the registry changed, not
 because sampling did.
 
+The prompt also **forbids stating any specification it was not given**. Parameter counts,
+training-data cutoffs, architectures and benchmark numbers are exactly the details a generator
+invents, and unlike a bad tag the router cannot check them — a wrong one is stored as prose and
+quoted back as fact. Found by eyeballing real cards (M4's acceptance criterion, and precisely what
+it was for): a card asserted the model it described was "9B-parameter" with nothing in the registry
+saying so. Judgement about what a model is good at is what the generator is there for; specs are
+what we already hold.
+
+**The token ceiling has to clear the thinking, not the answer.** A card is ~80 tokens of JSON, so
+`MAX_TOKENS` is a runaway guard rather than a target — but a reasoning generator spends its budget
+reasoning first, charged as completion tokens and emitted before a single byte of the answer. At
+800 the reply was cut off mid-JSON, so it is 4,000. And when a reply *is* truncated, the error says
+so: `finishReason === "length"` appends the ceiling to the message, because "no JSON object in the
+generator's reply" on its own blames the model for a limit that was ours, and sends the next reader
+to debug the wrong layer.
+
 **Parsing degrades; it does not throw.** `parseCardJson` throws only when there is no card to be
 had at all — no JSON object, or one with no summary. Everything short of that is repaired:
 
