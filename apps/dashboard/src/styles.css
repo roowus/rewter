@@ -1,0 +1,297 @@
+/*
+ * Plain CSS, one file. This is a local ops UI on one screen; a styling system
+ * would be more machinery than the thing it styles.
+ *
+ * Status colour is driven by `data-status` attributes so the components stay
+ * declarative and the palette lives in one place.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b36;
+  --text: #dfe3ea;
+  --dim: #8a93a4;
+  --accent: #7aa2f7;
+  --ok: #6ccf8f;
+  --warn: #e0af68;
+  --bad: #f07178;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+}
+
+code,
+pre,
+.label,
+.model,
+.cost,
+.elapsed,
+.tier {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+/* ── header ─────────────────────────────────────────────────────────── */
+
+.app-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.app-head h1 {
+  font-size: 1.1rem;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.conn {
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+.conn[data-status="live"] {
+  color: var(--ok);
+}
+.conn[data-status="reconnecting"] {
+  color: var(--warn);
+}
+
+.replayed,
+.orphaned {
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+.error {
+  font-size: 0.8rem;
+  color: var(--bad);
+}
+
+.empty {
+  color: var(--dim);
+}
+
+/* ── task ───────────────────────────────────────────────────────────── */
+
+.task {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.task-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.task-head h2 {
+  font-size: 1rem;
+  margin: 0;
+  flex: 1;
+}
+
+.task-cost {
+  color: var(--dim);
+  font-size: 0.85rem;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.status {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: #232833;
+  color: var(--dim);
+}
+.status[data-status="running"],
+.status[data-status="streaming"] {
+  color: var(--accent);
+}
+.status[data-status="succeeded"] {
+  color: var(--ok);
+}
+.status[data-status="failed"] {
+  color: var(--bad);
+}
+.status[data-status="waiting_approval"],
+.status[data-status="tool_pending"] {
+  color: var(--warn);
+}
+
+.plan,
+.steering {
+  margin: 0 0 0.8rem;
+  padding-left: 1.2rem;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.steering li::before {
+  content: "steering: ";
+  color: var(--accent);
+}
+
+.handoff {
+  font-size: 0.85rem;
+  color: var(--warn);
+  margin: 0.6rem 0 0;
+}
+
+/* ── work items ─────────────────────────────────────────────────────── */
+
+.work-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.work-item {
+  border-top: 1px solid var(--line);
+  padding: 0.5rem 0;
+}
+
+.work-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.work-item-head .title {
+  flex: 1;
+}
+
+.label {
+  color: var(--accent);
+}
+
+.model,
+.tier,
+.attempts,
+.cost,
+.elapsed {
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+
+.attempts {
+  color: var(--warn);
+}
+
+.note {
+  margin: 0.25rem 0 0 1.5rem;
+  font-size: 0.82rem;
+  color: var(--dim);
+}
+
+.note time {
+  margin-right: 0.5rem;
+  opacity: 0.7;
+}
+
+/* ── approvals ──────────────────────────────────────────────────────── */
+
+.approvals {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.approval {
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  padding: 0.7rem;
+  background: #1d1c17;
+}
+
+.approval header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--warn);
+  margin-bottom: 0.4rem;
+}
+
+.approval-summary {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem;
+  background: #0f1115;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+}
+
+.approval input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0f1115;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  margin-bottom: 0.5rem;
+  font: inherit;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.approval-actions button {
+  flex: 1;
+  padding: 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--ok);
+  background: transparent;
+  color: var(--ok);
+  font: inherit;
+  cursor: pointer;
+}
+
+.approval-actions button.deny {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.approval-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.approval-outcome {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  color: var(--dim);
+}

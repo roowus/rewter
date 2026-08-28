@@ -174,6 +174,20 @@ repair a reordering — replay-first turns the same race into a duplicate, which
 `seq` guard already drops. Polling was the alternative, and it is why a polled task tree jumps
 instead of moving.
 
+The third piece is the app itself: a React SPA the daemon serves as static files, with **no
+fetching layer at all**. The daemon's answer to "what is happening" is the event stream, the
+fold that reads it already lives in `shared`, and a REST layer beside it would be a second
+answer to the same question — the one on screen would be the one nobody tested. So the whole
+dashboard is one store holding one socket and one `FoldState`, and a page that ticks a single
+clock rather than reading one inside each row. A dropped socket leaves the tree on screen and
+says the feed is stale, instead of blanking the page as though the daemon had no tasks. And an
+approval card does **not** hide itself when you click it — it disables its buttons, posts, and
+tells you what the daemon said; the card leaves when the resolution folds. Hiding on click
+would leave the UI claiming an approval that a failed POST never recorded.
+
+Still to come in M7 — each blocked on a route that does not exist yet: kill, a costs page, and
+the registry editor.
+
 ## Quickstart
 
 ```sh

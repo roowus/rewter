@@ -27,10 +27,62 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6 | *acceptance: a gated shell command approved by curl mid-task* | ✅ 2026-08-28 |
 | M7a | The fold: `EventEnvelope[]` → task tree, in `shared` | ✅ 2026-08-28 |
 | M7b | `WS /internal/ws` — replay then live, over one socket | ✅ 2026-08-28 |
-| M7 | Dashboard (WS replay, task tree, approvals, kill, costs, registry editor) | 🟡 |
+| M7c | Dashboard app: store, task tree, approval cards | ✅ 2026-08-28 |
+| M7 | Dashboard (+ kill, costs page, registry editor) | 🟡 |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M7c: the dashboard itself, with nothing to fetch
+
+`apps/dashboard` exists now: Vite + React 18 + zustand, five source files and 41 tests. It has
+no data-fetching layer at all, and that is the design rather than an omission. The daemon's
+answer to "what is happening" *is* the event stream; the fold that turns it into a task tree
+already lives in `shared` and is already tested there. A REST layer beside it would be a second
+answer to the same question, and the one on screen would be the one nobody tested.
+
+So the store is socket lifecycle and nothing else — connect, subscribe from `fold.lastSeq`,
+fold what arrives, reconnect without losing our place. Four decisions worth keeping:
+
+- **Identity, not deep-equality, gates the render.** `applyEvent` returns the *same* state
+  object for an event at or below `lastSeq`, which is exactly the replay/live overlap and the
+  common case rather than a rare one. `if (after !== before) set(…)` means a duplicate costs
+  nothing; comparing by value would re-render the whole tree on every one of them.
+- **A dropped socket does not blank the tree.** Status goes to `reconnecting` and the fold stays
+  on screen, because a two-second blip that clears the view looks exactly like a daemon that
+  lost the task. The resubscribe then asks for `afterSeq: lastSeq` — on a long-lived daemon,
+  refolding from zero every time a laptop lid closes is the entire history, every time.
+- **Backoff is capped** (250ms → 5s). A dashboard left open on a sleeping laptop retries for
+  hours; a fixed delay is a tight loop against a daemon that is down for the afternoon.
+- **An unparseable frame is dropped, not fatal.** That is the daemon being newer than the
+  bundle. Folding a half-shaped envelope would corrupt the tree instead; the feed keeps working
+  and the status bar says so.
+
+The approval card is the milestone's acceptance criterion, and its one real rule is that it
+does **not** hide itself on click. The answer travels to the daemon, becomes `approval.resolved`,
+comes back down the socket and folds — and *that* removes the card. Hiding optimistically would
+leave the UI claiming an approval the daemon rejected. On failure the buttons come back (a dead
+daemon is retryable); on success they stay disabled, because the card is about to be folded away
+and buttons that return for a frame invite a second click on a settled row, which is a 409.
+
+Costs render as the split, not the total: `$0.0070 total — $0.0049 planning`. "The planner cost
+more than the work" is the question this whole design exists to answer and a single number hides
+it. Relatedly, `usd()` keeps four decimals below a cent — a `$0.00` beside every worker row makes
+the feature look free right up until the bill.
+
+Two build-gate notes, both of which cost time:
+
+- `vite.config.ts` needs `defineConfig` from **`vitest/config`**, not `vite`. The usual
+  `/// <reference types="vitest" />` never loads under an explicit `types` list in tsconfig, so
+  the `test` block typechecks against a `defineConfig` that has never heard of it. Tests were
+  green throughout; `pnpm build` was not. Fourth time this distinction has bitten.
+- Vite pinned to **^5.4.11**, not 6. vitest 2 bundles vite 5's types, and two vite majors in one
+  workspace makes `@vitejs/plugin-react`'s `Plugin` incompatible with `PluginOption` under
+  `exactOptionalPropertyTypes` — forty lines of type error for a version skew.
+
+Not built yet, and so M7 stays amber: kill (needs `POST /internal/tasks/:id/cancel`), a costs
+page (needs `GET /internal/costs?groupBy=`), and the registry editor (needs the models CRUD
+routes). All three are server work first. Workspace is 5 projects now: 1007 tests.
 
 ### 2026-08-28 — M7b: `WS /internal/ws`, and the seam between replay and live
 

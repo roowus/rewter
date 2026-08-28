@@ -159,7 +159,7 @@ schemas so the event/API contract cannot drift. Server module dirs are the futur
 | SSE | hand-rolled writer over `reply.raw` | exact framing for **both** dialects — OpenAI's data-only frames + `[DONE]`, and Anthropic's named `event:` frames with no sentinel; 15s heartbeat comments, close→cancel |
 | Dashboard live | WebSocket (`@fastify/websocket`) | event firehose + `afterSeq` replay; approve/deny stay REST |
 | DB | better-sqlite3 + Drizzle | synchronous writes = no async races in a single process; WAL for concurrent reads; drizzle-kit migrations |
-| Dashboard | Vite + React 18, TanStack Router/Query, zustand, Tailwind | local ops UI, no SSR |
+| Dashboard | Vite + React 18, zustand, plain CSS | local ops UI, no SSR. No router: one page. No query layer: nothing to fetch — see [the dashboard app](#the-dashboard-app-one-store-one-clock-m7c) |
 | Validation | zod (in `shared`) | validates OpenAI requests, LLM tool args, config, DB round-trips; `zod-to-json-schema` for tool defs |
 | Tests | vitest + recorded wire fixtures + in-memory SQLite + FakeProviderAdapter/ScriptedModel | deterministic, no keys/network |
 | Lint/format | Biome | one fast tool |
@@ -1338,6 +1338,61 @@ the bill, which is the one direction a cost display must not be wrong in.
 Tested in `fold.test.ts` against a `seq`-assigning stream builder rather than hand-numbered
 fixtures. The load-bearing case is the batch split: folding `[0,6)` then `[6,…)` must deep-equal
 folding all of it at once, because replay-then-live *is* that split.
+
+### The dashboard app: one store, one clock (M7c)
+
+`apps/dashboard` is a Vite + React 18 SPA the daemon serves as static files, so there is one
+process to start and one to forget to start. In dev, `vite dev` proxies `/internal` (socket
+included) at port 20130 instead of rebuilding the bundle on every keystroke.
+
+**There is no fetching layer, because there is nothing to fetch.** The daemon's answer to
+"what is happening" *is* the event stream, and the fold that turns it into a task tree already
+lives in `shared`. A REST layer beside it would be a second answer to the same question, and
+the one on screen would be the one nobody tested. That is why there is no TanStack Query here
+and no router: the whole app is one page over one `FoldState`.
+
+The store (`src/store.ts`, zustand) is therefore almost entirely socket lifecycle, and four
+decisions in it are load-bearing:
+
+- **Renders are skipped by identity, not by deep equality.** `applyEvent` returns the
+  *identical* state object for `seq <= lastSeq`, so the replay/live overlap costs nothing —
+  the store just sets what it got back.
+- **A dropped socket does not blank the tree.** `close` moves to `reconnecting` and leaves the
+  fold on screen; the status bar says the feed is stale rather than the page claiming the
+  daemon has no tasks. Reconnect re-subscribes with the store's own `lastSeq`, so it resumes
+  rather than refolds.
+- **Backoff is capped** (250ms → 5s). A dashboard left open on a laptop that sleeps retries
+  for hours; uncapped that is a tight loop against a daemon that is not running.
+- **An unparseable frame is dropped, not fatal.** It means the daemon is newer than the
+  bundle. The rest of the feed keeps working; folding a half-shaped envelope would corrupt the
+  tree instead.
+
+**One clock for the page.** `App.tsx` ticks `now` once a second and passes it down; nothing
+calls `Date.now()` inside a render. A clock read during render is a different instant per row,
+and a test that passes at different times of day.
+
+**Money is formatted to be readable, not to be round** (`src/format.ts`). Sub-cent amounts
+print four decimals — a task that cost `$0.0042` must not display as `$0.00`, which reads as
+free. The task row shows the split the fold records: total, and the initiator's own planning
+spend beside it.
+
+**The approval card does not hide itself on click** (`src/ApprovalCard.tsx`). It disables its
+buttons, POSTs, and shows what the daemon said; the card leaves when `approval.resolved` folds.
+Hiding optimistically would mean a rejected POST leaves the UI claiming an approval the daemon
+never recorded. The buttons come back **only** on failure — a dead daemon is retryable, but
+after a success the row is about to fold away and buttons that return for a frame invite a
+second click the daemon answers with 409. Each outcome is a different sentence, pinned in
+`approvals.test.ts`: `resumedWorker: false` says "recorded — no worker was waiting" rather
+than claiming a worker resumed. The card renders `summary` verbatim in a `<pre>`: approving a
+paraphrase of a command is approving something you did not read.
+
+Component tests drive `foldEvents` over real envelopes rather than hand-built `FoldedTask`
+literals — a hand-built one is a second opinion about what the fold produces, and those tests
+would keep passing after the fold changed shape.
+
+Still unbuilt in M7, and server work first in each case: the kill button needs
+`POST /internal/tasks/:id/cancel`, the costs page needs `GET /internal/costs?groupBy=`, and
+the registry editor needs the models CRUD routes.
 
 ## Phases
 
