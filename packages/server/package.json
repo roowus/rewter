@@ -23,6 +23,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",
     "@fastify/cors": "^11.3.0",
+    "@fastify/websocket": "^11.3.0",
     "@google/genai": "^2.19.0",
     "@rewter/shared": "workspace:*",
     "better-sqlite3": "^13.0.3",

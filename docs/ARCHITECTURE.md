@@ -1209,13 +1209,63 @@ done-pattern) so any CLI harness is addable by config.
   `health`, and `WS /internal/ws` (`{subscribe, afterSeq?}` → replay then live).
   Live today: `health` (with registry counts), `providers`, `models` (**including**
   disabled ones, unlike `/v1/models`), `events?afterSeq=[&taskId=]` (a non-numeric
-  `afterSeq` reads as 0 rather than erroring), and approvals — `GET
-  /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}`.
+  `afterSeq` reads as 0 rather than erroring), approvals — `GET
+  /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
+  and `WS /internal/ws` (see below).
   Providers are safe to serve as-is: only the env var *name* is ever stored.
-  There is deliberately **no `GET /internal/tasks/:id`** yet: per-task detail is a fold over
+  There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
   question on the server would give the dashboard two sources of truth to disagree about.
-  It arrives with the dashboard in M7.
+
+### `WS /internal/ws`: replay and live, in one place (M7b)
+
+`GET /internal/events?afterSeq=` has been able to hand over history since M1. What it cannot
+do is *keep* a dashboard current: poll on an interval and a task can finish between two
+polls, so the tree jumps rather than moves; poll fast enough to hide that and a live daemon
+spends its life answering. The socket does both halves in one place, and the seam between
+them is the part worth designing.
+
+A client sends `{type: "subscribe", afterSeq?, taskId?}` — `afterSeq` is its own
+`FoldState.lastSeq`, so a reconnect resumes rather than refolds. The server replays
+everything after it, sends `ready`, **and only then attaches the live listener**. The
+contract lives in `shared/src/socket.ts`; both sides parse the same schemas.
+
+**Why replay-first, and why duplicates are the acceptable failure.** An event appended while
+the replay is being written out gets delivered twice — once from the replay query, once from
+the listener. That is exactly the case the fold's `seq <= lastSeq` guard already drops, and
+`applyEvent` returns the identical state object for it, so a store can skip the render by
+identity. Attaching the listener first would instead deliver that event *ahead* of the replay
+rows that precede it. Reordering it cannot fix; redelivery it handles for free. This is what
+the "delivers events in seq order across the replay/live seam" test pins, by appending a 21st
+work item during the replay of 20 and asserting the received `seq`s equal their own sort.
+
+**`ready` is a frame, not a silence.** It carries `seq` (the highest replayed, or the
+client's own `afterSeq` if the replay was empty), `replayed` (a count, so an empty replay is
+distinguishable from a stalled one), and `taskId` — nullable rather than optional, because
+"all tasks" is an answer and a missing field would read as an older server. A dashboard that
+is already current still needs to leave its loading state and still needs a seq to reconnect
+with; a quiet socket gives it neither.
+
+**Re-subscribing replaces, it does not stack.** A client that changes its filter would
+otherwise receive every event twice, forever.
+
+**A bad message costs an `error` frame, not the connection.** Malformed JSON and messages
+that fail the schema both get `{type: "error", message}` and the socket stays open — a
+dashboard that mistypes one subscription should see why, not silently lose its connection and
+retry the same thing forever. `taskId` is a filter and not an authorization boundary:
+`/internal` is localhost-bound, and a client that asks for everything gets everything.
+
+The client half stays deliberately thin — `subscribe` is the only message it can send.
+Approve/deny remain REST POSTs: they are actions with outcomes worth a status code (404 for
+an id never seen, 409 for one already settled), not stream traffic.
+
+One implementation detail that is easy to get wrong and invisible when you do:
+`@fastify/websocket` recognizes `websocket: true` through an `onRoute` hook, and
+`app.register()` is deferred to boot. A route declared at root level therefore runs its hooks
+*before* the plugin has loaded and is served as a plain GET — the handshake fails with a
+non-101 and nothing logs an error. The route is declared inside its own `register` scope so
+it is queued behind the plugin. `app.inject()` cannot speak WebSocket at all, so those tests
+pay for an ephemeral port.
 
 ### Resolving an approval
 

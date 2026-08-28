@@ -6,6 +6,7 @@
  * through `app.inject()` — no ports, no teardown races.
  */
 import cors from "@fastify/cors";
+import websocket from "@fastify/websocket";
 import {
   type AnthropicMessageResponse,
   AnthropicMessagesRequestSchema,
@@ -18,6 +19,8 @@ import {
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  SocketClientMessageSchema,
+  type SocketServerMessage,
   type StreamChunk,
   type TaskId,
   fromAnthropicMessages,
@@ -193,6 +196,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   }
 
   app.register(cors, { origin: true });
+  app.register(websocket);
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   // Two header conventions, one token. OpenAI clients send `Authorization:
@@ -470,6 +474,73 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const q = req.query as { afterSeq?: string; taskId?: string };
     const afterSeq = q.afterSeq === undefined ? 0 : Number.parseInt(q.afterSeq, 10);
     return { events: opts.bus.eventsAfter(Number.isNaN(afterSeq) ? 0 : afterSeq, q.taskId) };
+  });
+
+  // ── WS /internal/ws ───────────────────────────────────────────────────────
+  // Replay then live, in one place, so the dashboard never has a gap between
+  // "what I fetched" and "what is happening now". See `shared/src/socket.ts`
+  // for why the order is replay-first and duplicates are the acceptable seam.
+  //
+  // Registered inside a `register` callback rather than on `app` directly: the
+  // websocket plugin recognizes `websocket: true` through an `onRoute` hook, and
+  // `app.register` is deferred to boot, so a root-level route declared here runs
+  // its hooks before the plugin has loaded and is served as a plain GET — a 404
+  // handshake with no error anywhere. Queuing the route behind the plugin's own
+  // register is what orders the two.
+  app.register(async (scope) => {
+    scope.get("/internal/ws", { websocket: true }, (socket) => {
+      let unsubscribe: (() => void) | null = null;
+
+      const send = (message: SocketServerMessage): void => {
+        // A socket that closed between the event and this call is normal, not an
+        // error worth logging every time a dashboard tab is shut.
+        if (socket.readyState !== socket.OPEN) return;
+        socket.send(JSON.stringify(message));
+      };
+
+      socket.on("message", (raw: unknown) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(String(raw));
+        } catch {
+          send({ type: "error", message: "message must be JSON" });
+          return;
+        }
+        const message = SocketClientMessageSchema.safeParse(parsed);
+        if (!message.success) {
+          send({ type: "error", message: message.error.issues[0]?.message ?? "invalid message" });
+          return;
+        }
+
+        // Re-subscribing replaces the previous subscription rather than stacking
+        // a second listener — otherwise a client that changed its filter would
+        // receive every event twice, forever.
+        unsubscribe?.();
+
+        const { afterSeq = 0, taskId } = message.data;
+        const replay = opts.bus.eventsAfter(afterSeq, taskId);
+        for (const event of replay) send({ type: "event", event });
+        send({
+          type: "ready",
+          seq: replay.at(-1)?.seq ?? afterSeq,
+          replayed: replay.length,
+          taskId: taskId ?? null,
+        });
+
+        // Attached *after* the replay is written. An event appended in between is
+        // delivered twice; the fold drops the second by `seq`. The alternative —
+        // attaching first — delivers it out of order, which nothing can undo.
+        unsubscribe = opts.bus.subscribe((event) => {
+          if (taskId !== undefined && event.taskId !== taskId) return;
+          send({ type: "event", event });
+        });
+      });
+
+      socket.on("close", () => {
+        unsubscribe?.();
+        unsubscribe = null;
+      });
+    });
   });
 
   return app;

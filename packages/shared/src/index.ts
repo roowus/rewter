@@ -5,6 +5,7 @@ export * from "./lifecycle.js";
 export * from "./entities.js";
 export * from "./events.js";
 export * from "./fold.js";
+export * from "./socket.js";
 export * from "./chat.js";
 export * from "./openai.js";
 export * from "./anthropic.js";

@@ -26,10 +26,58 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6g | `send_to_worker` (engine-side inbox, turn-boundary injection) | ✅ 2026-08-28 |
 | M6 | *acceptance: a gated shell command approved by curl mid-task* | ✅ 2026-08-28 |
 | M7a | The fold: `EventEnvelope[]` → task tree, in `shared` | ✅ 2026-08-28 |
+| M7b | `WS /internal/ws` — replay then live, over one socket | ✅ 2026-08-28 |
 | M7 | Dashboard (WS replay, task tree, approvals, kill, costs, registry editor) | 🟡 |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M7b: `WS /internal/ws`, and the seam between replay and live
+
+The fold needed a feed. `GET /internal/events?afterSeq=` could always hand over history; what
+it cannot do is keep a dashboard current without polling, and polling is the thing that makes
+a task tree jump instead of move. So one socket does both halves, and the interesting part is
+the order they happen in.
+
+`{type: "subscribe", afterSeq?, taskId?}` → replay everything after `afterSeq` → `ready` →
+*then* attach the live listener. Attaching first is the obvious implementation and the wrong
+one: an event appended mid-replay would arrive ahead of the replay rows that precede it, and
+nothing downstream can repair a reordering. Replay-first turns that same race into a
+*duplicate*, which the fold's `seq <= lastSeq` guard already drops and `applyEvent` already
+answers with the identical state object. Redelivery is handled for free; reordering is not
+handled at all. The test that pins this appends a 21st work item during the replay of 20 and
+asserts the received `seq`s equal their own sort — it fails on an attach-first implementation
+and passes on this one, which is the only reason it exists.
+
+Three smaller decisions, each with a test:
+
+- **`ready` is a frame, not a silence.** It carries the resume `seq`, a `replayed` count, and a
+  nullable `taskId`. An already-current dashboard replays nothing — and still has to leave its
+  loading state and still needs a seq to reconnect with. `replayed: 0` says "you are current";
+  no frame at all says "something may be broken", and those are different facts.
+- **Re-subscribing replaces the previous subscription.** A client that changes its filter would
+  otherwise get every event twice, forever. The test waits 50 ms after a single append to give
+  a leaked listener time to show itself.
+- **A bad message costs an `error` frame, not the connection.** Malformed JSON and a schema
+  failure both leave the socket open and usable. A dashboard that mistypes one subscription
+  should see why, not lose its connection and retry the same thing forever.
+
+The contract is `shared/src/socket.ts` with 10 tests of its own — mostly of what gets
+*rejected*, since these schemas are all that stands between a mistyped message and the event
+bus. A negative or fractional `afterSeq` is refused rather than passed through: it cannot have
+come from a fold, and silently replaying from the top would look like a slow reconnect.
+`approve`/`deny` are deliberately not client messages; they stay REST POSTs, because they are
+actions with outcomes worth a status code.
+
+One trap worth writing down, because it is invisible when you hit it: `@fastify/websocket`
+recognizes `websocket: true` through an `onRoute` hook, and `app.register()` is deferred to
+boot. A route declared at root level runs its hooks before the plugin loads and is quietly
+served as a plain GET — the handshake fails with a non-101 and nothing anywhere logs an error.
+The route now lives inside its own `register` scope so it is queued behind the plugin. And
+because `app.inject()` cannot speak WebSocket at all, these 9 tests pay for a real ephemeral
+port, unlike the rest of the HTTP suite.
+
+Server 694 → 703; shared 232 → 242; 966 across the workspace.
 
 ### 2026-08-28 — M7a: the fold, in `shared`, folding one event at a time
 

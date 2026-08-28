@@ -166,6 +166,14 @@ errors are not in the stream at all, and an event for something it never saw cre
 in `orphanedEvents` instead of quietly dropped, so a fold that joined a task late cannot be
 mistaken for a complete one.
 
+The second piece feeds it: `WS /internal/ws`. A client subscribes with the highest `seq` it
+has folded; the server replays everything after that, sends a `ready` frame, and *then*
+attaches the live listener. That order is the whole design. Attaching first would let an event
+appended mid-replay arrive ahead of the rows that precede it, and nothing downstream can
+repair a reordering — replay-first turns the same race into a duplicate, which the fold's
+`seq` guard already drops. Polling was the alternative, and it is why a polled task tree jumps
+instead of moving.
+
 ## Quickstart
 
 ```sh
