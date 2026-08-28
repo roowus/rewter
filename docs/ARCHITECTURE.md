@@ -1006,6 +1006,73 @@ Its tests run against real temp directories rather than a mocked `fs`, because t
 testing is exactly what a mock would paper over: symlink following, parent creation, resolved
 paths, and a killed child process.
 
+### The agent loop, as built (M6d)
+
+`workers/tier2.ts` is the conversation that drives those tools. It satisfies the same
+`WorkerRunner = (ctx) => Promise<WorkerOutcome>` shape as tier 1, so the engine's `spawn`
+needs no case analysis — but where tier 1 is one call, this is a loop, and everything awkward
+about it comes from the model being an unreliable participant in that loop. Four decisions
+carry the weight:
+
+- **The loop terminates on `finish_report`, and nothing else.** A model that stops calling
+  tools and writes prose gets exactly one nudge; if it does it twice, that prose *becomes* the
+  report rather than the run failing on a formality. The work may well be done, and refusing
+  to read it would bill the user for tokens and return nothing. Turn exhaustion is still a
+  failure — the initiator has to know the run was cut off rather than finished — but it keeps
+  the last prose as the run's result text.
+- **A repeated denied call is answered from memory, not re-gated.** The prompt tells the
+  worker not to retry a refusal, and prompts are advisory. Re-running `approvals.require` for
+  a call the user already denied would put the same card in front of them again, so a
+  fingerprint — `name(arguments)`, trimmed — of every denied call is kept and a repeat is
+  short-circuited with the original reason plus a note that it was already refused. The user
+  is asked **once per distinct request**; a retry with different arguments *is* a different
+  request and does ask again. The check runs before `dispatch` reaches `execute.ts` at all.
+- **`report_progress` and `finish_report` are implemented here, not in `execute.ts`.** Neither
+  touches the disk: one writes to the user's live feed and one ends the run. Keeping them in
+  the loop is what preserves `execute.ts` as *the* module where every filesystem-reaching tool
+  lives — the property that makes it auditable as a list.
+- **A tool call is never a throw.** `parseWorkerArgs` failures, unknown tools, denials and
+  exceptions all become `role: "tool"` messages, because the only way a model fixes a mistake
+  is by being told about it in a turn it can respond to. A malformed `finish_report` is
+  recoverable on the same terms: it is told what was wrong and may file again, rather than a
+  bad JSON blob costing the whole run.
+
+`createTier2Runner(opts)` is a **factory** rather than a bare runner because workspace and
+approvals are per-*task* while `WorkerRunner` is per-*work-item*: the engine builds one when
+it opens a session and hands the same runner to every tier-2 worker on that task. That seam is
+what let tier 2 land without touching `WorkerContext` or `runTier1Worker`.
+
+`write_file` and `edit_file` paths accumulate into an `artifacts` set that the rendered report
+appends as `files touched:`, so the initiator sees what changed even when the model forgets to
+list it. The report is rendered as a **document, not JSON**, because its reader is the
+initiator — a model — and it will be pasted into a synthesis prompt. A `failure` status fails
+the run but still stores the report text; `partial` succeeds with a `partial:`-prefixed
+summary, since two findings out of three are worth more to the initiator than a failure.
+
+Lifecycle is unchanged from tier 1 and non-negotiable: `created → streaming → succeeded |
+failed | cancelled`, with no shortcut edge in `WORKER_RUN_TRANSITIONS`. The loop's tests walk
+**every** exit against a real in-memory database — report success/failure/partial, prose
+fallback, turn exhaustion, provider throw, `finishReason: "error"`, pre-abort and mid-flight
+abort — because a path that returns without transitioning throws at the repo write in
+production rather than in a test. The denial tests count approval cards off the **event log**
+rather than the pending list: by the time an assertion runs every card has been resolved, and
+counting is the only way to see the difference between asking once and asking twice.
+
+### The tier-2 prompt
+
+`TIER2_SYSTEM_PROMPT` deliberately does **not** ask for tier 1's `SUMMARY:` line, and a test
+asserts its absence — two sign-off conventions would give the model a reason to skip the
+`finish_report` call the loop depends on. It states the terminator first, then that a denial
+is a state to adapt to rather than a wall, then that reading precedes writing (`edit_file`
+refuses a non-unique anchor, and having read the file is the cheapest way never to hit that).
+
+`buildTier2Messages` names the scratch space **only when it differs from `cwd`**. When a task
+points at a real project directory every write there is gated, so the model needs somewhere
+ungated for temporaries and needs telling that its own working directory is not it; when the
+two are the same, a second path would only suggest they differ.
+`ORCHESTRATOR_PROMPT_VERSION` is 2 — the tier ladder no longer says tier 2 is unavailable, and
+now warns that work outside the workspace may pause for approval.
+
 ## Tier-3 seam (phase 2, types committed in phase 1)
 
 ```ts

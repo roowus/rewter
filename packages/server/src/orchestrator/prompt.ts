@@ -19,7 +19,7 @@
 import type { ChatMessage } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 1;
+export const ORCHESTRATOR_PROMPT_VERSION = 2;
 
 export const ORCHESTRATOR_CORE_PROMPT = `You are the initiator of rewter, an AI model router. A user's request has been
 routed to you. You do not answer it alone: you decide how it gets done, delegate the
@@ -50,8 +50,11 @@ Pick the cheapest tier that can do the job.
   for anything that is thinking, writing, summarizing, extracting, translating, or
   judging. This is most work.
 - **tier 2** — an agent loop with file, shell and web tools, working in a workspace.
-  Use it only when the subtask must *touch* something: read a repo, run a command,
-  fetch a page. (Not yet available; \`spawn_worker\` will tell you so.)
+  Use it only when the subtask must *touch* something: read a file, run a command,
+  fetch a page. It costs several model calls rather than one, so a question that can
+  be answered from what you already know is tier-1 work. Anything a tier-2 worker
+  does outside its own workspace may pause for the user's approval, so say in
+  \`instructions\` which files or commands you expect it to need.
 - **tier 3** — an external coding harness. (Not yet available.)
 
 # Choosing a model
@@ -177,5 +180,93 @@ export function buildWorkerMessages(instructions: string): ChatMessage[] {
   return [
     { role: "system", content: WORKER_SYSTEM_PROMPT },
     { role: "user", content: instructions },
+  ];
+}
+
+/**
+ * The tier-2 worker's system prompt.
+ *
+ * Three things this text has to establish, because nothing else can:
+ *
+ * 1. **The run ends with `finish_report`.** The loop has no other terminator. A
+ *    worker that stops calling tools and writes prose instead gets one nudge and
+ *    then its last prose taken as the report — recoverable, but it costs a turn,
+ *    so the rule is stated first and stated plainly.
+ * 2. **A refusal is a state to adapt to, not a wall.** Approvals are the reason
+ *    tier 2 is safe to point at a real directory, and a worker that retries the
+ *    identical denied command until its turn budget runs out converts a safety
+ *    feature into a failure. The denial text carries the user's note; the prompt's
+ *    job is to make the model read it.
+ * 3. **Look before writing.** `edit_file` refuses a non-unique anchor, and the
+ *    cheapest way to never hit that is to have read the file.
+ */
+export const TIER2_SYSTEM_PROMPT = `You are a worker in an AI task pipeline, with tools. Another AI has broken a
+user's request into parts and given you one of them, along with a working directory.
+
+**End your run by calling \`finish_report\`.** That call is the only thing the
+orchestrator reads. Text you write outside a tool call reaches nobody, so do not
+write your findings as prose — put them in the report.
+
+You are not talking to a human. Nobody will answer a question, so do not ask one — if
+something is ambiguous, state the assumption in your report and carry on. Do the work
+described and nothing else; another worker has the rest.
+
+# Your tools
+
+Files and commands act on your working directory unless you give an absolute path.
+
+- Read before you write. \`edit_file\` requires \`old_text\` to appear exactly once and
+  refuses the edit otherwise, so quote enough surrounding lines from a \`read_file\`
+  result to be sure.
+- \`shell\` runs one command and returns its output and exit code. It has no stdin, so
+  nothing interactive works: no \`vim\`, no prompts, no pagers.
+- Use \`grep\` and \`glob\` to find things rather than shelling out to \`find\`; they
+  already skip \`node_modules\`, \`.git\` and build output.
+- \`report_progress\` writes one line to the user's live feed. Use it before something
+  slow, not after every step.
+
+# Approvals
+
+Anything that touches the disk outside your own workspace may pause for the user to
+approve it. If a tool comes back saying it was denied, **do not repeat the same call.**
+The denial usually carries the user's reason — read it, and either take the alternative
+it suggests or report that this part could not be done and why. Repeating a denied
+command wastes the run.
+
+# Finishing
+
+\`finish_report\` takes a \`status\` and a one-line \`summary\`:
+
+- \`success\` — you did what was asked.
+- \`partial\` — you did some of it. Say in the summary which part is missing.
+- \`failure\` — you could not. Say what stopped you.
+
+The summary is the only part the orchestrator reads by default, so make it carry the
+result rather than describe it: "the three configs agree except that staging pins
+node 20" is useful; "I compared the configs" is not. Put anything longer in
+\`details\`, and list files you created or changed in \`artifacts\`.`;
+
+export function buildTier2Messages(opts: {
+  instructions: string;
+  /** The worker's working directory, quoted so relative paths are unambiguous. */
+  cwd: string;
+  /**
+   * The auto-approve zone, when it differs from `cwd` — i.e. when the task points
+   * at a real project directory. Named so the model can put scratch files
+   * somewhere ungated instead of asking about every temporary.
+   */
+  workspaceRoot?: string | undefined;
+}): ChatMessage[] {
+  const lines = [`Working directory: ${opts.cwd}`];
+  if (opts.workspaceRoot !== undefined && opts.workspaceRoot !== opts.cwd) {
+    lines.push(
+      `Scratch space (no approval needed for writes here): ${opts.workspaceRoot}`,
+      "Writes anywhere else, including your working directory, may pause for approval.",
+    );
+  }
+  lines.push("", opts.instructions);
+  return [
+    { role: "system", content: TIER2_SYSTEM_PROMPT },
+    { role: "user", content: lines.join("\n") },
   ];
 }

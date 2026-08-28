@@ -14,8 +14,10 @@ import { describe, expect, it } from "vitest";
 import {
   ORCHESTRATOR_CORE_PROMPT,
   ORCHESTRATOR_PROMPT_VERSION,
+  TIER2_SYSTEM_PROMPT,
   WORKER_SYSTEM_PROMPT,
   buildInitiatorMessages,
+  buildTier2Messages,
   buildWorkerMessages,
 } from "./prompt.js";
 
@@ -27,7 +29,19 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(1);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(2);
+  });
+
+  it("offers tier 2 as available work rather than a promise", () => {
+    // The ladder said "not yet available" until M6. An initiator that still reads
+    // that never spawns a worker that can touch a file, and the whole tier is
+    // dead code the model politely declines to use.
+    const ladder = ORCHESTRATOR_CORE_PROMPT.slice(
+      ORCHESTRATOR_CORE_PROMPT.indexOf("**tier 2**"),
+      ORCHESTRATOR_CORE_PROMPT.indexOf("**tier 3**"),
+    );
+    expect(ladder).not.toContain("Not yet available");
+    expect(ladder).toContain("approval");
   });
 
   it("teaches every behaviour the engine relies on the model knowing", () => {
@@ -133,5 +147,61 @@ describe("buildWorkerMessages", () => {
     // A tier-1 worker has no tools. Mentioning spawn_worker would invite it to
     // narrate tool calls it cannot make.
     expect(WORKER_SYSTEM_PROMPT).not.toContain("spawn_worker");
+  });
+});
+
+describe("buildTier2Messages", () => {
+  it("tells the worker how the run ends, since the loop has no other terminator", () => {
+    expect(TIER2_SYSTEM_PROMPT).toContain("finish_report");
+    // Nothing else stops the loop, so this cannot be a passing mention.
+    expect(TIER2_SYSTEM_PROMPT).toContain("End your run");
+  });
+
+  it("tells the worker to adapt to a denial rather than retry it", () => {
+    // A worker that re-issues the identical denied command until its turn budget
+    // runs out turns the approval gate into a failure mode.
+    expect(TIER2_SYSTEM_PROMPT).toContain("do not repeat the same call");
+  });
+
+  it("does not ask for the tier-1 SUMMARY line, which would collide with the report", () => {
+    // Tier 2 reports through `finish_report`. Asking for a SUMMARY line too gives
+    // the model two sign-off conventions and a reason to skip the tool call.
+    expect(TIER2_SYSTEM_PROMPT).not.toContain("SUMMARY:");
+  });
+
+  it("names the working directory before the instructions", () => {
+    const messages = buildTier2Messages({
+      instructions: "count the TODOs",
+      cwd: "/tmp/ws/task_1",
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toEqual({ role: "system", content: TIER2_SYSTEM_PROMPT });
+    const user = messages[1]?.content ?? "";
+    expect(user.indexOf("/tmp/ws/task_1")).toBeLessThan(user.indexOf("count the TODOs"));
+  });
+
+  it("points at the scratch space only when it is somewhere else", () => {
+    // When the task runs in a real project directory, every write there is gated —
+    // so the model needs somewhere ungated to put temporaries, and needs to be
+    // told that its own cwd is not it.
+    const pointed = buildTier2Messages({
+      instructions: "audit the config",
+      cwd: "/Users/x/projects/thing",
+      workspaceRoot: "/tmp/ws/task_1",
+    });
+    const user = pointed[1]?.content ?? "";
+    expect(user).toContain("Scratch space");
+    expect(user).toContain("/tmp/ws/task_1");
+    expect(user).toContain("may pause for approval");
+
+    // In the ordinary case cwd *is* the workspace, and a second path would only
+    // suggest the two differ.
+    const plain = buildTier2Messages({
+      instructions: "audit the config",
+      cwd: "/tmp/ws/task_1",
+      workspaceRoot: "/tmp/ws/task_1",
+    });
+    expect(plain[1]?.content).not.toContain("Scratch space");
   });
 });

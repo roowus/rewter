@@ -20,11 +20,70 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6a | Workspace sandbox (`classify`, symlink-resolved containment) | ✅ 2026-08-28 |
 | M6b | Approval choke point (`approvals.require`, read-only allowlist) | ✅ 2026-08-28 |
 | M6c | Tier-2 tool surface + executor (10 tools, every one gated) | ✅ 2026-08-28 |
-| M6 | Tier-2 agent loop + wiring | 🟡 in progress |
+| M6d | Tier-2 agent loop (`runTier2Worker`) + its system prompt | ✅ 2026-08-28 |
+| M6 | Tier-2 engine wiring + `send_to_worker` + approval routes | 🟡 in progress |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M6d: the tier-2 agent loop
+
+The conversation that drives the ten tools. Same `WorkerRunner` shape as tier 1 — so the
+engine's `spawn` needs no case analysis — but where tier 1 is one call, this is a loop, and
+everything awkward about it comes from the model being an unreliable participant in it. Four
+decisions carry the weight:
+
+- **The loop terminates on `finish_report`, and nothing else.** A model that stops calling
+  tools and writes prose gets exactly one nudge; if it does it twice, that prose *becomes*
+  the report rather than the run failing on a formality. The work may well be done, and
+  refusing to read it would bill the user for nothing. Running out of turns is still a
+  failure, but it keeps the last prose as the run's result text — the initiator has to know
+  the run was cut off, not that it produced nothing.
+- **A repeated denied call is answered from memory, not re-gated.** The prompt tells the
+  worker not to retry a refusal, and prompts are advisory. Re-running `approvals.require`
+  for a call the user already denied would put the same card in front of them again, so a
+  fingerprint (`name(arguments)`) of every denied call is kept and a repeat is
+  short-circuited with the original reason. The user is asked **once per distinct request**;
+  a retry with different arguments is a different request and does ask again.
+- **`report_progress` and `finish_report` are implemented in the loop, not `execute.ts`.**
+  Neither touches the disk: one writes to the user's feed and one ends the run. That keeps
+  `execute.ts` the module where every filesystem-reaching tool lives, which is what makes it
+  auditable as a list.
+- **A tool call is never a throw.** `parseWorkerArgs` failures, unknown tools, denials and
+  exceptions all become `role: "tool"` messages, because the only way a model fixes a
+  mistake is by being told about it in a turn it can respond to. A malformed
+  `finish_report` is recoverable too — it gets told what was wrong and can file again.
+
+`createTier2Runner(opts)` is a factory rather than a bare function because workspace and
+approvals are per-*task* while `WorkerRunner` is per-*work-item*: the engine makes one when
+it opens a session and hands the same runner to every tier-2 worker on the task. That is
+what let tier 2 land without touching `WorkerContext` or `runTier1Worker`.
+
+The prompt (`TIER2_SYSTEM_PROMPT`) deliberately does **not** ask for tier 1's `SUMMARY:`
+line — a test asserts its absence. Two sign-off conventions would give the model a reason to
+skip the `finish_report` call the loop depends on. `buildTier2Messages` names the scratch
+space only when it differs from `cwd`; when a task points at a real project directory, every
+write there is gated, so the model needs somewhere ungated for temporaries and needs telling
+that its own cwd is not it. `ORCHESTRATOR_PROMPT_VERSION` is 2: the ladder no longer says
+tier 2 is unavailable.
+
+26 loop tests. They walk every exit against a real in-memory database — report, prose
+fallback, turn exhaustion, provider throw, error finish, pre-abort, mid-flight abort —
+because `WORKER_RUN_TRANSITIONS` has no shortcut edge and a path that returns without
+transitioning throws at the repo write and takes the task down. The denial tests **count
+approval cards off the event log** rather than checking the pending list, since by the time
+an assertion runs every card has been resolved; counting is the only way to see the
+difference between asking once and asking twice. One trap worth recording: the loop grows a
+single `messages` array in place and hands the same reference over every turn, so a test
+router that stores requests as-is has every recorded turn aliasing the final state — an
+assertion about "what the model was told at turn 2" silently becomes one about turn 9. The
+scripted router copies.
+
+Still to come in M6: the engine wiring (the `tier !== 1` refusal, the hardcoded `tier: 1` in
+the progress line, and a tier-aware dispatcher in the single `runWorker` slot),
+`send_to_worker`, the `/internal/approvals/:id` route with its in-band `approve|deny` twin,
+and the acceptance — a gated shell command approved by curl mid-task.
 
 ### 2026-08-28 — M6c: the tier-2 tool surface and executor
 

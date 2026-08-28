@@ -106,8 +106,23 @@ file it only half received; files keep the head, `shell` keeps the tail. Reads a
 when they leave the zone, `edit_file` refuses an ambiguous anchor rather than editing
 somewhere the model never looked, the recursive walk won't follow a symlink out of the tree,
 and `web_fetch` takes http(s) only — `file:` would be a way around the path gate entirely.
-Still to come in M6: the agent loop that drives them, and the acceptance (a gated shell
-command approved by curl mid-task).
+
+The loop that drives them (M6d) is the same `WorkerRunner` shape as a tier-1 worker, so the
+engine needs no case analysis — but a loop has a model as an unreliable participant, and that
+is where its rules come from. It ends on `finish_report` and nothing else; a model that writes
+prose instead gets one nudge, and if it does it twice that prose *becomes* the report, because
+the work may well be done and refusing to read it would bill you for nothing. A denied call is
+remembered by fingerprint and a repeat is answered from memory, so a model that ignores the
+prompt and retries does not put the same card in front of you again — you are asked once per
+*distinct* request, and a retry with different arguments is a different request. Nothing
+throws: bad arguments, an invented tool name, a refusal, even a malformed report all come back
+as a turn the model can answer, since being told is the only way it fixes anything. Every exit
+is walked against a real database, because the lifecycle has no shortcut edge and a forgotten
+transition would surface as a crashed task rather than a failed test.
+
+Still to come in M6: wiring the loop into the engine (plus `send_to_worker`), the
+`/internal/approvals/:id` route and its in-band `approve`/`deny` twin, and the acceptance — a
+gated shell command approved by curl mid-task.
 
 ## Quickstart
 
