@@ -84,16 +84,30 @@ to the stream already in flight. A client that drops and comes back **adopts** i
 replaying everything it missed; one that stays gone has 30 seconds before the task is
 cancelled, so a Ctrl-C does not leave workers billing to nobody.
 
-In progress (M6): the **safety layer** tier-2 workers will run inside — the workspace
-sandbox and the single approval gate. The sandbox answers one question, *is this path inside
-the auto-approve zone*, on symlink-resolved paths, and refuses nothing: pointing a task at a
-real project directory is meant to put every write outside the zone, because that is exactly
-when you want to be asked. The gate is one function, and there being exactly one is the
-point — a second path to the disk is a second place to forget it. Auto-approvals are logged
-rather than skipped, so "nothing needed asking" and "the gate was off" stay distinguishable;
-a denial comes back as a *result* carrying your note, so a worker told "use the test fixture
-instead" adapts rather than dying; and the read-only allowlist forfeits on any shell
-metacharacter, since `ls; rm -rf ~` does begin with `ls`.
+In progress (M6): the **safety layer** tier-2 workers run inside, and the tools they run
+with. The sandbox answers one question, *is this path inside the auto-approve zone*, on
+symlink-resolved paths, and refuses nothing: pointing a task at a real project directory is
+meant to put every write outside the zone, because that is exactly when you want to be
+asked. The gate is one function, and there being exactly one is the point — a second path to
+the disk is a second place to forget it. Auto-approvals are logged rather than skipped, so
+"nothing needed asking" and "the gate was off" stay distinguishable; a denial comes back as a
+*result* carrying your note, so a worker told "use the test fixture instead" adapts rather
+than dying; and the read-only allowlist forfeits on any shell metacharacter, since
+`ls; rm -rf ~` does begin with `ls`.
+
+The ten tools themselves (M6c) are declared twice — JSON Schema for the model, zod for us,
+with a parity test so the halves cannot drift — and implemented in exactly one file, so there
+is one list to audit rather than one per caller. Classify, then ask, then act, in that order:
+a tool that acts and reports afterwards has already done the damage, so every denial test
+also asserts the disk was untouched. Nothing throws — a missing file, a refused approval, an
+`old_text` that matches twice, a command that exits 1 all come back as text the model can
+respond to. Output is capped *and says it was cut*, since a model reasons confidently about a
+file it only half received; files keep the head, `shell` keeps the tail. Reads are gated too
+when they leave the zone, `edit_file` refuses an ambiguous anchor rather than editing
+somewhere the model never looked, the recursive walk won't follow a symlink out of the tree,
+and `web_fetch` takes http(s) only — `file:` would be a way around the path gate entirely.
+Still to come in M6: the agent loop that drives them, and the acceptance (a gated shell
+command approved by curl mid-task).
 
 ## Quickstart
 

@@ -19,11 +19,73 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | — | *M4 acceptance: real cards for 3 models, written and eyeballed* | ✅ 2026-08-28 |
 | M6a | Workspace sandbox (`classify`, symlink-resolved containment) | ✅ 2026-08-28 |
 | M6b | Approval choke point (`approvals.require`, read-only allowlist) | ✅ 2026-08-28 |
-| M6 | Tier-2 agent loop + tools + wiring | 🟡 in progress |
+| M6c | Tier-2 tool surface + executor (10 tools, every one gated) | ✅ 2026-08-28 |
+| M6 | Tier-2 agent loop + wiring | 🟡 in progress |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M6c: the tier-2 tool surface and executor
+
+Ten tools a worker can reach the disk with, and every one of them consults the gate from
+M6b before it does anything. Two files:
+
+- **`workers/tools.ts`** — each tool declared twice, JSON Schema for the model and zod for
+  us, side by side, with a parity test asserting the pairing property-for-property (same
+  keys, same required set, every property described). Drift either way is a real bug: the
+  model told about an argument we discard, or an argument refused that it was never told to
+  send. `parseWorkerArgs` returns a *message* on every failure — a worker that dies because
+  it passed a number where a string was wanted has burned a subtask on a one-turn fix.
+- **`workers/execute.ts`** — one function per tool, and the only place tools are implemented,
+  so there is one list to audit rather than one per caller.
+
+`web_search` from the design is **absent on purpose**, and the tool-name list is asserted
+exactly so that stays a decision: there is no search backend, and a tool that errors every
+time costs a turn to discover and invites a retry.
+
+The four rules the executor is built around:
+
+1. **Classify, then ask, then act.** Every deny test also asserts the disk was untouched —
+   that second half is the one that catches an act-then-ask ordering bug, since a tool that
+   acts and reports afterwards has already done the damage.
+2. **Every failure is a tool result, never a throw.** Missing file, denied approval,
+   non-unique anchor, exit 1 — all text the model can respond to. Errno codes become prose,
+   because `Error#message` repeats the syscall and the path the model already knows.
+3. **Output is capped and says so.** Silently truncated output is worse than obviously
+   truncated: the model reasons confidently about a file it only half received. Files keep the
+   **head** (the top is where a file's shape lives), `shell` keeps the **tail** (a failing
+   build's useful line is the last one).
+4. **Reads are gated too when they leave the zone.** A worker in a project dir may read the
+   project and not `~/.ssh`; only `classify` tells those apart.
+
+Decisions inside the tools:
+
+- `edit_file` **refuses an ambiguous anchor** instead of taking the first match — an edit in a
+  place the model never looked at is the failure mode most likely to be silently wrong.
+- The shared walk **never follows symlinked directories**: a link up the tree makes the walk
+  infinite, a link out of the zone reads files the gate was never asked about.
+- `globToRegExp` **escapes every metacharacter**, so a pattern cannot smuggle in regex that
+  matches far more than intended; `**/` matches zero directories too, so `**/*.ts` finds `a.ts`.
+- `shell` **passes `readOnly` to the gate rather than skipping the call** — policy is the
+  gate's, and passing the flag is what keeps every command in the audit trail. No stdin (a
+  prompt would hang to the timeout and a worker cannot answer it), and the exit code is always
+  stated.
+- `web_fetch` is ungated but **http(s)-only**: `file:` would be a way around the path gate
+  entirely, which is the one thing a fetch tool must not become.
+- The approval summary carries the path **as written** *and* resolved — `../../etc/passwd`
+  tells you what was asked, the resolved path tells you what it means, either alone misleads.
+
+Tests run against real temp directories, because the thing worth testing is exactly what a
+mocked `fs` would paper over. Two bugs fell out of writing them rather than out of reading the
+code: `stripHtml` left a space at the start of every line (each dropped tag leaves one behind —
+invisible in a browser, enough to break an exact quote out of a worker's context), and
+`readdir`'s type resolved to the Buffer-name overload, so `entries` needed an explicit
+`Dirent[]`. The second only showed up in `pnpm build` — vitest transpiles without
+typechecking, which is now twice this milestone that the build caught what green tests could
+not.
+
+860 tests green (625 server, incl. 104 new; 214 shared; 21 CLI).
 
 ### 2026-08-28 — M6a+M6b: the sandbox and the gate
 

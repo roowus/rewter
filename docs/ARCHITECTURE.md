@@ -930,10 +930,81 @@ it needs no `--using`.
 `WorkerAdapter` interface abstracts tiers (`run(ctx)`, optional `send()` for follow-up
 injection). Tier-2 tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`,
 `grep`, `shell` (zsh -c, cwd=workspace, timeout, 32KB output tail cap), `web_fetch`,
-`web_search`, `report_progress`, `finish_report`.
+`report_progress`, `finish_report`.
 
 Workspace: `~/.rewter/workspaces/<taskId>/`, shared by a task's workers. Task settings may
 point at a real project dir — then *every* write is outside-sandbox → gated.
+
+### The tool surface, as built (M6c)
+
+`workers/tools.ts` declares each tool **twice** — JSON Schema for the model, zod for us —
+written side by side, with a parity test asserting the pairing property-for-property. Drift
+in either direction is a real bug: the model told about an argument we discard, or an
+argument rejected that the model was never told to send. `parseWorkerArgs` returns a
+*message* on any failure, because a worker that dies over a number where a string was wanted
+has burned a whole subtask on something a one-turn correction fixes.
+
+**`web_search` from the design is deliberately absent**, and the tool-name list is asserted
+exactly so that stays a decision rather than an omission: there is no search backend to call,
+and a tool that errors every time costs a turn to discover and invites a retry. It lands when
+a provider does.
+
+Two schema-level refusals earn their keep. An empty `path` is rejected, because
+`resolve(cwd, "")` is `cwd` — a write "to the working directory" is never what the model
+meant. An empty `old_text` is rejected while an empty `new_text` is allowed: the latter is how
+a passage gets deleted, the former would match everywhere.
+
+### The executor, as built (M6c)
+
+`workers/execute.ts` is where a validated call meets the disk, and it is the **only** place
+tools are implemented — one list to audit rather than one per caller. Four house rules:
+
+- **Classify, then ask, then act.** `classify` says whether a path is in the zone, the gate
+  decides, and only then does anything happen. A tool that acts and reports afterwards has
+  already done the damage — so every deny test also asserts the disk was untouched, which is
+  the half that catches an act-then-ask ordering bug.
+- **Every failure is a tool result.** A missing file, a denied approval, a non-unique edit
+  anchor, a command that exits 1 — all of them come back as text the model reads and responds
+  to. Nothing throws except a bug. `errorText` maps errno to prose (`ENOENT` → "no such file
+  or directory"), since the raw message repeats the syscall and the path the model already
+  knows it asked for.
+- **Output is capped, and says when it was cut.** Silently truncated output is worse than
+  obviously truncated output: the model reasons confidently about a file it only half
+  received. Files truncate **head**-first (the top is where a file's shape lives); `shell`
+  keeps the **tail** (a failing build's useful line is the last one).
+- **Reads are gated too, when they leave the zone.** A worker pointed at a project directory
+  may read the project — that is the job — but not `~/.ssh`, and the only thing separating
+  those two is `classify`.
+
+The approval summary quotes the path **as the worker wrote it** alongside the resolved one: a
+card reading `../../etc/passwd` tells you what was asked for, the resolved path tells you what
+it means, and either alone can mislead.
+
+Per-tool decisions worth stating:
+
+- **`edit_file` refuses an ambiguous anchor** rather than editing the first match. An edit in
+  a place the model never looked at is the failure mode most likely to be silently wrong, so
+  the error counts the occurrences and asks for more surrounding lines.
+- **The shared walk never follows symlinked directories.** A link back up the tree turns a
+  walk into an infinite one, and a link out of the zone would read files the gate was never
+  asked about — the same escape `classify` closes, one level up. `node_modules`, `.git`,
+  `dist`, `build`, `.next`, `.venv` and `target` are skipped outright.
+- **`globToRegExp` escapes every regex metacharacter**, so a pattern cannot smuggle in syntax
+  matching far more than intended; `**` crosses separators and `*` does not, and `**/` also
+  matches *zero* directories so `**/*.ts` finds `a.ts`.
+- **`shell` passes `readOnly` to the gate rather than skipping the call.** Policy is the
+  gate's to make, and passing the flag instead of bypassing is what keeps every command in the
+  audit trail. It runs with **no stdin** — an interactive prompt would hang until the timeout,
+  and a worker cannot answer one anyway — and `render` always states the exit code, because a
+  worker seeing only output cannot tell a suite that passed from one that failed quietly.
+- **`web_fetch` is ungated but http(s)-only.** `file:` would be a way around the path gate
+  entirely, which is the one thing a fetch tool must not become. HTML is reduced to text with
+  `<script>`/`<style>` bodies dropped *first*, or a page's minified bundle would be the
+  majority of what the worker reads.
+
+Its tests run against real temp directories rather than a mocked `fs`, because the thing worth
+testing is exactly what a mock would paper over: symlink following, parent creation, resolved
+paths, and a killed child process.
 
 ## Tier-3 seam (phase 2, types committed in phase 1)
 
