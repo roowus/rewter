@@ -13,16 +13,18 @@
  * the same "unreliable narrator" discipline `registry/cards.ts` applies to card
  * generation, applied to arguments instead of output.
  *
- * `send_to_worker` from the design is still deliberately absent: a tier-1 worker
- * is a single model call with no inbox, so declaring the tool would be offering
- * the initiator something that cannot work for most of what it spawns. It lands
- * once a tier-2 loop can take a mid-run message.
+ * `send_to_worker` is declared here even though it works for only one of the two
+ * tiers that can be spawned: a tier-1 worker is a single model call with no turn
+ * boundary to deliver a message at, and the engine refuses the call for one,
+ * naming tier 2 as the alternative. Offering the tool and refusing the case
+ * beats withholding it — the model can read a refusal, and a tool it never sees
+ * is a capability it cannot ask about.
  */
 import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 2;
+export const ORCHESTRATOR_TOOLS_VERSION = 3;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -62,6 +64,11 @@ export const GetResultArgs = z.object({
 export const CancelWorkerArgs = z.object({
   label: LabelSchema,
   reason: z.string().trim().max(300).optional(),
+});
+
+export const SendToWorkerArgs = z.object({
+  label: LabelSchema,
+  message: z.string().trim().min(1).max(2000),
 });
 
 export const AskUserArgs = z.object({
@@ -174,6 +181,26 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
         type: "object",
         properties: { label: str("Worker label, e.g. 'w1'.") },
         required: ["label"],
+      },
+    },
+  },
+
+  send_to_worker: {
+    schema: SendToWorkerArgs,
+    definition: {
+      name: "send_to_worker",
+      description:
+        "Send a running tier-2 worker a message — a correction, a constraint you forgot, " +
+        "an answer it needs. Returns immediately; the worker reads it at its next step, " +
+        "so it does not interrupt work already in flight. Tier-1 workers cannot receive " +
+        "messages: cancel and respawn one instead.",
+      parameters: {
+        type: "object",
+        properties: {
+          label: str("Worker label, e.g. 'w1'."),
+          message: str("What to tell it. Write it as an instruction, not a question."),
+        },
+        required: ["label", "message"],
       },
     },
   },

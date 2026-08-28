@@ -19,6 +19,7 @@ import {
   workerCancelledLine,
   workerDoneLine,
   workerFailedLine,
+  workerMessageLine,
   workerStartLine,
 } from "./narrate.js";
 
@@ -53,6 +54,17 @@ describe("progress lines", () => {
     expect(line.startsWith(GLYPH.paused)).toBe(true);
     expect(line).toContain("Which repo?");
     expect(line).toContain("task_abc");
+  });
+
+  it("shows what the initiator told a running worker", () => {
+    expect(workerMessageLine({ label: "w2", message: "use the fixture, not prod" })).toBe(
+      "⇄ [w2] told: use the fixture, not prod",
+    );
+    // Same reason as the error case below: an instruction pasted in from
+    // somewhere else arrives with newlines in it more often than not.
+    expect(workerMessageLine({ label: "w2", message: "stop\nand read this" })).toBe(
+      "⇄ [w2] told: stop",
+    );
   });
 
   it("names the successor and the reason on a handoff", () => {

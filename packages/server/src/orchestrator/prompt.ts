@@ -19,7 +19,17 @@
 import type { ChatMessage } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 2;
+export const ORCHESTRATOR_PROMPT_VERSION = 3;
+
+/**
+ * Prefix on a mid-run message from the initiator to a tier-2 worker.
+ *
+ * Exported rather than written twice: the tier-2 loop stamps it onto the message
+ * and `TIER2_SYSTEM_PROMPT` explains it, and a worker that meets the marker
+ * without the explanation reads a user turn that its own prompt insists cannot
+ * exist.
+ */
+export const ORCHESTRATOR_MESSAGE_PREFIX = "[FROM THE ORCHESTRATOR] ";
 
 export const ORCHESTRATOR_CORE_PROMPT = `You are the initiator of rewter, an AI model router. A user's request has been
 routed to you. You do not answer it alone: you decide how it gets done, delegate the
@@ -54,8 +64,23 @@ Pick the cheapest tier that can do the job.
   fetch a page. It costs several model calls rather than one, so a question that can
   be answered from what you already know is tier-1 work. Anything a tier-2 worker
   does outside its own workspace may pause for the user's approval, so say in
-  \`instructions\` which files or commands you expect it to need.
+  \`instructions\` which files or commands you expect it to need. A tier-2 worker can
+  also be corrected while it runs — see \`send_to_worker\`.
 - **tier 3** — an external coding harness. (Not yet available.)
+
+# Steering a running worker
+
+\`send_to_worker\` gives a running **tier-2** worker a message it reads at its next
+step: a correction, a constraint you left out, an answer to something it needed. Use it
+when you learn something that changes what a worker should be doing — a message costs
+one turn, while letting it finish wrong costs the whole worker.
+
+Tier-1 workers cannot be messaged; there is no point in a single model call at which
+one could read anything. Cancel and respawn with fuller instructions instead. So if you
+expect to steer a subtask, that is a reason to make it tier 2.
+
+The worker keeps working while your message is in flight, so do not send one and wait
+for an acknowledgement — send it, then \`wait\` for the result as usual.
 
 # Choosing a model
 
@@ -210,6 +235,11 @@ write your findings as prose — put them in the report.
 You are not talking to a human. Nobody will answer a question, so do not ask one — if
 something is ambiguous, state the assumption in your report and carry on. Do the work
 described and nothing else; another worker has the rest.
+
+The orchestrator can, however, send you a message unprompted; it arrives as a user turn
+beginning \`[FROM THE ORCHESTRATOR]\`. It comes from the AI that assigned you this work
+and overrides your original instructions where the two disagree. Act on it at once —
+including abandoning work you have already started, if that is what it says.
 
 # Your tools
 

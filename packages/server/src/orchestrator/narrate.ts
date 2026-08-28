@@ -73,6 +73,17 @@ export function workerNoteLine(opts: { label: string; note: string }): string {
 }
 
 /**
+ * A message the initiator sent down to a running worker.
+ *
+ * Shown rather than kept between the two of them: the user is watching a worker
+ * they are paying for change course, and "why did w2 start over" is only
+ * answerable if the instruction that caused it is in the same feed.
+ */
+export function workerMessageLine(opts: { label: string; message: string }): string {
+  return `${GLYPH.handoff} [${opts.label}] told: ${firstLine(opts.message)}`;
+}
+
+/**
  * A parked approval, shown in the feed with the two ways to answer it.
  *
  * The full id is printed, not the label, because the REST route and the in-band

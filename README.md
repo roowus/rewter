@@ -141,8 +141,14 @@ only the instruction reaches the initiator. Denials carry your note down to the 
 result (`command not run: denied by the user: use the fixture instead`), because a worker told
 why can pick something else and a worker handed a crash cannot.
 
-Still to come in M6: `send_to_worker`, and the acceptance — a gated shell command approved by
-curl mid-task.
+A tier-2 worker can also be corrected while it runs. `send_to_worker` hands it a message it
+reads at its next step — a constraint you left out, an answer it needed, or an instruction to
+drop what it is doing — and the feed shows `⇄ [w2] told: …` so a worker changing course mid-run
+is explicable. The message does not interrupt work in flight: the initiator sends and then
+`wait`s as usual. Tier-1 workers cannot be messaged, and the refusal says so and names tier 2,
+because a single model call has no point at which it could read anything.
+
+Still to come in M6: the acceptance — a gated shell command approved by curl mid-task.
 
 ## Quickstart
 

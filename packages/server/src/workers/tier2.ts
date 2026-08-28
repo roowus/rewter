@@ -38,7 +38,7 @@ import {
   type WorkerRun,
   newWorkerRunId,
 } from "@rewter/shared";
-import { buildTier2Messages } from "../orchestrator/prompt.js";
+import { ORCHESTRATOR_MESSAGE_PREFIX, buildTier2Messages } from "../orchestrator/prompt.js";
 import type { WorkerContext, WorkerOutcome, WorkerRunner } from "../orchestrator/worker.js";
 import type { Approvals } from "./approvals.js";
 import {
@@ -150,6 +150,14 @@ export async function runTier2Worker(
   for (let turn = 0; turn < maxTurns; turn++) {
     if (ctx.signal.aborted) {
       return closeCancelled(ctx, run, done);
+    }
+
+    // Mid-run messages from the initiator land here and nowhere else. A turn
+    // boundary is the only place the transcript is coherent: injecting between a
+    // tool call and its result would leave the model an unanswered call, and
+    // several providers reject that outright.
+    for (const message of ctx.inbox?.() ?? []) {
+      messages.push({ role: "user", content: `${ORCHESTRATOR_MESSAGE_PREFIX}${message}` });
     }
 
     let response: ChatResponse;

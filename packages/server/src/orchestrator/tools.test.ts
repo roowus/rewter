@@ -44,11 +44,11 @@ function zodShape(name: string): Record<string, z.ZodTypeAny> {
 const TOOL_NAMES = Object.keys(INITIATOR_TOOLS);
 
 describe("the tool surface", () => {
-  it("declares the tools the M5 engine dispatches, and no more", () => {
-    // `send_to_worker` is deliberately absent until tier 2 — a tier-1 worker has
-    // no inbox, so declaring it would offer the initiator something that cannot
-    // work. This assertion is what makes that omission deliberate rather than
-    // forgotten.
+  it("declares the tools the engine dispatches, and no more", () => {
+    // A tool declared here that the engine has no case for is worse than a
+    // missing one: the model calls it, gets "unknown tool", and has been charged
+    // for the turn. The engine's `default` case and this list are the pair that
+    // keeps them in step.
     expect(TOOL_NAMES.sort()).toEqual(
       [
         "ask_user",
@@ -57,15 +57,15 @@ describe("the tool surface", () => {
         "get_result",
         "handoff",
         "plan_note",
+        "send_to_worker",
         "spawn_worker",
         "wait",
       ].sort(),
     );
-    expect(TOOL_NAMES).not.toContain("send_to_worker");
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(2);
+    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(3);
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {

@@ -410,16 +410,15 @@ caller typed.
 
 `plan_note`, `spawn_worker` (returns a label **immediately** — parallel fan-out is several
 spawns in one turn onto a p-limit scheduler, default concurrency 4), `wait({labels?,
-mode:"all"|"any"})`, `get_result`, `cancel_worker`, `ask_user`, `handoff({to_model, reason,
-context_summary})`, `finish({summary})`. (`send_to_worker` is still absent: a tier-1 worker
-has no inbox, and the tier-2 loop does not yet read one mid-run.)
+mode:"all"|"any"})`, `get_result`, `send_to_worker({label, message})`, `cancel_worker`,
+`ask_user`, `handoff({to_model, reason, context_summary})`, `finish({summary})`.
 
 `spawn_worker`'s `tier` accepts **1 or 2**; 3 comes back as a tool *result* explaining that
 external harnesses are not available and pointing at tier 2, because a refusal the model can
 read and re-spawn from costs one turn where a thrown error costs the task. The description the
 model sees says what each tier is *for* — tier 1 for thinking, writing, summarizing; tier 2
 when the subtask has to read or change something — since the initiator picks the cheapest
-sufficient tier and cannot do that from a bare number. `ORCHESTRATOR_TOOLS_VERSION` is 2.
+sufficient tier and cannot do that from a bare number. `ORCHESTRATOR_TOOLS_VERSION` is 3.
 
 Now that tier 2 exists, `concurrency` (default 4) bounds **agent loops**, not just single
 calls. The same number that used to cap four simultaneous one-shot completions now caps four
@@ -430,6 +429,37 @@ larger thing to have four of, and the reason the default did not go up with the 
 only for the workers whose detail it actually needs. In `"any"` mode a worker that finished
 *before* the call already satisfies it — racing only the still-running subset would block on
 a second result nobody asked for.
+
+### Steering a running worker
+
+`send_to_worker({label, message})` hands a **running tier-2** worker a correction it reads at
+its next turn boundary. The message does not interrupt work in flight — the tool returns at
+once, and the worker sees it when its current turn completes — so the initiator sends and then
+`wait`s as usual rather than expecting an acknowledgement.
+
+The queue lives in the **engine**, not the runner: `spawn` is allowed to sit behind the
+concurrency limiter, so a message aimed at a worker that has not started yet has to survive
+until its first turn, and the runner does not exist yet to hold it. `Session.spawn` closes over
+an `inbox: string[]`, shares the same array with the `Worker` record, and passes the runner a
+puller — `inbox: () => inbox.splice(0)` on `WorkerContext`. Draining is destructive: a message
+read twice is a worker nagged twice, and the nag grows the transcript it is billed for on every
+pass. The runner asks on **every** turn, not once at the top, or a message sent mid-run would
+never land.
+
+The tier-2 loop injects at a turn boundary and nowhere else, prefixed
+`[FROM THE ORCHESTRATOR] `. Mid-turn injection would leave the model an unanswered tool call,
+which several providers reject outright. That prefix is one exported constant
+(`ORCHESTRATOR_MESSAGE_PREFIX`) used by both the loop that stamps it and the tier-2 system
+prompt that explains it — a worker meeting the marker without the explanation would read a user
+turn its own prompt insists cannot exist.
+
+Three cases come back as tool *results* rather than throws, in this order: an unknown label
+(with the labels that do exist), a worker that has **already finished** (pointing at
+`get_result`), and a **tier-1** target. The last is structural, not an omission — a tier-1
+worker is one model call with no point at which it could read anything — so the refusal names
+tier 2 as what to use when steering is expected. The delivery itself prints `⇄ [w2] told: …`
+to the user's feed: a worker changing course mid-run is only explicable if the instruction that
+caused it is visible in the same place.
 
 ### Tier-1 workers
 
@@ -1093,8 +1123,18 @@ refuses a non-unique anchor, and having read the file is the cheapest way never 
 points at a real project directory every write there is gated, so the model needs somewhere
 ungated for temporaries and needs telling that its own working directory is not it; when the
 two are the same, a second path would only suggest they differ.
-`ORCHESTRATOR_PROMPT_VERSION` is 2 — the tier ladder no longer says tier 2 is unavailable, and
-now warns that work outside the workspace may pause for approval.
+The tier-2 prompt also has to explain the marker the engine stamps on an injected message.
+`TIER2_SYSTEM_PROMPT` says an unprompted user turn beginning `[FROM THE ORCHESTRATOR]` comes
+from the AI that assigned the work and **overrides the original instructions where the two
+disagree**, including abandoning work already started. Without that paragraph the worker meets
+a user turn its own prompt insists cannot exist, and the most likely reading of a mid-run
+correction is that it is context rather than an order.
+
+`ORCHESTRATOR_PROMPT_VERSION` is 3 — the tier ladder no longer says tier 2 is unavailable, it
+now warns that work outside the workspace may pause for approval, and a `# Steering a running
+worker` section tells the initiator when `send_to_worker` is worth a turn (it costs one; letting
+a worker finish wrong costs the whole worker), that tier-1 workers cannot be messaged, and that
+a message is in flight rather than acknowledged — so the initiator sends and then `wait`s.
 
 ### Wiring tier 2 into the engine (M6e)
 

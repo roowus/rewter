@@ -609,6 +609,91 @@ describe("provider failure and cancellation", () => {
   });
 });
 
+describe("mid-run messages from the orchestrator", () => {
+  /** A queue that drains destructively, exactly as the engine's inbox does. */
+  function inboxOf(...messages: string[]): { inbox: () => string[]; drains: number } {
+    const queue = [...messages];
+    const state = {
+      drains: 0,
+      inbox: (): string[] => {
+        state.drains += 1;
+        return queue.splice(0);
+      },
+    };
+    return state;
+  }
+
+  it("delivers a queued message at the next turn, marked as the orchestrator's", async () => {
+    const router = scriptedRouter([
+      toolCall("list_dir", { path: "." }),
+      report("success", "did it the new way"),
+    ]);
+    const { inbox } = inboxOf("stop counting TODOs; count FIXMEs instead");
+
+    const outcome = await runTier2Worker({ ...makeContext(router), inbox }, options());
+
+    expect(outcome.status).toBe("succeeded");
+    // Turn 2 is the one that sees it: the message is queued before the run, but a
+    // drain mid-turn would leave the model an unanswered tool call.
+    const second = router.requests[1]?.messages ?? [];
+    const injected = second.filter((m) => (m.content ?? "").startsWith("[FROM THE ORCHESTRATOR]"));
+    expect(injected).toHaveLength(1);
+    expect(injected[0]?.role).toBe("user");
+    expect(injected[0]?.content).toContain("count FIXMEs instead");
+  });
+
+  it("does not deliver the same message twice, however many turns follow", async () => {
+    const router = scriptedRouter([
+      toolCall("list_dir", { path: "." }),
+      toolCall("list_dir", { path: "." }),
+      report("success", "done"),
+    ]);
+    const { inbox } = inboxOf("use the fixture");
+
+    await runTier2Worker({ ...makeContext(router), inbox }, options());
+
+    // A message re-read every turn is a worker nagged, and the nag grows the
+    // transcript it is billed for on each pass.
+    const last = router.requests[2]?.messages ?? [];
+    expect(last.filter((m) => (m.content ?? "").includes("use the fixture"))).toHaveLength(1);
+  });
+
+  it("delivers several queued messages in the order they were sent", async () => {
+    const router = scriptedRouter([toolCall("list_dir", { path: "." }), report("success", "ok")]);
+    const { inbox } = inboxOf("first", "second");
+
+    await runTier2Worker({ ...makeContext(router), inbox }, options());
+
+    const injected = (router.requests[1]?.messages ?? [])
+      .map((m) => m.content ?? "")
+      .filter((c) => c.startsWith("[FROM THE ORCHESTRATOR]"));
+    expect(injected).toEqual(["[FROM THE ORCHESTRATOR] first", "[FROM THE ORCHESTRATOR] second"]);
+  });
+
+  it("asks the inbox on every turn, so a message sent mid-run still lands", async () => {
+    // The engine can post to a worker at any moment, including after it has
+    // started. A loop that drained once at the top would deliver nothing.
+    const router = scriptedRouter([
+      toolCall("list_dir", { path: "." }),
+      toolCall("list_dir", { path: "." }),
+      report("success", "ok"),
+    ]);
+    const state = inboxOf();
+
+    await runTier2Worker({ ...makeContext(router), inbox: state.inbox }, options());
+
+    expect(state.drains).toBe(3);
+  });
+
+  it("runs unchanged with no inbox at all, since tier 1 never provides one", async () => {
+    const router = scriptedRouter([report("success", "ok")]);
+
+    const outcome = await runTier2Worker(makeContext(router), options());
+
+    expect(outcome.status).toBe("succeeded");
+  });
+});
+
 describe("createTier2Runner", () => {
   it("produces a WorkerRunner the engine can call with nothing extra", async () => {
     // The whole reason the factory exists: workspace and approvals are per-task,

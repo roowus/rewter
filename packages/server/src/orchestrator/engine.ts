@@ -57,6 +57,7 @@ import {
   workerCancelledLine,
   workerDoneLine,
   workerFailedLine,
+  workerMessageLine,
   workerNoteLine,
   workerStartLine,
 } from "./narrate.js";
@@ -157,6 +158,15 @@ interface Worker {
   outcome: WorkerOutcome | null;
   abort: AbortController;
   startedAt: number;
+  /**
+   * Messages from the initiator the worker has not read yet.
+   *
+   * Buffered here rather than handed to the runner because `spawn` is allowed to
+   * queue behind the concurrency limiter: a message sent to a worker that has
+   * not started yet has to survive until its first turn, and the runner does not
+   * exist to hold it.
+   */
+  inbox: string[];
 }
 
 export class Orchestrator {
@@ -764,6 +774,31 @@ class Session {
         return { result: `Full output of ${label}:\n\n${text}` };
       }
 
+      case "send_to_worker": {
+        const { label, message } = parsed.args as { label: string; message: string };
+        const worker = this.workers.get(label);
+        if (worker === undefined) return { result: this.unknownLabel(label) };
+        if (worker.outcome !== null) {
+          const advice =
+            "Use `get_result` for its output, or spawn a new worker for the follow-up.";
+          return { result: `${label} has already finished, so it cannot read this. ${advice}` };
+        }
+        // Structural, not an omission: a tier-1 worker is one model call with no
+        // turn boundary to deliver a message at. Say what to do instead — a
+        // refusal the model can act on costs one turn; one it cannot costs the task.
+        if (worker.workItem.tier === 1) {
+          const advice =
+            "Cancel it and spawn a replacement with the fuller instructions, or use tier 2 " +
+            "when you expect to steer.";
+          return {
+            result: `${label} is a tier-1 worker — a single model call, with no point at which it could read a message. ${advice}`,
+          };
+        }
+        worker.inbox.push(message);
+        yield chunk(workerMessageLine({ label, message }));
+        return { result: `sent to ${label}; it will read this at its next step.` };
+      }
+
       case "cancel_worker": {
         const { label, reason } = parsed.args as { label: string; reason?: string };
         const worker = this.workers.get(label);
@@ -883,6 +918,11 @@ class Session {
     // whenever a slot frees up.
     const runner = this.runnerFor(args.tier);
 
+    // Shared with the `Worker` record below, so `send_to_worker` appends to the
+    // same array the runner drains. `splice(0)` empties it: a message read twice
+    // is a worker told twice.
+    const inbox: string[] = [];
+
     const promise = this.limiter.run(async () => {
       this.o.repos.transitionWorkItem(workItem.id, "running");
       const outcome = await runner({
@@ -892,6 +932,7 @@ class Session {
         repos: this.o.repos,
         clock: this.o.clock,
         signal: abort.signal,
+        inbox: () => inbox.splice(0),
       });
       this.o.repos.transitionWorkItem(
         workItem.id,
@@ -903,7 +944,15 @@ class Session {
       return outcome;
     });
 
-    const worker: Worker = { label, workItem, promise, outcome: null, abort, startedAt: now };
+    const worker: Worker = {
+      label,
+      workItem,
+      promise,
+      outcome: null,
+      abort,
+      startedAt: now,
+      inbox,
+    };
 
     // Settling is where the progress line is produced, so it happens exactly
     // once per worker whether or not the initiator ever calls `wait`.

@@ -13,6 +13,7 @@ import type { ChatMessage } from "@rewter/shared";
 import { describe, expect, it } from "vitest";
 import {
   ORCHESTRATOR_CORE_PROMPT,
+  ORCHESTRATOR_MESSAGE_PREFIX,
   ORCHESTRATOR_PROMPT_VERSION,
   TIER2_SYSTEM_PROMPT,
   WORKER_SYSTEM_PROMPT,
@@ -29,7 +30,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(2);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(3);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {
@@ -161,6 +162,14 @@ describe("buildTier2Messages", () => {
     // A worker that re-issues the identical denied command until its turn budget
     // runs out turns the approval gate into a failure mode.
     expect(TIER2_SYSTEM_PROMPT).toContain("do not repeat the same call");
+  });
+
+  it("names the marker the tier-2 loop actually prefixes orchestrator messages with", () => {
+    // The loop writes this literal string into the transcript, and the prompt is
+    // the only place the model learns what it means. If they drift, a message
+    // arrives looking like the user talking to the worker directly — which is
+    // exactly what the paragraph above it says never happens.
+    expect(TIER2_SYSTEM_PROMPT).toContain(ORCHESTRATOR_MESSAGE_PREFIX.trim());
   });
 
   it("does not ask for the tier-1 SUMMARY line, which would collide with the report", () => {

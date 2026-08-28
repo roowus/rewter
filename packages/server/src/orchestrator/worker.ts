@@ -41,6 +41,21 @@ export interface WorkerContext {
   clock: () => number;
   signal: AbortSignal;
   maxTokens?: number | undefined;
+  /**
+   * Mid-run messages from the initiator, drained at a turn boundary.
+   *
+   * A puller rather than a queue the runner owns, for the same reason the
+   * session's steering is one: the engine has to be able to post a message to a
+   * worker that has not started yet, and a runner that owned the queue would
+   * not exist to receive it. Draining is destructive — a message delivered
+   * twice is a worker told twice.
+   *
+   * Per work item, so it cannot ride on `Tier2Options` (which is per task) the
+   * way the workspace and the approval gate do. Tier 1 has no turn boundary to
+   * drain at and ignores it; the engine refuses `send_to_worker` for tier 1
+   * rather than dropping the message silently.
+   */
+  inbox?: (() => string[]) | undefined;
 }
 
 export interface WorkerOutcome {

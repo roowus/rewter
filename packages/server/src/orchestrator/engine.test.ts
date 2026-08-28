@@ -731,6 +731,124 @@ describe("cancellation", () => {
   });
 });
 
+describe("send_to_worker", () => {
+  /**
+   * A worker that will not finish until something arrives in its inbox.
+   *
+   * Polling on a real timer, not a resolved promise: the message is sent on a
+   * *later* initiator turn, so a runner that read its inbox once and gave up
+   * would pass whether or not the engine ever delivered anything.
+   */
+  const waitsForMessage: WorkerRunner = async (ctx) => {
+    for (let tries = 0; tries < 500; tries++) {
+      const messages = ctx.inbox?.() ?? [];
+      if (messages.length > 0) return outcome({ summary: `heard: ${messages.join("; ")}` });
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    return outcome({
+      status: "failed",
+      summary: "no message arrived",
+      error: "inbox stayed empty",
+    });
+  };
+
+  const spawnTier2 = (title: string) => ({
+    name: "spawn_worker",
+    args: { title, model: SMALL, instructions: "x", tier: 2 },
+  });
+
+  it("delivers the message to a running tier-2 worker and shows it in the feed", async () => {
+    const h = makeHarness(
+      [
+        turn(spawnTier2("audit")),
+        turn({
+          name: "send_to_worker",
+          args: { label: "w1", message: "use the fixture, not prod" },
+        }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "finish", args: { answer: "done" } }),
+      ],
+      {},
+      waitsForMessage,
+    );
+
+    const { feed } = await drive(h);
+
+    // The line is in the user's feed, not just between the two AIs: a worker
+    // changing course is only explicable if the instruction that caused it is
+    // visible in the same place.
+    expect(feed).toContain("⇄ [w1] told: use the fixture, not prod");
+    // And it actually reached the worker — proved by the summary it reported back.
+    expect(feed).toContain("done");
+    expect(only(tasks())?.status).toBe("succeeded");
+    expect(repos.listWorkItems(only(tasks())?.id ?? "")[0]?.resultSummary).toBe(
+      "heard: use the fixture, not prod",
+    );
+  });
+
+  it("refuses a tier-1 target and names tier 2 as the way to get what was wanted", async () => {
+    const h = makeHarness(
+      [
+        turn({ name: "spawn_worker", args: { title: "think", model: SMALL, instructions: "x" } }),
+        turn({ name: "send_to_worker", args: { label: "w1", message: "change of plan" } }),
+        turn({ name: "finish", args: { answer: "finished anyway" } }),
+      ],
+      {},
+      // Still running when the message arrives — a finished worker gets the
+      // "already finished" answer instead, which is the more useful of the two
+      // and so is checked first.
+      async (ctx) =>
+        new Promise<WorkerOutcome>((resolve) =>
+          ctx.signal.addEventListener("abort", () =>
+            resolve(outcome({ status: "cancelled", summary: "cancelled", error: "cancelled" })),
+          ),
+        ),
+    );
+
+    const { feed } = await drive(h);
+
+    // Structural, not unimplemented: a tier-1 worker is one model call with no
+    // turn boundary to read at. The refusal has to point somewhere.
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("tier-1 worker");
+    expect(sent).toContain("tier 2");
+    expect(feed).not.toContain("told:");
+    expect(feed).toContain("finished anyway");
+    expect(only(tasks())?.status).toBe("succeeded");
+  });
+
+  it("tells the initiator to read the result instead when the worker has already finished", async () => {
+    const h = makeHarness([
+      turn(spawnTier2("quick")),
+      turn({ name: "wait", args: {} }),
+      turn({ name: "send_to_worker", args: { label: "w1", message: "one more thing" } }),
+      turn({ name: "finish", args: { answer: "too late" } }),
+    ]);
+
+    await drive(h);
+
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("already finished");
+    expect(sent).toContain("get_result");
+  });
+
+  it("names the workers that do exist when the label does not", async () => {
+    const h = makeHarness([
+      turn(spawnTier2("real")),
+      turn({ name: "send_to_worker", args: { label: "w7", message: "hello?" } }),
+      turn({ name: "wait", args: {} }),
+      turn({ name: "finish", args: { answer: "carried on" } }),
+    ]);
+
+    const { feed } = await drive(h);
+
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("there is no worker w7");
+    expect(sent).toContain("Started so far: w1");
+    expect(feed).toContain("carried on");
+  });
+});
+
 describe("budget", () => {
   /** Put a spend on the ledger the way the router would, so `totals()` sees it. */
   function chargeTask(taskId: TaskId, costUsd: number): void {

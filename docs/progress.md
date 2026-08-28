@@ -23,11 +23,48 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6d | Tier-2 agent loop (`runTier2Worker`) + its system prompt | ✅ 2026-08-28 |
 | M6e | Tier-2 engine wiring (tier dispatcher, per-task gate, feed lines) | ✅ 2026-08-28 |
 | M6f | Approval routes + in-band `approve`/`deny` twin | ✅ 2026-08-28 |
-| M6 | `send_to_worker` + the gated-shell acceptance | 🟡 in progress |
+| M6g | `send_to_worker` (engine-side inbox, turn-boundary injection) | ✅ 2026-08-28 |
+| M6 | *acceptance: a gated shell command approved by curl mid-task* | 🟡 in progress |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M6g: correcting a worker that is already running
+
+The initiator could spawn, wait, read and cancel; the one thing it could not do was tell a
+worker it was wrong. `send_to_worker({label, message})` closes that: a **running tier-2**
+worker gets a message it reads at its next turn boundary.
+
+- **The queue belongs to the engine, not the runner.** `spawn` returns a label immediately and
+  the work may still be behind the concurrency limiter, so a message can be aimed at a worker
+  whose runner does not exist yet. `Session.spawn` closes over an `inbox: string[]`, shares the
+  same array with the `Worker` record, and hands the runner a puller —
+  `inbox: () => inbox.splice(0)` on `WorkerContext`. The drain is destructive on purpose: a
+  message read twice is a worker nagged twice, and the nag grows the transcript it is billed for
+  on every pass. The loop asks on **every** turn rather than once at the top, or a message sent
+  mid-run would never land.
+- **Injection happens at a turn boundary and nowhere else**, prefixed `[FROM THE ORCHESTRATOR] `.
+  Mid-turn would leave the model an unanswered tool call, which several providers reject
+  outright. The prefix is one exported constant (`ORCHESTRATOR_MESSAGE_PREFIX`) shared by the
+  loop that stamps it and the tier-2 prompt that explains it — a worker meeting the marker
+  without the explanation reads a user turn its own prompt insists cannot exist.
+- **Three refusals, and the order matters.** Unknown label (naming the labels that do exist),
+  already-finished worker (pointing at `get_result`), tier-1 target. All three come back as tool
+  *results*, never throws. The tier-1 case is structural rather than an omission — one model
+  call has no point at which it could read anything — so the refusal names tier 2 as the thing
+  to use when steering is expected. The ordering is load-bearing in the tests too: the default
+  stub runner resolves at once, so the tier-1 test needs a worker that stays running or the
+  already-finished branch answers first and the assertion passes for the wrong reason.
+- **The delivery is in the user's feed**, as `⇄ [w2] told: …`. A worker changing course mid-run
+  is only explicable if the instruction that caused it is visible in the same place.
+- The happy-path test makes the worker *prove* delivery: its runner polls the inbox on a real
+  timer and reports `heard: <messages>` as its summary, so the assertion can only pass if the
+  engine actually delivered. A runner that read its inbox once would pass vacuously, since the
+  message arrives on a later initiator turn.
+
+`ORCHESTRATOR_TOOLS_VERSION` and `ORCHESTRATOR_PROMPT_VERSION` are both 3. 929 tests green.
+Still to come in M6: the acceptance — a gated shell command approved by curl mid-task.
 
 ### 2026-08-28 — M6f: answering the card
 
