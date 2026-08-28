@@ -15,11 +15,43 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M4 | Registry + capability cards + digest renderer | ✅ 2026-08-27 |
 | M5a | Orchestrator engine + tier-1 fan-out + handoff + cancellation + budget | ✅ 2026-08-27 |
 | M5b | Wiring: HTTP routes, in-band steering + adoption, daemon construction | ✅ 2026-08-27 |
+| — | *M5 acceptance: live 3-way parallel fan-out through `auto/orchestrator`* | ✅ 2026-08-28 |
 | M6 | Tier-2 agent loop + approval gates + workspaces | ⚪ |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M5 acceptance met live, and the cap that wasn't
+
+The M5 acceptance ran against a real upstream: a daemon on :20131 with a local 9router as a
+keyless OpenAI-compatible provider, two models registered, and `auto/orchestrator` asked for
+three independent facts in parallel. It planned, spawned three tier-1 workers, waited on all
+of them, and synthesized a correct numbered list — `▶ [w1..w3]` down the feed, one
+`x-rewter-task-id` header, three `work_items` in the database and eight `cost.recorded`
+events. Notably the initiator (`nine/glm-5.3`, pinned by config) put every worker on the
+*cheaper* `nine/gemini-3-flash` unprompted, which is the cost argument for this whole design
+working on its own.
+
+Two things the live run showed that 717 passing tests could not:
+
+- **A configured spending cap did nothing.** `config.orchestrator.maxSpendUsd` parsed, validated
+  and was documented as the per-task default — and was never passed to the engine, so every
+  task got the schema's uncapped `null`. The task row in SQLite said `maxSpendUsd: null` while
+  the config said `1`. Fixed with `OrchestratorOptions.defaultSettings`, merged under the
+  request's own settings in `start()`; `concurrency` was inert by the same omission and is
+  fixed by the same change. The merge strips `undefined` before spreading, since a partial that
+  mentions a key without setting it would otherwise erase the configured value. +2 tests, **719
+  green**. Worth stating plainly: every unit test passed because they all supplied settings
+  explicitly, and the one path nobody exercised — *say nothing and inherit* — was the only path
+  real clients take.
+- **`glm-5.3` spends its first tokens on reasoning**, so a 32-token cap returns
+  `content: null` with `finish_reason: "length"`. Not a rewter bug — the router reported exactly
+  what the upstream sent — but it is what a too-small `max_tokens` looks like from the outside,
+  and worth recognizing before debugging the wrong layer.
+
+Still open from M5: the tiny hand-scored eval (5–10 canned tasks). M4's "real cards for 3
+models eyeballed" is now unblocked — the same keyless provider can write them.
 
 ### 2026-08-27 — M5b: `auto/orchestrator` goes live — **M5 complete**
 

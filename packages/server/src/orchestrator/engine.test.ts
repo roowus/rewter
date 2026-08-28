@@ -313,6 +313,37 @@ describe("fan-out", () => {
     await drive(h, { settings: { concurrency: 2 } });
     expect(peak).toBe(2);
   });
+
+  it("takes settings the request omitted from the configured defaults", async () => {
+    // The config file's `orchestrator.maxSpendUsd` is only real if it survives a
+    // request that says nothing about settings — which is every request, since
+    // the OpenAI wire format has nowhere to put a spending cap.
+    const h = makeHarness([turn({ name: "finish", args: { answer: "done" } })], {
+      defaultSettings: { maxSpendUsd: 2.5, concurrency: 3 },
+    });
+    const started = h.orchestrator.start({
+      conversation: CONVERSATION,
+      requestedModel: "auto/orchestrator",
+    });
+    const settings = repos.getTask(started.taskId)?.settings;
+    expect(settings?.maxSpendUsd).toBe(2.5);
+    expect(settings?.concurrency).toBe(3);
+  });
+
+  it("lets a request's settings win over the configured defaults", async () => {
+    const h = makeHarness([turn({ name: "finish", args: { answer: "done" } })], {
+      defaultSettings: { maxSpendUsd: 2.5, concurrency: 3 },
+    });
+    const started = h.orchestrator.start({
+      conversation: CONVERSATION,
+      requestedModel: "auto/orchestrator",
+      settings: { maxSpendUsd: 9 },
+    });
+    // Overridden where asked, inherited where not.
+    const settings = repos.getTask(started.taskId)?.settings;
+    expect(settings?.maxSpendUsd).toBe(9);
+    expect(settings?.concurrency).toBe(3);
+  });
 });
 
 describe("wait", () => {

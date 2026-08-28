@@ -219,6 +219,22 @@ Progress arrives as ordinary assistant text, so a client needs no rewter awarene
 `auto/orchestrator:<model-id>` pins the initiator; otherwise the configured default is used,
 falling back to the most expensive enabled model that supports tools.
 
+That output is real, not illustrative: an `orchestrator` block in the config sets who leads and
+what a task may spend, and a request that says nothing about settings inherits both.
+
+```jsonc
+"orchestrator": {
+  "initiatorModel": "anthropic/claude-sonnet-5",  // else: priciest tools-capable model
+  "maxSpendUsd": 1,          // per task; the initiator is refused a spawn past it
+  "concurrency": 4,          // parallel workers per task
+  "maxTurns": 24, "maxHandoffs": 2   // runaway guards, not targets
+}
+```
+
+Left to itself the initiator tends to keep the money where it belongs — asked for three facts
+in parallel, a Sonnet-class leader put all three workers on a flash-class model and spent
+$0.005 total.
+
 Every orchestration response carries an **`x-rewter-task-id`** header. Re-POST the same
 conversation with one more user turn while it is still running and that turn is delivered to
 the initiator as steering — the task carries on, and the new request attaches to the stream

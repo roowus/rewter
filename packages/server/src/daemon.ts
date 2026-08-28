@@ -114,6 +114,10 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     defaultInitiatorModel: config.orchestrator.initiatorModel,
     maxTurns: config.orchestrator.maxTurns,
     maxHandoffs: config.orchestrator.maxHandoffs,
+    defaultSettings: {
+      maxSpendUsd: config.orchestrator.maxSpendUsd,
+      concurrency: config.orchestrator.concurrency,
+    },
   });
   const live = new LiveTaskIndex();
   const app = buildApp({

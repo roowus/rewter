@@ -403,6 +403,16 @@ is not a cap. Spend is read back from `cost_records`, never accumulated in memor
 survives a restart and cannot drift. Note that **the initiator's own turns bill to the task**,
 so a task's total always exceeds the sum of its workers' spend.
 
+Where that cap comes from is its own small problem. The OpenAI wire format has nowhere to put
+a spending cap, so a request that specifies task settings is the exception, not the rule — which
+means a cap that only ever arrives per-request is a cap that never arrives. The config file's
+`orchestrator.maxSpendUsd` and `orchestrator.concurrency` are passed to the engine as
+`defaultSettings` and merged under the request's own: request beats config beats schema default.
+The merge drops `undefined` values rather than spreading them, because `{...{cap: 1}, ...{cap:
+undefined}}` is `{cap: undefined}` — a partial that mentions a key without setting it would
+otherwise erase the configured value. Discovered live: before this, a configured cap parsed
+cleanly, appeared in the docs, and did nothing.
+
 ### Wiring it to HTTP (M5b)
 
 `Orchestrator.run()` being a plain `AsyncIterable<StreamChunk>` is what makes the route code

@@ -81,6 +81,13 @@ export interface OrchestratorOptions {
   /** Ceiling on handoffs, so two models cannot pass a task back and forth. */
   maxHandoffs?: number;
   digestMaxTokens?: number;
+  /**
+   * Per-task settings a request did not specify. The config file's spending cap
+   * and concurrency arrive here: without them a configured `maxSpendUsd` would
+   * be documented and inert, since a client that says nothing about settings
+   * would silently get the schema's uncapped default.
+   */
+  defaultSettings?: Partial<TaskSettings> | undefined;
 }
 
 export interface OrchestrationRequest {
@@ -212,7 +219,11 @@ export class Orchestrator {
    */
   start(req: OrchestrationRequest): StartedOrchestration {
     const initiatorModel = this.pickInitiator(req.requestedModel);
-    const settings = TaskSettingsSchema.parse(req.settings ?? {});
+    // Request settings win over configured defaults, which win over the schema's.
+    const settings = TaskSettingsSchema.parse({
+      ...stripUndefined(this.opts.defaultSettings ?? {}),
+      ...stripUndefined(req.settings ?? {}),
+    });
     const task = this.createTask(req, initiatorModel, settings);
 
     // One controller for the whole task; every worker's controller is chained to
@@ -1057,6 +1068,15 @@ export function fingerprintConversation(conversation: ChatMessage[]): string {
   const prefix = conversation.slice(0, Math.max(0, conversation.length - 1));
   const canonical = prefix.map((m) => `${m.role}:${m.content ?? ""}`).join("\n");
   return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
+}
+
+/**
+ * Drop keys whose value is `undefined`, so a spread cannot shadow a
+ * lower-precedence value with nothing. `{...{cap: 1}, ...{cap: undefined}}` is
+ * `{cap: undefined}`, which is exactly the bug this exists to prevent.
+ */
+function stripUndefined<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 function clampLine(text: string, max: number): string {
