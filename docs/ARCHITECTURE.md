@@ -1208,10 +1208,14 @@ done-pattern) so any CLI harness is addable by config.
   list/resolve, models CRUD + `sync` + `generate-card`, provider CRUD, `costs?groupBy=`,
   `health`, and `WS /internal/ws` (`{subscribe, afterSeq?}` → replay then live).
   Live today: `health` (with registry counts), `providers`, `models` (**including**
-  disabled ones, unlike `/v1/models`), `events?afterSeq=` (a non-numeric `afterSeq` reads
-  as 0 rather than erroring), and approvals — `GET /internal/approvals[?taskId=]` plus
-  `POST /internal/approvals/:id` `{approved, note?}`. Providers are safe to serve as-is:
-  only the env var *name* is ever stored.
+  disabled ones, unlike `/v1/models`), `events?afterSeq=[&taskId=]` (a non-numeric
+  `afterSeq` reads as 0 rather than erroring), and approvals — `GET
+  /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}`.
+  Providers are safe to serve as-is: only the env var *name* is ever stored.
+  There is deliberately **no `GET /internal/tasks/:id`** yet: per-task detail is a fold over
+  the event stream, the fold lives in `shared`, and building a second answer to the same
+  question on the server would give the dashboard two sources of truth to disagree about.
+  It arrives with the dashboard in M7.
 
 ### Resolving an approval
 

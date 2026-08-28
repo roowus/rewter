@@ -148,7 +148,12 @@ is explicable. The message does not interrupt work in flight: the initiator send
 `wait`s as usual. Tier-1 workers cannot be messaged, and the refusal says so and names tier 2,
 because a single model call has no point at which it could read anything.
 
-Still to come in M6: the acceptance — a gated shell command approved by curl mid-task.
+All three ran live on 2026-08-28, which is what closes M6. A `uname -a` parked, was approved by
+`curl` while the stream stayed open, and the same stream finished with the kernel string; a
+`curl` to the network was denied with a note and the worker switched to `web_fetch` rather than
+retrying or dying; and an in-band `approve apr_…` re-POSTed with `x-rewter-task-id` both resolved
+the card and adopted the task, so the second stream replayed the feed and carried on while the
+original one also finished with the answer.
 
 ## Quickstart
 

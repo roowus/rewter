@@ -24,11 +24,44 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M6e | Tier-2 engine wiring (tier dispatcher, per-task gate, feed lines) | ✅ 2026-08-28 |
 | M6f | Approval routes + in-band `approve`/`deny` twin | ✅ 2026-08-28 |
 | M6g | `send_to_worker` (engine-side inbox, turn-boundary injection) | ✅ 2026-08-28 |
-| M6 | *acceptance: a gated shell command approved by curl mid-task* | 🟡 in progress |
+| M6 | *acceptance: a gated shell command approved by curl mid-task* | ✅ 2026-08-28 |
 | M7 | Dashboard (task tree, approvals, kill, costs, registry editor) | ⚪ |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — **M6 acceptance met live**: approve, deny, and the in-band reply
+
+Three runs against a real daemon (:20131, local 9router as a keyless upstream, workspaces in
+`/tmp/rewter-m6/ws`), each with the SSE stream open in `curl` while the card was answered from a
+second terminal:
+
+- **Approve by curl, mid-task.** `auto/orchestrator` was asked for the kernel version and told to
+  delegate. It planned, spawned one tier-2 worker on the *cheaper* `nine/gemini-3-flash`, and the
+  worker's `uname -a` parked: `⏸ approval needed — uname -a` with the real `apr_…` id in the feed
+  and a `pending` row with `parked: true` in `GET /internal/approvals`. `POST
+  /internal/approvals/:id {"approved":true}` returned `resumedWorker: true`, and the same stream
+  continued `✔ [w1] done ($0.0047, 38.0s)` followed by the correct Darwin string.
+- **Deny, and the worker adapts.** Same shape with `curl -s https://example.com` and a note —
+  "no shell network access — use web_fetch". The worker did not retry and did not crash: `· [w1]
+  Attempting to fetch example.com using curl` → the card → `· [w1] Fetching example.com using
+  web_fetch` → `Example Domain`. The note is the working half; "denied" alone invites a retry.
+- **The in-band `approve` reply, adopting a live task.** Re-POSTing the conversation with a
+  trailing `approve apr_…` turn and the `x-rewter-task-id` header resolved the card *and* adopted
+  the task: the second stream replayed the feed from the event log and then carried on to the
+  answer. The **original** stream — still open the whole time — also finished with the same
+  answer and its own `[DONE]`, so answering out-of-band does not orphan the client that asked.
+
+Two things only a live run showed:
+
+- **A worker can fail upstream and the initiator just respawns.** `nine/claude-sonnet-4-6`
+  returned 403 twice; the feed printed `✖ [w1] failed: 403 … (after 2 attempts)` and the
+  initiator spawned `w2` on a different model unprompted. Worth noting for anyone timing these
+  runs: the second worker's card appeared ~90s in, well after the first attempt's retry budget.
+- **`GET /internal/tasks/:id` does not exist.** The internal surface is `health`, `models`,
+  `providers`, `events`, and `approvals` (+ the resolve POST); per-task detail is a fold over
+  `GET /internal/events?taskId=…`, which is what the dashboard will do in M7. ARCHITECTURE's API
+  section lists routes not yet built — they are M7's, not missing M6 work.
 
 ### 2026-08-28 — M6g: correcting a worker that is already running
 
@@ -64,7 +97,7 @@ worker gets a message it reads at its next turn boundary.
   message arrives on a later initiator turn.
 
 `ORCHESTRATOR_TOOLS_VERSION` and `ORCHESTRATOR_PROMPT_VERSION` are both 3. 929 tests green.
-Still to come in M6: the acceptance — a gated shell command approved by curl mid-task.
+This was the last code in M6; the acceptance ran the same day (entry above).
 
 ### 2026-08-28 — M6f: answering the card
 
