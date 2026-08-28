@@ -33,6 +33,45 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-28 — known gaps moved into the issue tracker
+
+A survey of the whole tree turned up eleven things worth tracking, and they were previously
+scattered across code comments, this log, and nobody's memory. They are now
+[issues on the repo](https://github.com/roowus/rewter/issues). Two of them are the same bug:
+
+- **[#1] `steering.received` and [#2] `worker_run.progress` are folded but never emitted.**
+  Both have a schema, a fold handler and a fold test; neither has a producer anywhere in
+  `packages/server/src`. Steering goes straight into the transcript (`engine.ts:1078`) and a
+  worker's progress note goes straight to the SSE feed (`engine.ts:466`) — the event log sees
+  neither. M7c is what made this visible: the dashboard now renders both arrays, and both are
+  always empty. The real cost is durability, not display — a reconnecting client replays the
+  log, so everything a worker said before the reconnect is gone, as is any evidence that a
+  steering message landed.
+- **[#3] vitest doesn't typecheck.** Fifth occurrence, twice in the M7c session alone. CI has
+  always caught it (`build` runs before `test`); the cost is entirely local. Proposed fix is a
+  single `pnpm check` gate rather than asking a human to remember two commands.
+- **[#4] `parseOpenAi` asserts capability facts the catalog never reported.** A plain
+  OpenAI-compatible `/models` response is an id list, but the parser writes
+  `{tools: true, vision: false, …}` into the registry, where the digest presents it to the
+  initiator as fact. `tools: true` on a model without tools burns a worker run; `vision: false`
+  on one that sees removes the only correct choice for an OCR subtask. Hits Ollama and LM Studio
+  hardest — enrichment can only correct models OpenRouter also lists.
+- **[#5] The Anthropic adapter demotes a non-leading system message to a user turn**, silently.
+  Structurally forced (the API has one system slot), but a mid-conversation "respond only in
+  JSON from here on" delivered as a user turn is weaker than it was written to be, and reachable
+  from any OpenAI-dialect client that injects a system reminder.
+- **[#6] the M7 remainder** (kill, costs page, registry editor), **[#11] the M8 CLI stubs**, and
+  four deferred-by-design limits worth watching rather than fixing now: **[#7]** `send_to_worker`
+  cannot reach tier 1, **[#8]** the digest budget is a char count, **[#9]** streams are
+  unretryable after the first chunk, **[#10]** `web_search` is specified but unimplemented.
+
+Two suspected findings did **not** survive checking, which is worth recording so nobody
+re-files them: the `@fastify/websocket` root-route trap *does* have a regression guard
+(`app.ws.test.ts` uses a real socket, so a route served as a plain GET fails the handshake and
+the test), and `sync-models` already warns when `--provider` scopes OpenRouter out of enrichment
+(`cli/src/index.ts:145`). There are also no `TODO`/`FIXME` comments and no skipped tests
+anywhere in the tree.
+
 ### 2026-08-28 — M7c: the dashboard itself, with nothing to fetch
 
 `apps/dashboard` exists now: Vite + React 18 + zustand, five source files and 41 tests. It has
