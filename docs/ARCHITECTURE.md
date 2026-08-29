@@ -998,11 +998,61 @@ The boot log gets one line (`interrupted by a previous shutdown: 1 task(s), 2 wo
 
 ### CLI
 
-`rewter start [--config <path>] [--port <n>]` runs the daemon in the **foreground** — the
-shape M8 wraps in a launchd plist, and the shape you want anyway while watching logs.
-`rewter version` / `rewter help` round it out. Background management (`stop`, `status`,
-`logs`, `install-service`, `gc`) needs a pidfile and a service definition, which is M8's
-job; those commands exit 1 naming the milestone rather than pretending.
+`rewter start [--config <path>] [--port <n>] [--pidfile <path>]` runs the daemon in the
+**foreground** — the shape M8 wraps in a launchd plist, and the shape you want anyway
+while watching logs. `rewter status` and `rewter stop` talk to a daemon this process did
+not start; see [The pidfile, and talking to a daemon you did not
+start](#the-pidfile-and-talking-to-a-daemon-you-did-not-start-m8). `rewter version` /
+`rewter help` round it out. `logs`, `install-service` and `gc` still need the launchd side
+and exit 1 naming the milestone rather than pretending.
+
+### The pidfile, and talking to a daemon you did not start (M8)
+
+`start` runs in the foreground, so `rewter stop` in another terminal has nothing to go on
+but what the running process left on disk: `~/.rewter/rewter.pid` (`--pidfile`, then
+`REWTER_PIDFILE`, then the default), recording `{ pid, url, startedAt, version }`. It is
+written **after `listen`** — under port 0 there is no true address until the socket is
+bound, and a file that said `:0` is exactly the one `stop` could not probe — and removed
+**first** in `stop()`, unconditionally: from the moment we have decided to stop, the claim
+is no longer true, and a `status` racing the drain should read "not running" rather than
+point at a closing socket. Writes go through a temp file and a `rename`, so a reader during
+a write sees the whole old file or the whole new one. `startDaemon` writes one only when
+`pidfilePath` is passed — every test and every library embedding omits it, because a
+pidfile is a claim about *the* daemon on this machine and three port-0 daemons must not
+leave three of them contradicting each other.
+
+**Nothing trusts the pid.** A pidfile is a claim, not a fact, and it lies three ways: the
+daemon was killed before it could clean up, the machine rebooted and the file survived, or
+— worst — the pid was *reused* by an unrelated process. Signalling a pid because a file
+mentions it is how a stop command kills a stranger. So liveness is a **health probe against
+the URL the file records**: a `GET /internal/health` answering with `status: "ok"` is proof
+that rewter is the thing listening, which is the question actually being asked. The pid is
+used only after that check passes, and only to deliver the signal.
+
+The four outcomes are named rather than collapsed into "running / not running", because
+they call for different actions from whoever is reading:
+
+| state | what it means | what happens |
+|---|---|---|
+| `stopped` | no pidfile (or an unreadable one — no usable claim) | nothing to do |
+| `stale` | a pidfile whose URL does not answer | the file is removed, and the fact is printed: the last shutdown was not graceful, so this boot's reconciliation has interrupted rows to show |
+| `unreachable` | the URL answers, but not as rewter | **refuse to signal.** Something else is on that port |
+| `running` | health answered; the payload rides along | `status` prints counts without a second request; `stop` proceeds |
+
+`stop` sends **SIGTERM only, with no escalation to SIGKILL**. rewter's shutdown drains
+in-flight SSE streams, and killing it harder mid-drain leaves the client parsing a
+truncated event *and* leaves rows for the next boot's reconciliation to close. It then
+waits on the *health probe* rather than on the pid — the stronger check, and the one that
+answers what the caller actually wants to know: the port is free and no more requests will
+be served. If the drain is still going after the grace period (10s), that is reported so a
+human can decide, not papered over on a timer.
+
+`start` probes the same way before booting, and refuses when one is already running. Two
+daemons on one database is not obviously fatal — WAL would cope — but both would reconcile
+on boot, both would hold the same task ids live, and only one could own the port; the
+second one's failure would surface as `EADDRINUSE`, which reads as a port problem rather
+than "rewter is already running". `status` exits 0 only when a daemon is actually there,
+so `rewter status && open $(…)` behaves.
 
 `rewter sync-models [--dry-run] [--no-enrich] [--provider <slug>] [--config <path>]` refreshes
 the registry from the providers' catalogs — see [Model sync](#model-sync-catalogs--registry) for

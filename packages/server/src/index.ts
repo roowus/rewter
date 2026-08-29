@@ -132,5 +132,24 @@ export {
   reconcileSummary,
   type ReconcileResult,
 } from "./reconcile.js";
+export {
+  DEFAULT_PIDFILE,
+  PidfileSchema,
+  pidfilePath,
+  readPidfile,
+  removePidfile,
+  writePidfile,
+  type Pidfile,
+} from "./service/pidfile.js";
+export {
+  daemonStatus,
+  formatStatus,
+  stopDaemon,
+  type DaemonStatus,
+  type HealthPayload,
+  type ProbeOptions,
+  type StopOptions,
+  type StopOutcome,
+} from "./service/control.js";
 
 export const SERVER_VERSION = REWTER_VERSION;

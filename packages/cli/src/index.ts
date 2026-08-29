@@ -2,34 +2,46 @@
 /**
  * rewter CLI.
  *
- * `start` runs the daemon in the foreground — the shape M8 will wrap in a
- * launchd plist, and the shape you want anyway when you are watching logs.
- * Background management (`stop`, `logs`, `install-service`) needs a pidfile and
- * a service definition, which is M8's job; those commands say so rather than
- * pretending.
+ * `start` runs the daemon in the foreground — the shape launchd wants, and the
+ * shape you want anyway when you are watching logs. It records where it bound
+ * in a pidfile, which is the only thing `status` and `stop` in another terminal
+ * have to go on.
+ *
+ * Neither of those trusts the pid in it. A pidfile survives `kill -9` and
+ * reboots, and pids get reused, so liveness is decided by probing the URL the
+ * file records — see `service/control.ts`. `logs` and `install-service` still
+ * need the launchd side and say so rather than pretending.
  *
  * `sync-models` is a one-shot: it opens the same database the daemon uses and
  * writes to it directly rather than going through a running server, so it works
  * whether or not the daemon is up. SQLite in WAL mode makes that safe.
  */
+import { homedir } from "node:os";
 import {
   Router,
   bootSummary,
+  daemonStatus,
   formatCard,
   formatCardReport,
+  formatStatus,
   formatSyncReport,
   generateCards,
   openRegistry,
+  pidfilePath,
   presetSlugForProvider,
   runUntilSignal,
   startDaemon,
+  stopDaemon,
   syncModels,
 } from "@rewter/server";
 
 const USAGE = `rewter — an AI model router where the AI runs the routing
 
 Usage:
-  rewter start [--config <path>] [--port <n>]   run the daemon in the foreground
+  rewter start [--config <path>] [--port <n>] [--pidfile <path>]
+                                                run the daemon in the foreground
+  rewter status [--pidfile <path>]              is one running, and where
+  rewter stop [--pidfile <path>]                ask it to drain and exit
   rewter sync-models [--dry-run] [--no-enrich] [--provider <slug>]
                                                 refresh the model registry from
                                                 the providers' own catalogs
@@ -44,6 +56,7 @@ Configuration:
   REWTER_CONFIG                  override the config path
   REWTER_PORT / REWTER_HOST      override the listen address
   REWTER_DB                      override the database path
+  REWTER_PIDFILE                 override ~/.rewter/rewter.pid
 
 API keys are read from the environment by variable *name* — the config file
 records which variable holds a key, never the key itself.
@@ -61,7 +74,7 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
 
   switch (command) {
     case "start":
-      return await start(argv.slice(1));
+      return await start(argv.slice(1), opts);
 
     case "sync-models":
       return await syncCommand(argv.slice(1), opts);
@@ -81,8 +94,12 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
       process.stdout.write(USAGE);
       return 0;
 
-    case "stop":
     case "status":
+      return await statusCommand(argv.slice(1), opts);
+
+    case "stop":
+      return await stopCommand(argv.slice(1), opts);
+
     case "logs":
     case "install-service":
     case "gc":
@@ -97,7 +114,7 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
 
 const VERSION = "0.1.0";
 
-async function start(args: string[]): Promise<number> {
+async function start(args: string[], opts: RunOptions = {}): Promise<number> {
   const configPath = flagValue(args, "--config");
   const portRaw = flagValue(args, "--port");
   const port = portRaw === undefined ? undefined : Number.parseInt(portRaw, 10);
@@ -106,13 +123,66 @@ async function start(args: string[]): Promise<number> {
     return 1;
   }
 
+  const pid = pidfileFor(args, opts);
+  // Refuse rather than race. Two daemons on one database is not obviously fatal
+  // — SQLite in WAL mode would cope — but they would both reconcile on boot,
+  // both hold the same task ids live, and only one could own the port. The
+  // second one's failure would surface as EADDRINUSE, which reads as a port
+  // problem rather than "rewter is already running".
+  const existing = await daemonStatus(pid, pickFetch(opts));
+  if (existing.state === "running") {
+    process.stderr.write(`${formatStatus(existing)}\nalready running — nothing to do\n`);
+    return 1;
+  }
+
   const daemon = await startDaemon({
     ...(configPath !== undefined && { configPath }),
     ...(port !== undefined && { port }),
+    pidfilePath: pid,
   });
   process.stdout.write(`${bootSummary(daemon)}\n`);
   // Never resolves: the process ends on SIGINT/SIGTERM, after a graceful drain.
   return await runUntilSignal(daemon);
+}
+
+/**
+ * `rewter status` — is one running, and where.
+ *
+ * Exit code follows the shell convention that 0 means "the thing you asked
+ * about is true": a stopped daemon is a successful *report* but a false
+ * *claim*, so it exits 1 and `rewter status && open $(…)` behaves.
+ */
+async function statusCommand(args: string[], opts: RunOptions): Promise<number> {
+  const status = await daemonStatus(pidfileFor(args, opts), pickFetch(opts));
+  const line = `${formatStatus(status)}\n`;
+  if (status.state === "running") {
+    process.stdout.write(line);
+    return 0;
+  }
+  process.stderr.write(line);
+  return 1;
+}
+
+/** `rewter stop` — SIGTERM the daemon named by the pidfile, then wait for the port to go quiet. */
+async function stopCommand(args: string[], opts: RunOptions): Promise<number> {
+  const outcome = await stopDaemon(pidfileFor(args, opts), pickFetch(opts));
+  process[outcome.ok ? "stdout" : "stderr"].write(`${outcome.note}\n`);
+  return outcome.ok ? 0 : 1;
+}
+
+/**
+ * Where the pidfile lives: `--pidfile`, then `REWTER_PIDFILE`, then
+ * `~/.rewter/rewter.pid`. Overridable at all because tests, and because a
+ * second daemon on a scratch config needs somewhere else to make its claim.
+ */
+function pidfileFor(args: string[], opts: RunOptions): string {
+  const env = opts.env ?? process.env;
+  const override = flagValue(args, "--pidfile") ?? env.REWTER_PIDFILE;
+  return pidfilePath(env.HOME ?? homedir(), override);
+}
+
+function pickFetch(opts: RunOptions): { fetch?: typeof globalThis.fetch } {
+  return opts.fetch !== undefined ? { fetch: opts.fetch } : {};
 }
 
 /**

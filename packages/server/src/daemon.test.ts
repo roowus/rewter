@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelIdSchema, TaskSettingsSchema, newTaskId } from "@rewter/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "./config/config.js";
 import { type RunningDaemon, bootSummary, startDaemon } from "./daemon.js";
+import { readPidfile } from "./service/pidfile.js";
 
 let dir: string;
 let daemon: RunningDaemon | undefined;
@@ -171,6 +172,55 @@ describe("startDaemon", () => {
     daemon = undefined;
     expect(d.db.$client.open).toBe(false);
     await expect(fetch(`${url}/internal/health`)).rejects.toThrow();
+  });
+});
+
+/**
+ * The pidfile is what another terminal's `rewter stop` has to go on. What
+ * matters at this level is *when* it is written and removed relative to the
+ * socket, not its format — `pidfile.test.ts` owns that.
+ */
+describe("startDaemon — pidfile", () => {
+  it("writes nothing unless asked", async () => {
+    // Every test and every library embedding boots without one: a pidfile is a
+    // claim about *the* daemon on this machine, and three port-0 daemons must
+    // not leave three of them contradicting each other.
+    await boot();
+    expect(readdirSync(dir).filter((f) => f.endsWith(".pid"))).toEqual([]);
+  });
+
+  it("records the address actually bound, not the one asked for", async () => {
+    // Booted on port 0, so a file written before `listen` would say ":0" —
+    // which is exactly the thing `stop` would then fail to probe.
+    const path = join(dir, "rewter.pid");
+    const d = await startDaemon({
+      config: ConfigSchema.parse({ dbPath: join(dir, "rewter.db"), logger: false }),
+      env: {},
+      port: 0,
+      pidfilePath: path,
+    });
+    daemon = d;
+
+    const entry = readPidfile(path);
+    expect(entry?.url).toBe(d.url);
+    expect(entry?.pid).toBe(process.pid);
+    // And it is a live address, not just a plausible string.
+    expect((await fetch(`${entry?.url}/internal/health`)).status).toBe(200);
+  });
+
+  it("removes it on stop, before the socket finishes draining", async () => {
+    const path = join(dir, "rewter.pid");
+    const d = await startDaemon({
+      config: ConfigSchema.parse({ dbPath: join(dir, "rewter.db"), logger: false }),
+      env: {},
+      port: 0,
+      pidfilePath: path,
+    });
+    await d.stop();
+    daemon = undefined;
+    // From the moment we decide to stop, the claim is false — a `status`
+    // racing the drain should read "not running", not point at a closing socket.
+    expect(readPidfile(path)).toBeUndefined();
   });
 });
 

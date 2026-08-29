@@ -33,9 +33,54 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
 | M7 | *acceptance: approve from the browser while the stream runs* | 🟡 built, not yet run live |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
-| M8 | Daemonization (CLI, launchd, service install) | 🟡 in progress |
+| M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
+| M8 | Daemonization (launchd, `logs`, `install-service`, `gc`) | 🟡 in progress |
 
 ## Log
+
+### 2026-08-29 — M8b: a pidfile is a claim, not a fact
+
+`rewter start` runs in the foreground, so `rewter stop` in another terminal has nothing to
+go on but what the running process left on disk. That file — `~/.rewter/rewter.pid`, or
+`--pidfile` / `REWTER_PIDFILE` — is the whole mechanism, and the thing worth being careful
+about is that **it lies**: the daemon was killed before it could clean up, the machine
+rebooted and the file survived, or, worst, the pid was *reused* by an unrelated process.
+Signalling a pid because a file mentions it is how a stop command kills a stranger.
+
+So nothing here trusts the pid. The file records the **URL** the daemon bound, and liveness
+is decided by asking it: a `GET /internal/health` that answers `status: "ok"` is proof that
+rewter is the thing listening, which is the question actually being asked. The pid is used
+only after that passes, and only to deliver the signal. Two ordering rules fall out. The
+file is written **after `listen`** — under port 0 there is no true address until the socket
+is bound, and a file saying `:0` is exactly the one `stop` could not probe. And it is
+removed **first** in `stop()`: from the moment we have decided to stop, its claim is false,
+and a `status` racing the drain should read "not running" rather than point at a closing
+socket. Write-then-`rename` makes the commit atomic, so a reader never sees half a pid it
+might go on to signal.
+
+Four states, named rather than collapsed into "running / not running", because they call
+for different actions: `stopped` (no usable claim — a truncated or wrong-shaped file counts
+as none), `stale` (the URL does not answer — the file is removed and the fact printed,
+because it means the last shutdown was not graceful and this boot's reconciliation has
+interrupted rows to show), `unreachable` (**something answers, but not as rewter** — refuse
+to signal), and `running` (health answered, and its payload rides along so `status` prints
+provider/model counts without a second request).
+
+`stop` sends **SIGTERM only, with no escalation**. Shutdown drains in-flight SSE streams;
+killing harder mid-drain leaves the client parsing a truncated event *and* leaves rows for
+the next boot to close. It waits on the health probe rather than the pid — the stronger
+check, and the one that answers what the caller wants to know: the port is free. A drain
+still running after 10s is reported for a human to decide, not papered over on a timer.
+`start` probes the same way and refuses over a running daemon, because the alternative
+failure is `EADDRINUSE`, which reads as a port problem rather than "rewter is already
+running".
+
+`startDaemon` writes a pidfile only when told to; every test and every library embedding
+omits it, since three port-0 daemons must not leave three contradicting claims on disk.
+Fifty-one tests: the file's malformed shapes, the four states, the refusal to signal an
+`unreachable` port, SIGTERM-then-poll with injected `kill`/`sleep`/`fetch`, the grace
+timeout, uptime formatting, and — at the daemon level — that the recorded URL is the one
+actually bound and answering, and that it is gone after `stop()`.
 
 ### 2026-08-29 — M8a: boot reconciliation, and why `interrupted` is not `failed`
 

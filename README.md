@@ -240,6 +240,17 @@ teach the phase-2 learned stats the same untruth. The sweep goes through the ord
 lifecycle guards, so the interruption is an event like any other and the dashboard replays
 it rather than showing a task that just stops updating.
 
+Its second piece is **`rewter status` and `rewter stop`** — talking to a daemon this shell
+did not start. `start` records where it bound in `~/.rewter/rewter.pid`, and neither of the
+other two trusts the pid in it: a pidfile survives `kill -9` and reboots, and pids get
+reused, so signalling one because a file mentions it is how a stop command kills an
+unrelated process. Liveness is a **health probe against the URL the file records**. If the
+port answers as something that isn't rewter, `stop` says so and refuses to signal; if
+nothing answers, the file was stale and gets removed with a note that the last shutdown
+wasn't graceful. When it *is* rewter, `stop` sends SIGTERM and waits for the port to go
+quiet — never SIGKILL, because shutdown drains in-flight SSE streams and killing harder
+mid-drain just hands the client a truncated event.
+
 ## Quickstart
 
 ```sh
@@ -301,7 +312,22 @@ a token on `/v1`. Both header conventions work against it — `Authorization: Be
 OpenAI clients send) and `x-api-key` (what Anthropic clients send) — so one value covers
 both surfaces. Leave it unset and the local daemon is open.
 
-Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`.
+Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`,
+`--pidfile <path>` / `REWTER_PIDFILE`.
+
+From another terminal — or a script — ask whether one is up, and ask it to stop:
+
+```sh
+node packages/cli/dist/index.js status
+# rewter 0.1.0 running on http://127.0.0.1:20130, pid 51234, up 3h — 2 provider(s), 2 model(s)
+
+node packages/cli/dist/index.js stop
+# stopped (pid 51234)
+```
+
+`status` exits 0 only when a daemon is really there, so `rewter status && …` behaves. It
+answers by *asking the port*, not by reading a pid — so a leftover pidfile reports as stale
+(and `stop` removes it) instead of sending a signal to whatever now owns that number.
 
 ### Filling the registry automatically
 

@@ -7,6 +7,7 @@
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { REWTER_VERSION } from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { type Config, expandPath, loadConfig } from "./config/config.js";
 import { type SeedResult, seedRegistry } from "./config/seed.js";
@@ -18,6 +19,7 @@ import { Orchestrator } from "./orchestrator/engine.js";
 import { LiveTaskIndex } from "./orchestrator/live.js";
 import { type ReconcileResult, reconcileOnBoot, reconcileSummary } from "./reconcile.js";
 import { Router } from "./router/router.js";
+import { removePidfile, writePidfile } from "./service/pidfile.js";
 
 export interface StartDaemonOptions {
   /** Explicit config path (`--config`); otherwise `~/.rewter/config.json`. */
@@ -27,6 +29,13 @@ export interface StartDaemonOptions {
   env?: NodeJS.ProcessEnv;
   /** Overrides `config.port`; 0 asks the OS for a free one. */
   port?: number;
+  /**
+   * Where to record "a daemon is here" for `rewter stop`/`status`. Omitted —
+   * as every test and every library embedding does — no file is written at all:
+   * a pidfile is a claim about *the* daemon on this machine, and a test booting
+   * three on port 0 must not leave three of them contradicting each other.
+   */
+  pidfilePath?: string | undefined;
 }
 
 export interface RunningDaemon {
@@ -150,6 +159,18 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   const url = `http://${config.host}:${boundPort}`;
   orchestrator.setDashboardUrl(url);
 
+  // Written after `listen`, never before: the file's whole purpose is to tell
+  // another process where to reach this one, and until the port is bound (port
+  // 0 especially) there is no true address to record.
+  if (opts.pidfilePath !== undefined) {
+    writePidfile(opts.pidfilePath, {
+      pid: process.pid,
+      url,
+      startedAt: Date.now(),
+      version: REWTER_VERSION,
+    });
+  }
+
   const reconcileNote = reconcileSummary(reconciled);
   if (reconcileNote !== "") app.log.warn({ ...reconciled }, reconcileNote);
   for (const warning of seeded.warnings) app.log.warn({ warning }, "config");
@@ -169,7 +190,13 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     reconciled,
     url,
     async stop() {
-      // Tasks first: a running orchestration holds upstream calls open, and
+      // The pidfile goes first, and unconditionally: from the moment we have
+      // decided to stop, the claim it makes is no longer true, and a `status`
+      // racing the drain should read "not running" rather than point at a
+      // socket that is closing. A `stop` waiting on us sees the health probe
+      // stop answering either way.
+      if (opts.pidfilePath !== undefined) removePidfile(opts.pidfilePath);
+      // Tasks next: a running orchestration holds upstream calls open, and
       // closing the socket out from under it would leave them billing with
       // nobody left to read the answer.
       live.shutdown();

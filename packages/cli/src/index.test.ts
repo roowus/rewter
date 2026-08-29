@@ -74,8 +74,8 @@ describe("run", () => {
     expect(err.join("")).toContain("Usage:");
   });
 
-  it("says which milestone an unimplemented M8 command is waiting on", async () => {
-    for (const cmd of ["stop", "status", "logs", "install-service", "gc"]) {
+  it("says which milestone an unimplemented command is waiting on", async () => {
+    for (const cmd of ["logs", "install-service", "gc"]) {
       expect(await run([cmd])).toBe(1);
       expect(err.join("")).toContain("M8");
       err = [];
@@ -85,6 +85,91 @@ describe("run", () => {
   it("rejects a non-numeric --port before touching the database", async () => {
     expect(await run(["start", "--port", "eighty"])).toBe(1);
     expect(err.join("")).toContain("--port is not a number");
+  });
+});
+
+/**
+ * `status` and `stop` against a pidfile this test wrote by hand — which is
+ * exactly the situation they are built for: a file left by a process nobody
+ * here can see. `fetch` is stubbed to play the daemon that is (or is not)
+ * listening at the recorded URL.
+ */
+describe("run — status/stop", () => {
+  const PID = { pid: 4242, url: "http://127.0.0.1:19999", startedAt: 1, version: "0.1.0" };
+
+  /** Writes a pidfile and returns the `--pidfile <path>` args that point at it. */
+  function pidfile(entry: Record<string, unknown> = PID): string[] {
+    const path = join(dir, "rewter.pid");
+    writeFileSync(path, JSON.stringify(entry));
+    return ["--pidfile", path];
+  }
+
+  /** A stub daemon: answers `/internal/health` with `body`, everything else 404. */
+  function health(body: unknown, status = 200): typeof globalThis.fetch {
+    return (async (url: string | URL) =>
+      String(url).endsWith("/internal/health")
+        ? new Response(JSON.stringify(body), { status })
+        : new Response("{}", { status: 404 })) as unknown as typeof globalThis.fetch;
+  }
+
+  /** Nothing is listening: connect fails the way a dead port does. */
+  const refused = (async () => {
+    throw new Error("connect ECONNREFUSED");
+  }) as unknown as typeof globalThis.fetch;
+
+  it("exits non-zero when no daemon is running, so `status && …` behaves", async () => {
+    expect(await run(["status", "--pidfile", join(dir, "absent.pid")])).toBe(1);
+    expect(err.join("")).toContain("not running");
+  });
+
+  it("prints where a running daemon is listening", async () => {
+    const fetch = health({ status: "ok", version: "0.1.0", models: 7, providers: 2 });
+    expect(await run(["status", ...pidfile()], { fetch })).toBe(0);
+    expect(out.join("")).toContain("http://127.0.0.1:19999");
+    expect(out.join("")).toContain("2 provider(s), 7 model(s)");
+  });
+
+  it("calls a pidfile whose URL does not answer stale, not running", async () => {
+    expect(await run(["status", ...pidfile()], { fetch: refused })).toBe(1);
+    expect(err.join("")).toContain("stale pidfile");
+  });
+
+  it("does not mistake something else on the port for rewter", async () => {
+    // Whatever this is, it answers 200 to anything — which is precisely the
+    // thing a naive liveness check gets wrong, and `stop` would then signal.
+    const fetch = health({ hello: "not rewter" });
+    expect(await run(["status", ...pidfile()], { fetch })).toBe(1);
+    expect(err.join("")).toContain("not rewter");
+  });
+
+  it("refuses to signal a pid when the port is answering as something else", async () => {
+    const fetch = health({ hello: "not rewter" });
+    expect(await run(["stop", ...pidfile()], { fetch })).toBe(1);
+    expect(err.join("")).toContain("refusing to signal pid 4242");
+  });
+
+  it("removes a stale pidfile and reports that the last shutdown was not graceful", async () => {
+    const args = pidfile();
+    expect(await run(["stop", ...args], { fetch: refused })).toBe(0);
+    expect(out.join("")).toContain("stale pidfile");
+    // Gone, so the next `status` is a plain "not running" rather than a repeat.
+    out = [];
+    expect(await run(["status", ...args], { fetch: refused })).toBe(1);
+    expect(err.join("")).toBe("rewter is not running\n");
+  });
+
+  it("treats an unreadable pidfile as no claim at all", async () => {
+    // Truncated by a crash mid-write, or written by an older shape. Either way
+    // there is no pid here worth signalling.
+    expect(await run(["stop", ...pidfile({ pid: "not a number" })], { fetch: refused })).toBe(0);
+    expect(out.join("")).toContain("not running");
+  });
+
+  it("refuses to start a second daemon over a running one", async () => {
+    const fetch = health({ status: "ok", version: "0.1.0" });
+    const env = scratch({ providers: [] });
+    expect(await run(["start", ...pidfile()], { env, fetch })).toBe(1);
+    expect(err.join("")).toContain("already running");
   });
 });
 
