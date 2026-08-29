@@ -30,10 +30,55 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7c | Dashboard app: store, task tree, approval cards | ✅ 2026-08-28 |
 | M7d | Kill: `POST /internal/tasks/:id/cancel` + the button | ✅ 2026-08-28 |
 | M7e | Costs: `GET /internal/costs` + the spend panel | ✅ 2026-08-28 |
-| M7 | Dashboard (+ registry editor) | 🟡 |
+| M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
+| M7 | *acceptance: approve from the browser while the stream runs* | 🟡 built, not yet run live |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-29 — M7f: the registry editor, or: making one rule visible
+
+Five `/internal` routes (models list-with-cards, create, patch, delete, card-overrides PUT)
+and the panel that drives them. 1127 tests green (from 1063). Closes the last third of
+[#6](https://github.com/roowus/rewter/issues/6).
+
+Almost every decision here follows from one rule that already existed and was previously
+only enforceable by reading `registry/sync.ts`: a row whose facts came from a provider's
+catalog is `synced`, and the next `sync-models` refreshes it wholesale. That makes a
+hand-corrected price on a synced row a *countdown* rather than an edit — it survives until
+the next sync silently restores the upstream number, and the only symptom is a cost report
+that quietly stops matching the invoice. So editing a fact promotes the row to `manual`,
+and the editor's real job is making that legible before it happens: a `source` column, and
+a warning that names the model *while the change is still on screen* and still attributable
+to the field you just typed in. A promotion nobody was told about is a model that stops
+tracking its provider's prices, discovered when a price change never arrives.
+
+Three consequences fall out of that rule, and each is a test:
+
+- **`enabled` is not a fact.** Sync never flips it, so it must not promote. It is a separate
+  button sending `{enabled}` alone rather than a form field, because bundled with the facts,
+  switching a model off would take its prices off the sync path forever.
+- **Comparison is by value, not presence.** `applyModelPatch` returns `undefined` when a
+  patch matches the row, so a form that POSTs every field on every Save cannot promote a row
+  for the sin of having been opened. The route answers `{changed: false}`.
+- **`changed: false` is reported, not swallowed.** The panel says "no change", never "saved".
+  The usual way to reach it is a form showing values someone else already saved; a user told
+  "saved" walks away believing a price is fixed.
+
+Two smaller things worth writing down. Model ids are slugs containing slashes, and Fastify's
+`:id` named param stops at `/` — so these are trailing-wildcard routes read via `params["*"]`,
+which is also why the card route is `/internal/card-overrides/*` rather than
+`/internal/models/:id/card-overrides`: a wildcard has to be the last segment. Client-side the
+id is deliberately *not* escaped, since a `%2F` arrives literal and matches no model. And
+DELETE removes the capability card first because `capability_cards.modelId` has a foreign key
+while `cost_records.modelId` does not — cost history keeps naming a deleted model on purpose.
+
+The route tests spent an hour looking like a routing bug: fourteen 500s reading `Cannot read
+properties of undefined (reading 'safeParse')`. The cause was a stale `@rewter/shared` build —
+consumers resolve it through `exports` → `dist/`, so `ModelPatchSchema` was genuinely
+`undefined` at runtime while the source in front of me was correct. `pnpm build` in `shared`
+turned 14 failures into 0. Recorded as a sixth sighting of [#3](https://github.com/roowus/rewter/issues/3):
+the gate is `pnpm build`, and `pnpm test` alone proves less than it looks like it does.
 
 ### 2026-08-28 — M7e: costs — the one panel that fetches
 

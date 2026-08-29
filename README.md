@@ -155,7 +155,7 @@ retrying or dying; and an in-band `approve apr_…` re-POSTed with `x-rewter-tas
 the card and adopted the task, so the second stream replayed the feed and carried on while the
 original one also finished with the answer.
 
-In progress (M7): the **dashboard**. The first piece is the fold — `EventEnvelope[]` → task
+M7 is the **dashboard**. The first piece is the fold — `EventEnvelope[]` → task
 tree, in `@rewter/shared` so the daemon and the browser run one implementation and cannot
 disagree about what a task is doing. It folds one event at a time, because a dashboard replays
 history once and then lives on single events forever, and it drops anything at or below the
@@ -207,7 +207,27 @@ because an orchestrator that out-thinks its own budget reads as a perfectly heal
 total. Group it by model, by day (in the zone the response names), or by task, with
 `since`/`until` windows that tile.
 
-Still to come in M7: the registry editor, which needs the models CRUD routes first.
+The fifth piece closes M7: the **registry editor**, which fetches for the same reason — a
+registry is not a stream of things that happened, it is a table of what is true now. It
+exists so one rule is visible instead of buried. A row whose facts came from a provider's
+catalog is `synced`, and the next `rewter sync-models` refreshes it wholesale, so a
+hand-corrected price on such a row is not an edit — it is a countdown, and the only symptom
+when it runs out is a cost report that stops matching the invoice. So editing a *fact*
+promotes the row to `manual`, which sync then leaves alone, and the form says so **before**
+the save rather than after: the warning names the model while the change is still on screen
+and still attributable to the field you just typed in.
+
+`enabled` is the exception and gets its own button for exactly that reason. Sync never flips
+it — it is your switch, not a claim about the model — so it is sent on its own, never bundled
+with the facts. Bundled, turning a model off would take its prices off the sync path forever.
+The daemon compares patches by value, so a Save that follows a glance rather than an edit
+answers `changed: false`, and the panel reports that as "no change" instead of "saved": the
+usual way to see it is a form showing values someone else already saved, and a user told
+"saved" walks away believing a price is fixed. Prices with no value read as `unpriced`, never
+`$0` — a local Ollama model is free, one whose price we never learned is a different fact.
+The editor also carries the capability card beside the price, because what a model is *for*
+is the half that steers the orchestrator; its overrides save separately, since `rewter card
+<model>` regenerates the card underneath and the override is what survives that.
 
 ## Quickstart
 

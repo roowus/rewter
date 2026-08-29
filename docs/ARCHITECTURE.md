@@ -1213,7 +1213,9 @@ done-pattern) so any CLI harness is addable by config.
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
   `POST /internal/tasks/:id/cancel` (`{task, aborted, alreadyFinished}`; 404 unknown, 409
   already terminal — see [Kill](#kill-who-writes-the-row-m7d)), `GET /internal/costs`
-  (see below), and `WS /internal/ws` (see below).
+  (see below), the registry-editor writes — `POST /internal/models`,
+  `PATCH|DELETE /internal/models/*`, `PUT /internal/card-overrides/*` (see
+  [The registry editor](#the-registry-editor-m7f)) — and `WS /internal/ws` (see below).
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -1432,8 +1434,6 @@ The engine-side test hangs a worker's upstream call until its signal aborts, whi
 state where a kill is distinguishable from a no-op: a worker that had already reported leaves
 nothing to collapse, and the test would pass against a `cancel()` that did nothing.
 
-Still unbuilt in M7: the registry editor, which needs the models CRUD routes first.
-
 ### Costs: the one panel that fetches (M7e)
 
 `GET /internal/costs?groupBy=model|day|task&since=&until=&tz=` returns a `CostSummary`:
@@ -1488,6 +1488,80 @@ last good numbers on screen with an error line: the panel refetches on every soc
 event, so a transient failure is routine, and a panel that blanked would read as
 "spent nothing". The fetched body is schema-parsed — `undefined` formatted as a dash is
 the one wrong answer that looks like good news.
+
+### The registry editor (M7f)
+
+Five routes and one panel, and they exist to make a single rule visible instead of
+buried in `registry/sync.ts`.
+
+**The rule.** A row whose facts came from a provider's catalog carries
+`source: "synced"`, and the next `rewter sync-models` refreshes it wholesale. So a
+hand-corrected price on a synced row is not an edit — it is a countdown. It survives
+until the next sync silently restores the upstream number, and the only symptom is a
+cost report that stops matching the invoice. Editing a **fact** therefore promotes the
+row to `source: "manual"`, which sync treats as authoritative and leaves alone. Three
+consequences follow, and each one is a route decision or a UI decision:
+
+- **`enabled` is not a fact.** Sync never flips it — it is the user's switch, not a
+  claim about the model — so it is exempt from promotion (`FACT_KEYS` in
+  `shared/src/registry.ts` lists the other seven). Without the exemption, switching a
+  model off would take its prices off the sync path forever. The panel gives it its own
+  button, sending `{enabled}` alone, so the toggle cannot ride along with a fact edit.
+- **Comparison is by value, not by presence.** `applyModelPatch` returns `undefined`
+  when the patch matches the row, so a form that POSTs every field on every Save cannot
+  promote a row for having been opened. `PATCH` answers `{model, changed: false}` and
+  writes nothing — `updatedAt` is the column someone reads to work out when a price
+  moved, and a no-op save must not claim an edit.
+- **`changed: false` is reported, not swallowed.** The panel says "no change", never
+  "saved". The usual way to reach it is a form showing values someone else already
+  saved, and a user told "saved" walks away believing a price is fixed.
+
+The editor still sends only dirty fields. Sending the whole form would be harmless —
+that is precisely what the value comparison buys — but a patch naming one field is a
+patch whose rejection names the field that was wrong. Pricing goes as a whole object,
+because a partial price cannot half-apply.
+
+**Routing around the slash.** Model ids are slugs containing a separator
+(`anthropic/claude-opus-5`) and Fastify's `:id` named param stops at it, so every
+request would 404. The routes are trailing wildcards read via `params["*"]`, and since
+a wildcard has to be the last segment, the card patch lives at its own prefix
+(`PUT /internal/card-overrides/*`) rather than `/internal/models/:id/card-overrides`.
+The client does **not** escape the id: a `%2F` would arrive literal and match no model.
+
+**The five routes.** `GET /internal/models` returns models *and* cards in one
+round-trip — the editor shows both on a row, and a second fetch per model would render
+prices before rendering what a model is *for*, which is the half that steers the
+orchestrator. `POST /internal/models` is a create, not an upsert: a duplicate is a 409,
+because silently overwriting would be a way to edit a synced row without the promotion
+rule ever running, and `source: "manual"` is set by construction rather than taken from
+the body. An unknown `providerId` is a 400 rather than the 500 the foreign key would
+otherwise throw from inside SQLite. `PATCH` is above. `DELETE` removes the capability
+card first — `capability_cards.modelId` carries a foreign key and `cost_records.modelId`
+deliberately does not, so spend history keeps naming a retired model. A report that
+quietly loses rows when a model is deleted is worse than one naming something you can
+no longer route to. `PUT /internal/card-overrides/*` is a separate lifecycle from the
+card itself: `upsertCard` omits `userOverridesJson` from its conflict set, so a hand
+correction survives `rewter card <model>` re-running; `{overrides: null}` clears the
+patch and restores the generated card verbatim. It 404s when there is no generated card
+to patch, because overrides are a patch and there is nothing under them yet.
+
+**Nothing caches.** `Router` calls `repos.listModels()` per request, so an edit lands on
+the very next `/v1/chat/completions` with nothing to invalidate — the alternative is a
+price that is right on screen and wrong on the bill.
+
+**The panel** (`src/RegistryPanel.tsx`, `src/ModelEditor.tsx`, `src/registry.ts`) fetches
+for the same reason the costs panel does: a registry is not a stream of things that
+happened, it is a table of what is true now, and there is no `model.edited` event
+because there is nothing about a price a task tree would replay. It asks the daemon
+nothing until it is opened, and keeps its rows on screen when a reload fails — a
+registry that empties on a transient failure reads as "no models configured", which is a
+very different problem. The promotion warning appears while the changed value is still
+on screen and attributable to a field just typed in, not after the save. A non-numeric
+price is refused locally rather than sent: an empty field means "we do not know this
+price", `abc` means a typo, and JSON-encoding the resulting `NaN` as `null` would
+silently delete a price that was correct. `unpriced` is rendered as itself — a local
+Ollama model costs nothing, a model whose price we never learned is a different fact,
+and `$0` reads as the first.
 
 ## Phases
 

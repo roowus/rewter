@@ -196,6 +196,278 @@ pre,
   color: var(--dim);
 }
 
+/* ── registry ───────────────────────────────────────────────────────── */
+
+.registry {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.registry-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.registry-head h2 {
+  font-size: 0.8rem;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.registry-head button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.registry-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.7rem;
+  font-size: 0.85rem;
+}
+
+.registry-table th,
+.registry-table td {
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border-top: 1px solid var(--line);
+  font-weight: normal;
+}
+
+.registry-table thead th {
+  border-top: none;
+  color: var(--dim);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Prices and context are figures to compare down a column. */
+.registry-table td:nth-child(2),
+.registry-table td:nth-child(3) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* A disabled model is still listed — it is configured, just switched off —
+   but it should not read as part of what the router can reach right now. */
+.registry-row[data-enabled="false"] {
+  opacity: 0.55;
+}
+
+.registry-row button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  cursor: pointer;
+}
+
+.best-at {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+
+/* `synced` is the state with a consequence attached — the next sync
+   overwrites these numbers — so it is the one that gets the colour. */
+.source {
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.source[data-source="synced"] {
+  color: var(--accent);
+}
+
+.registry-detail > td {
+  background: #0f1115;
+}
+
+/* ── model editor ───────────────────────────────────────────────────── */
+
+.model-editor {
+  padding: 0.6rem 0.2rem;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.5rem;
+}
+
+.field-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.field-grid input,
+.field-grid select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.3rem 0.4rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+/* Loud on purpose: this is the one consequence of a save that the user
+   cannot undo by retyping what was there. */
+.promote-warning {
+  margin: 0.6rem 0 0;
+  padding: 0.4rem 0.55rem;
+  border-left: 2px solid var(--warn);
+  font-size: 0.78rem;
+  color: var(--warn);
+}
+
+.promote-warning code {
+  color: inherit;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.editor-actions button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.editor-actions button.danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.editor-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.editor-outcome {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+.add-model {
+  margin-top: 0.7rem;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+/* ── capability card ────────────────────────────────────────────────── */
+
+.card-editor {
+  margin-top: 0.9rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.card-editor h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+/* Says which half of what is on screen is the user's own words. */
+.overridden {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--warn);
+}
+
+.card-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.card-editor textarea {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  font-size: 0.82rem;
+  resize: vertical;
+}
+
+.card-none {
+  margin-top: 0.9rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+
+.tags {
+  margin: 0.6rem 0 0;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.7rem;
+}
+
+.tags legend {
+  font-size: 0.75rem;
+  color: var(--dim);
+  padding: 0 0.3rem;
+}
+
+.tag {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.25rem !important;
+  font-size: 0.75rem;
+  color: var(--text) !important;
+  cursor: pointer;
+}
+
 /* ── task ───────────────────────────────────────────────────────────── */
 
 .task {

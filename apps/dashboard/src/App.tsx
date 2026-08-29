@@ -9,6 +9,7 @@
 import { tasksInOrder } from "@rewter/shared";
 import { useEffect, useState } from "react";
 import { CostsPanel } from "./CostsPanel.js";
+import { RegistryPanel } from "./RegistryPanel.js";
 import { TaskTree } from "./TaskTree.js";
 import { useDashboard } from "./store.js";
 
@@ -73,6 +74,10 @@ export function App(): JSX.Element {
       {/* Above the tree: it is the daemon's whole spend, including the
           pass-through traffic no task in the tree accounts for. */}
       <CostsPanel />
+
+      {/* Collapsed by default and below the spend: what a model costs is the
+          question that sends you looking for the editor in the first place. */}
+      <RegistryPanel />
 
       {tasks.length === 0 ? (
         <p className="empty">

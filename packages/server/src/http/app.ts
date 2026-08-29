@@ -12,9 +12,12 @@ import {
   AnthropicMessagesRequestSchema,
   type AnthropicResponseBlock,
   type ApprovalId,
+  CardOverridesBodySchema,
   type ChatMessage,
   type ChatResponse,
   CostGroupBySchema,
+  ModelCreateSchema,
+  ModelPatchSchema,
   type OpenAIChatChunk,
   type OpenAIChatCompletion,
   OpenAIChatRequestSchema,
@@ -25,6 +28,7 @@ import {
   type StreamChunk,
   TASK_TRANSITIONS,
   type TaskId,
+  applyModelPatch,
   fromAnthropicMessages,
   fromAnthropicTools,
   isTerminal,
@@ -37,6 +41,7 @@ import {
   toToolDefinitions,
 } from "@rewter/shared";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import type { ZodError } from "zod";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
 import { type Orchestrator, OrchestratorError } from "../orchestrator/engine.js";
@@ -426,7 +431,108 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     ({ providers: repos.listProviders() }),
   );
 
-  app.get("/internal/models", async () => ({ models: repos.listModels() }));
+  // ── Registry ──────────────────────────────────────────────────────────────
+  //
+  // The editor's surface. Two rules run through all of it.
+  //
+  // First: editing a *fact* about a model promotes the row to `source:
+  // "manual"`, which is what stops the next `sync-models` from putting the
+  // upstream's number back. `applyModelPatch` in `shared` decides that, by
+  // value, so a form that POSTs every field cannot promote a row just by being
+  // saved. Enabling and disabling is exempt — sync never flips `enabled`, and a
+  // model toggled off should not lose its price refreshes forever.
+  //
+  // Second: nothing here caches. `Router` calls `repos.listModels()` per
+  // request, so an edit lands on the next call with nothing to invalidate.
+  //
+  // The routes take the model id as a trailing wildcard rather than a `:id`
+  // param because ids are slugs with a slash in them (`anthropic/claude-opus-5`)
+  // and a named param stops at the separator — every request would 404. That
+  // forces the card-override route onto its own prefix, since a wildcard has to
+  // be the last thing in a path.
+
+  app.get("/internal/models", async () => ({
+    models: repos.listModels(),
+    // The card rides along: the editor shows both on one row, and a second
+    // round-trip per model would render prices before rendering what the model
+    // is *for* — which is the half that actually steers the orchestrator.
+    cards: repos.listCards(),
+  }));
+
+  app.post("/internal/models", async (req, reply) => {
+    const parsed = ModelCreateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+    const body = parsed.data;
+
+    if (repos.getModel(body.id) !== undefined) {
+      // Not an upsert: a POST that silently overwrote a synced row would be a
+      // way to edit one without the promotion rule ever running.
+      return reply.code(409).send({ error: { message: `model ${body.id} already exists` } });
+    }
+    if (repos.getProvider(body.providerId) === undefined) {
+      // The FK would raise this as a 500 from inside SQLite otherwise.
+      return reply.code(400).send({ error: { message: `no such provider: ${body.providerId}` } });
+    }
+
+    const now = clock();
+    // `source: "manual"` is not taken from the body — a row a human typed is
+    // manual by construction, and letting the caller claim `synced` would hand
+    // sync permission to overwrite something nothing upstream has heard of.
+    const model = repos.upsertModel({ ...body, source: "manual", createdAt: now, updatedAt: now });
+    return reply.code(201).send({ model });
+  });
+
+  app.patch("/internal/models/*", async (req, reply) => {
+    const id = modelIdParam(req.params);
+    const existing = repos.getModel(id);
+    if (existing === undefined) {
+      return reply.code(404).send({ error: { message: `no such model: ${id}` } });
+    }
+
+    const parsed = ModelPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+
+    const next = applyModelPatch(existing, parsed.data, clock());
+    // `undefined` means nothing actually changed. Returning the row unwritten
+    // keeps `updatedAt` honest: it is the column someone reads to work out when
+    // a price moved, and a no-op save must not claim an edit.
+    if (next === undefined) return { model: existing, changed: false };
+    return { model: repos.upsertModel(next), changed: true };
+  });
+
+  app.delete("/internal/models/*", async (req, reply) => {
+    const id = modelIdParam(req.params);
+    if (repos.getModel(id) === undefined) {
+      return reply.code(404).send({ error: { message: `no such model: ${id}` } });
+    }
+    // The card first: it holds a foreign key onto the model, and cost records
+    // deliberately do not — history keeps naming a model that is gone, because
+    // a spend report that quietly loses rows when a model is retired is worse
+    // than one that names something you can no longer route to.
+    repos.deleteCard(id);
+    repos.deleteModel(id);
+    return { deleted: id };
+  });
+
+  /**
+   * The user's patch over a generated capability card.
+   *
+   * A separate route from the model because it is a separate lifecycle:
+   * `upsertCard` regenerates the generated half and never touches this one, so
+   * a card the user corrected survives `rewter card <model>` re-running.
+   */
+  app.put("/internal/card-overrides/*", async (req, reply) => {
+    const id = modelIdParam(req.params);
+    const parsed = CardOverridesBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+    if (repos.getRawCard(id) === undefined) {
+      // Overrides patch a generated card; there is nothing to patch yet.
+      return reply
+        .code(404)
+        .send({ error: { message: `no capability card for ${id} — generate one first` } });
+    }
+    return { card: repos.setCardOverrides(id, parsed.data.overrides) };
+  });
 
   // ── Approvals ─────────────────────────────────────────────────────────────
   // The dashboard's buttons and `curl` reach the same gate the in-band
@@ -858,6 +964,27 @@ function toAnthropicResponse(
     stop_sequence: null,
     usage: toAnthropicUsage(result.usage),
   };
+}
+
+/**
+ * The model id out of a trailing-wildcard route. Fastify decodes the path, so
+ * a client may send `anthropic/x` raw or percent-encoded and land here either
+ * way; both name the same row.
+ */
+function modelIdParam(params: unknown): string {
+  return (params as { "*": string })["*"];
+}
+
+/**
+ * Flatten a zod failure into one line.
+ *
+ * The path matters more than the message here: the registry schemas are strict,
+ * so the common failure is a misspelled field, and `pricing.inputPerMtok
+ * Unrecognized key` tells the caller exactly which key to fix while
+ * "invalid body" sends them back to the docs.
+ */
+function issues(error: ZodError): string {
+  return error.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
 }
 
 function safeJsonParse(raw: string): unknown {
