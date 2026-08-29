@@ -164,7 +164,7 @@ schemas so the event/API contract cannot drift. Server module dirs are the futur
 | Tests | vitest + recorded wire fixtures + in-memory SQLite + FakeProviderAdapter/ScriptedModel | deterministic, no keys/network |
 | Lint/format | Biome | one fast tool |
 | SDKs | `@anthropic-ai/sdk` (native), `openai` (covers all OpenAI-compatible upstreams via baseURL), `@google/genai` | |
-| Daemon | `rewter start` runs in the foreground (dev, and what launchd wants); `rewter install-service` writes the plist in M8; logs `~/Library/Logs/rewter/` | |
+| Daemon | `rewter start` runs in the foreground (dev, and what launchd wants); `rewter install-service` writes the plist; keys from `~/.rewter/env`; logs `~/Library/Logs/rewter/` | |
 
 ## Domain model
 
@@ -999,12 +999,13 @@ The boot log gets one line (`interrupted by a previous shutdown: 1 task(s), 2 wo
 ### CLI
 
 `rewter start [--config <path>] [--port <n>] [--pidfile <path>]` runs the daemon in the
-**foreground** — the shape M8 wraps in a launchd plist, and the shape you want anyway
-while watching logs. `rewter status` and `rewter stop` talk to a daemon this process did
-not start; see [The pidfile, and talking to a daemon you did not
-start](#the-pidfile-and-talking-to-a-daemon-you-did-not-start-m8). `rewter version` /
-`rewter help` round it out. `logs`, `install-service` and `gc` still need the launchd side
-and exit 1 naming the milestone rather than pretending.
+**foreground** — the shape launchd wants, and the shape you want anyway while watching
+logs. `rewter status` and `rewter stop` talk to a daemon this process did not start; see
+[The pidfile, and talking to a daemon you did not
+start](#the-pidfile-and-talking-to-a-daemon-you-did-not-start-m8).
+`rewter install-service` / `uninstall-service`, `rewter logs` and `rewter gc` are the
+launchd side and are described in [Living under launchd](#living-under-launchd-m8).
+`rewter version` / `rewter help` round it out.
 
 ### The pidfile, and talking to a daemon you did not start (M8)
 
@@ -1074,6 +1075,112 @@ be asked for, and it means all *enabled* models, which is the set the orchestrat
 from. An unknown target or an unresolvable `--using` fails before anything is spent, and a model
 that already has a card is skipped unless `--regenerate` says otherwise. `--show` only reads, so
 it needs no `--using`.
+
+### Living under launchd (M8)
+
+launchd starts a process with a nearly-empty environment: no `~/.zshrc` has run, so no
+`ANTHROPIC_API_KEY` is exported, and `PATH` is not something to rely on. Everything in
+this section follows from that one fact.
+
+#### `~/.rewter/env` — where the keys come from when nobody typed them
+
+Every secret in rewter is referenced by variable *name* (`apiKeyRef`), which works
+beautifully from a shell and not at all at login. So there is one file of `KEY=value` lines,
+read at boot and merged **under** the real environment — `ANTHROPIC_API_KEY=sk-x rewter
+start` still overrides for one run, and a shell that already exports a key does not have its
+value silently replaced by a stale one from a file. An empty string counts as set, because
+`ANTHROPIC_API_KEY= rewter start` is a legible way to say "pretend I have no Anthropic key".
+`export ` prefixes and shell quoting are tolerated, since the natural way to produce this
+file is to copy lines out of `~/.zshrc`.
+
+It is deliberately **not** `config.json` — that is the file people paste into issues. It is
+the only place in rewter where a raw key sits on disk, so a mode with any group or other bit
+set is reported at boot (`chmod 600`). A bad mode is a **warning, not a refusal**: refusing
+would leave a login daemon dead with its explanation in a log the user does not yet know how
+to read. A malformed line is named by line number and never echoed — the thing on a
+malformed line in this particular file is quite likely to be half of a key. `REWTER_ENV_FILE`
+overrides the path.
+
+#### The plist, and why `install-service` stops short of loading it
+
+`rewter install-service [--force] [--dry-run] [--config <path>]` renders
+`~/Library/LaunchAgents/com.roowus.rewter.plist` and creates the log directory, because a
+`StandardOutPath` launchd cannot open makes the job fail with nowhere to say so — the worst
+failure mode a login daemon has. `ProgramArguments` is `[<absolute node>, <absolute cli>,
+"start"]`: `process.execPath` and `fileURLToPath(import.meta.url)`, because there is no PATH
+to search.
+
+Three decisions are worth stating:
+
+- **No `EnvironmentVariables` key, ever.** `launchctl print` reads the plist back to anyone
+  who asks, and a plist's mode is not somewhere people look. An env file's mode is checkable;
+  this is the whole reason the previous subsection exists. There is a test asserting the
+  rendered XML contains neither `EnvironmentVariables` nor `API_KEY`.
+- **`KeepAlive` is conditional (`SuccessfulExit: false`), not `true`.** Exit 0 means `rewter
+  stop` asked it to go; resurrecting it a second later would make `stop` look broken.
+  `ThrottleInterval: 10` turns a config error into a slow retry rather than a spin.
+- **It writes the file and then stops**, printing the two `launchctl` lines rather than
+  running them:
+
+  ```
+  launchctl bootout gui/$(id -u)/com.roowus.rewter 2>/dev/null || true
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.roowus.rewter.plist
+  ```
+
+  `bootout` first, because `bootstrap` on an already-loaded label fails with a bare error
+  code. And a tool holding your API keys should not shell out on your behalf — the domain
+  target is the part that goes wrong, and it is worth reading the error yourself.
+
+An existing plist that differs is **not** clobbered: the command exits 1 and names `--force`,
+because a hand-added key in there is a decision someone made. Re-running after an upgrade
+that changed nothing says `already current`. `uninstall-service` removes the file and prints
+the `bootout` line; unloading likewise stays the user's call. Paths are XML-escaped —
+`~/projects/a & b/` is a legal directory name and an illegal plist.
+
+#### `rewter logs` — what the daemon wrote when nobody was watching
+
+Reads the two files launchd writes rather than talking to the daemon, because the case it
+exists for is a daemon that is *not* running. `-n <lines>` tails, `--level <level>` filters,
+`--log-dir` points elsewhere.
+
+The two streams are **merged by timestamp with a stable sort**, so an untimestamped line —
+a stack trace, a Node warning — stays under the line it followed rather than being sorted to
+the top. The interesting case, "it printed warnings and *then* died", is only legible merged,
+and launchd will only ever hand us two separate files. pino JSON is rendered as a level and a
+message; anything that is not JSON passes through untouched, since those are exactly the
+lines that appear when something has gone unusually wrong. Small scalar fields are appended
+as `key=value` context, and **fields longer than 80 characters are dropped** — a log reader is
+not the place to discover a leaked key. The tail is read from the end of the file under a byte
+cap, and the partial first line that produces is discarded; these logs are append-only and
+unrotated. No logs yet is exit **0** with a note: before the first launchd boot neither file
+exists, and that is a report rather than a failure.
+
+#### `rewter gc` — the database does not shrink on its own
+
+Every orchestration appends, and the bulk of it is the event log the dashboard folds to
+reconstruct a task. `rewter gc [--older-than <days>] [--dry-run] [--vacuum]` collects
+finished tasks and their work items, worker runs, approvals and events, plus
+`~/.rewter/workspaces/<taskId>/` — usually the larger win. Like `sync-models` it opens the
+database directly rather than going through a running server, which WAL makes safe and which
+means it works whether or not the daemon is up.
+
+Three rules make it more than a `DELETE FROM`:
+
+- **Cost records are never collected.** `cost_records.task_id` is nullable with no foreign
+  key precisely so this is possible: dropping a task's transcript is a storage decision,
+  dropping its price destroys the answer to "what did I spend in March".
+- **Unfinished tasks are never collected**, whatever their age — they are either genuinely in
+  flight or something for the next boot's reconciliation to close. Age is measured from
+  `finishedAt`, not `createdAt`, so a task that ran for a week is judged on when it *ended*.
+- **The sweep is one transaction, children first.** `foreign_keys` is ON with no cascades. A
+  gc interrupted between the events and the task row would leave a task the dashboard can
+  list but cannot reconstruct. Workspace removal happens *after* the commit: an `rmSync` that
+  throws must not roll back a sweep that already succeeded.
+
+`--vacuum` is separate and opt-in, and skipped on a dry run. Deleting rows returns pages to
+SQLite's free list, not to the filesystem; `VACUUM` rewrites the file, which needs room for a
+second copy and holds a write lock on the whole database — fine to ask for, rude to do to a
+running daemon by surprise.
 
 ## Tier-2 agent loop
 

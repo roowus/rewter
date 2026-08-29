@@ -116,6 +116,12 @@ export {
   type SeedTarget,
 } from "./config/seed.js";
 export {
+  DEFAULT_ENV_FILE,
+  loadEnvFile,
+  mergeEnv,
+  type EnvFile,
+} from "./config/envfile.js";
+export {
   bootSummary,
   openRegistry,
   runUntilSignal,
@@ -151,5 +157,33 @@ export {
   type StopOptions,
   type StopOutcome,
 } from "./service/control.js";
+export {
+  LOG_DIR,
+  SERVICE_LABEL,
+  installService,
+  renderPlist,
+  uninstallService,
+  type InstallOptions,
+  type InstallResult,
+  type PlistOptions,
+} from "./service/launchd.js";
+export {
+  formatLogs,
+  logPaths,
+  readLogs,
+  tailLines,
+  type LogLevel,
+  type LogLine,
+  type LogSource,
+  type ReadLogsOptions,
+} from "./service/logs.js";
+export {
+  DEFAULT_RETENTION_DAYS,
+  collectGarbage,
+  formatGcResult,
+  vacuum,
+  type GcOptions,
+  type GcResult,
+} from "./service/gc.js";
 
 export const SERVER_VERSION = REWTER_VERSION;

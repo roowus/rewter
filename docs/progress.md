@@ -34,9 +34,60 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7 | *acceptance: approve from the browser while the stream runs* | 🟡 built, not yet run live |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
-| M8 | Daemonization (launchd, `logs`, `install-service`, `gc`) | 🟡 in progress |
+| M8c | `~/.rewter/env`, launchd plist, `rewter logs`, `rewter gc` | ✅ 2026-08-29 |
+| M8 | *acceptance: README walkthrough verbatim; survives a reboot* | 🟡 built, not yet run live |
 
 ## Log
+
+### 2026-08-29 — M8c: living under launchd
+
+launchd starts a process with a nearly-empty environment. No `~/.zshrc` has run, so no
+`ANTHROPIC_API_KEY` is exported and `PATH` is not something to rely on. Everything in this
+milestone follows from that one fact.
+
+**`~/.rewter/env`.** Keys are referenced by variable *name* everywhere in rewter, which
+works from a shell and not at all at login; a daemon started by launchd would come up with
+every provider disabled and no obvious reason why. So: one file of `KEY=value` lines, read
+at boot and merged **under** the real environment, so `ANTHROPIC_API_KEY=sk-x rewter start`
+still overrides for one run and a shell that already exports a key does not have it
+silently replaced by a stale one. It is separate from `config.json` — that is the file
+people paste into issues — and being the only place a raw key sits on disk, a mode with any
+group or other bit set is reported at boot. A **warning, not a refusal**: refusing would
+leave a login daemon dead with its explanation in a log the user does not yet know how to
+read. Malformed lines are named by line number and never echoed, since the thing on a
+malformed line in this file is quite likely to be half of a key.
+
+**The plist.** `rewter install-service` renders
+`~/Library/LaunchAgents/com.roowus.rewter.plist` with an absolute `process.execPath` and an
+absolute CLI path, and creates the log directory first, because a `StandardOutPath` launchd
+cannot open makes the job fail with nowhere to say so. It carries **no
+`EnvironmentVariables` key** — `launchctl print` reads a plist back to anyone who asks,
+which is exactly why the keys live in a file whose mode we can check; there is a test
+asserting the rendered XML contains neither `EnvironmentVariables` nor `API_KEY`.
+`KeepAlive` is conditional on `SuccessfulExit: false`, so a crash restarts and `rewter stop`
+is not undone a second later, with `ThrottleInterval: 10` to make a config error a slow
+retry rather than a spin. And it **writes the file and then stops**, printing the `bootout
+… || true` / `bootstrap` pair rather than running them: `bootstrap` on a loaded label fails
+with a bare code, and a tool holding your API keys should not shell out on your behalf. An
+existing plist that differs is not clobbered — exit 1 naming `--force`.
+
+**`rewter logs`** reads the two files launchd writes rather than talking to the daemon,
+because the case it exists for is a daemon that is *not* running. Both streams are merged by
+timestamp with a **stable** sort, so a stack trace stays under the error it followed; "it
+printed warnings and then died" is only legible merged, and launchd will only ever give us
+two files. pino JSON renders as level + message, non-JSON passes through untouched, and
+fields longer than 80 characters are dropped — a log reader is not the place to discover a
+leaked key. No logs yet is exit 0: before the first boot neither file exists.
+
+**`rewter gc`** collects finished tasks with their work items, runs, approvals, events and
+workspaces, in one transaction, children first. Two things it refuses to do: collect a
+**cost record** (nullable `task_id`, no foreign key, on purpose — dropping a transcript is a
+storage decision, dropping its price destroys the answer to "what did I spend in March"),
+and collect an **unfinished task**, whatever its age. `--vacuum` is opt-in and skipped on a
+dry run.
+
+- 149 tests added across the four modules and the CLI (env file 23, gc 24, launchd 17,
+  logs 22, plus 17 CLI wiring tests taking that package to 46).
 
 ### 2026-08-29 — M8b: a pidfile is a claim, not a fact
 

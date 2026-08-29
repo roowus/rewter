@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -74,12 +74,9 @@ describe("run", () => {
     expect(err.join("")).toContain("Usage:");
   });
 
-  it("says which milestone an unimplemented command is waiting on", async () => {
-    for (const cmd of ["logs", "install-service", "gc"]) {
-      expect(await run([cmd])).toBe(1);
-      expect(err.join("")).toContain("M8");
-      err = [];
-    }
+  it("documents where launchd gets its keys from — the thing with no shell", async () => {
+    await run(["help"]);
+    expect(out.join("")).toContain("~/.rewter/env");
   });
 
   it("rejects a non-numeric --port before touching the database", async () => {
@@ -263,6 +260,179 @@ describe("run — sync-models", () => {
     });
     expect(code).toBe(1);
     expect(out.join("")).toContain("openai: failed");
+  });
+});
+
+/**
+ * `logs` reads files rather than the daemon, which is the whole point: the case
+ * it exists for is a daemon that is *not* running. Rendering is
+ * `service/logs.test.ts`; what is here is the flag handling and the
+ * "nothing yet" path a first-time user hits.
+ */
+describe("run — logs", () => {
+  /** Writes both files launchd would, and returns the `--log-dir` args. */
+  function logs(outLines: string[], errLines: string[] = []): string[] {
+    const logDir = join(dir, "Logs");
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(join(logDir, "rewter.log"), `${outLines.join("\n")}\n`);
+    if (errLines.length > 0) {
+      writeFileSync(join(logDir, "rewter.err.log"), `${errLines.join("\n")}\n`);
+    }
+    return ["--log-dir", logDir];
+  }
+
+  const pino = (fields: Record<string, unknown>) =>
+    JSON.stringify({ level: 30, time: 1_800_000_000_000, ...fields });
+
+  it("renders the daemon's JSON as something a person can read", async () => {
+    const args = logs([pino({ level: 40, msg: "provider disabled" })]);
+    expect(await run(["logs", ...args])).toBe(0);
+    expect(out.join("")).toContain("WARN");
+    expect(out.join("")).toContain("provider disabled");
+  });
+
+  it("says so, successfully, when there is nothing logged yet", async () => {
+    // Before the first launchd boot neither file exists; that is not a failure.
+    expect(await run(["logs", "--log-dir", join(dir, "nowhere")])).toBe(0);
+    expect(out.join("")).toContain("no logs yet");
+  });
+
+  it("limits with -n, counting from the end", async () => {
+    const args = logs([1, 2, 3, 4].map((n) => pino({ time: 1000 + n, msg: `m${n}` })));
+    expect(await run(["logs", "-n", "2", ...args])).toBe(0);
+    expect(out.join("")).not.toContain("m1");
+    expect(out.join("")).toContain("m4");
+  });
+
+  it("filters with --level", async () => {
+    const args = logs([pino({ msg: "routine" }), pino({ level: 50, msg: "bad" })]);
+    await run(["logs", "--level", "warn", ...args]);
+    expect(out.join("")).not.toContain("routine");
+    expect(out.join("")).toContain("bad");
+  });
+
+  it("rejects a level that is not one", async () => {
+    expect(await run(["logs", "--level", "loud"])).toBe(1);
+    expect(err.join("")).toContain("--level must be one of");
+  });
+
+  it("rejects a non-numeric -n", async () => {
+    expect(await run(["logs", "-n", "lots"])).toBe(1);
+    expect(err.join("")).toContain("-n is not a positive number");
+  });
+});
+
+/**
+ * `install-service` writes a plist and prints instructions. The plist's contents
+ * are `service/launchd.test.ts`'s business — here it is the CLI's promise not to
+ * run `launchctl` itself, and not to clobber a file you edited.
+ */
+describe("run — install-service", () => {
+  /** Points the install at a scratch `~`, so nothing lands in the real LaunchAgents. */
+  function home(): { env: NodeJS.ProcessEnv; plist: string } {
+    return {
+      env: { HOME: dir },
+      plist: join(dir, "Library", "LaunchAgents", "com.roowus.rewter.plist"),
+    };
+  }
+
+  it("writes the plist and prints the launchctl lines rather than running them", async () => {
+    const { env, plist } = home();
+    expect(await run(["install-service"], { env })).toBe(0);
+    expect(existsSync(plist)).toBe(true);
+    expect(out.join("")).toContain("launchctl bootstrap");
+    expect(out.join("")).toContain("~/.rewter/env");
+  });
+
+  it("writes no keys into it", async () => {
+    // `launchctl print` reads this file back to anyone who asks.
+    const { env, plist } = home();
+    await run(["install-service"], { env });
+    expect(readFileSync(plist, "utf8")).not.toContain("EnvironmentVariables");
+  });
+
+  it("writes nothing on --dry-run but shows what it would write", async () => {
+    const { env, plist } = home();
+    expect(await run(["install-service", "--dry-run"], { env })).toBe(0);
+    expect(out.join("")).toContain("com.roowus.rewter");
+    expect(existsSync(plist)).toBe(false);
+  });
+
+  it("refuses to clobber a hand-edited plist, and says how to override", async () => {
+    const { env, plist } = home();
+    await run(["install-service"], { env });
+    writeFileSync(plist, "<!-- mine -->");
+
+    out = [];
+    expect(await run(["install-service"], { env })).toBe(1);
+    expect(err.join("")).toContain("--force");
+    expect(readFileSync(plist, "utf8")).toContain("mine");
+
+    err = [];
+    expect(await run(["install-service", "--force"], { env })).toBe(0);
+    expect(readFileSync(plist, "utf8")).toContain("com.roowus.rewter");
+  });
+
+  it("is quiet when re-run after an upgrade changed nothing", async () => {
+    const { env } = home();
+    await run(["install-service"], { env });
+    out = [];
+    expect(await run(["install-service"], { env })).toBe(0);
+    expect(out.join("")).toContain("already current");
+  });
+
+  it("removes it again, and is a no-op when there is nothing there", async () => {
+    const { env, plist } = home();
+    await run(["install-service"], { env });
+
+    out = [];
+    expect(await run(["uninstall-service"], { env })).toBe(0);
+    expect(existsSync(plist)).toBe(false);
+    expect(out.join("")).toContain("bootout");
+
+    out = [];
+    expect(await run(["uninstall-service"], { env })).toBe(0);
+    expect(out.join("")).toContain("nothing installed");
+  });
+});
+
+/**
+ * `gc` against the scratch database. What gets collected is
+ * `service/gc.test.ts`'s business; here it is that the command opens the same
+ * database the daemon uses and honours the flags.
+ */
+describe("run — gc", () => {
+  it("reports an empty database as nothing to collect", async () => {
+    const env = scratch({ providers: [] });
+    expect(await run(["gc"], { env })).toBe(0);
+    expect(out.join("")).toContain("nothing to collect");
+  });
+
+  it("marks a dry run as one", async () => {
+    const env = scratch({ providers: [] });
+    expect(await run(["gc", "--dry-run"], { env })).toBe(0);
+    expect(out.join("")).toContain("nothing to collect");
+  });
+
+  it("rejects a non-numeric --older-than before opening anything", async () => {
+    expect(await run(["gc", "--older-than", "ages"])).toBe(1);
+    expect(err.join("")).toContain("--older-than is not a number");
+  });
+
+  it("vacuums only when asked, and leaves the database usable", async () => {
+    const env = scratch({ providers: [] });
+    expect(await run(["gc", "--vacuum"], { env })).toBe(0);
+    expect(out.join("")).toContain("vacuumed");
+
+    // The database still opens afterwards — the point of the assertion.
+    out = [];
+    expect(await run(["gc"], { env })).toBe(0);
+  });
+
+  it("does not vacuum on a dry run", async () => {
+    const env = scratch({ providers: [] });
+    await run(["gc", "--dry-run", "--vacuum"], { env });
+    expect(out.join("")).not.toContain("vacuumed");
   });
 });
 

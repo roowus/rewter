@@ -6,10 +6,12 @@
  * wrapper can add signal handling without this module knowing about processes.
  */
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { REWTER_VERSION } from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { type Config, expandPath, loadConfig } from "./config/config.js";
+import { DEFAULT_ENV_FILE, loadEnvFile, mergeEnv } from "./config/envfile.js";
 import { type SeedResult, seedRegistry } from "./config/seed.js";
 import { type Db, openDb } from "./db/connection.js";
 import { Repos } from "./db/repos.js";
@@ -36,6 +38,8 @@ export interface StartDaemonOptions {
    * three on port 0 must not leave three of them contradicting each other.
    */
   pidfilePath?: string | undefined;
+  /** See `OpenRegistryOptions.envFile`. `null` skips `~/.rewter/env`. */
+  envFile?: string | null;
 }
 
 export interface RunningDaemon {
@@ -50,6 +54,8 @@ export interface RunningDaemon {
   config: Config;
   /** What this boot closed out from a previous unclean shutdown. */
   reconciled: ReconcileResult;
+  /** Complaints about `~/.rewter/env`, already logged; kept for the boot summary. */
+  envWarnings: string[];
   /** The address actually bound — resolves port 0 to the real number. */
   url: string;
   /** Close the HTTP server and the database, in that order. */
@@ -60,6 +66,12 @@ export interface OpenRegistryOptions {
   configPath?: string | undefined;
   config?: Config;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Where to read `KEY=value` lines from, layered *under* `env`. Defaults to
+   * `~/.rewter/env`; pass `null` to skip the file entirely, which tests do so
+   * that a developer's real keys can never leak into one.
+   */
+  envFile?: string | null;
 }
 
 export interface OpenRegistry {
@@ -68,7 +80,10 @@ export interface OpenRegistry {
   repos: Repos;
   config: Config;
   seeded: SeedResult;
+  /** The real environment with `~/.rewter/env` layered underneath. */
   env: NodeJS.ProcessEnv;
+  /** What the env file had to say for itself — a loose mode, a bad line. */
+  envWarnings: string[];
   close(): void;
 }
 
@@ -81,7 +96,16 @@ export interface OpenRegistry {
  * CLI invocation sees exactly the rows the daemon would.
  */
 export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
-  const env = opts.env ?? process.env;
+  // Keys first: everything downstream reads them from `env` by name, and under
+  // launchd the real environment is nearly empty. `null` skips the file — the
+  // default in tests, so a developer's own keys cannot wander into one.
+  const realEnv = opts.env ?? process.env;
+  const file =
+    opts.envFile === null
+      ? { values: {}, warnings: [] }
+      : loadEnvFile(expandPath(opts.envFile ?? DEFAULT_ENV_FILE, realEnv.HOME ?? homedir()));
+  const env = mergeEnv(realEnv, file.values);
+
   const config =
     opts.config ??
     loadConfig({ env, ...(opts.configPath !== undefined && { path: opts.configPath }) }).config;
@@ -105,6 +129,7 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
     config,
     seeded,
     env,
+    envWarnings: file.warnings,
     close() {
       db.$client.close();
     },
@@ -112,7 +137,7 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
 }
 
 export async function startDaemon(opts: StartDaemonOptions = {}): Promise<RunningDaemon> {
-  const { db, bus, repos, config, seeded, env } = openRegistry(opts);
+  const { db, bus, repos, config, seeded, env, envWarnings } = openRegistry(opts);
 
   // Before anything can accept work, close out what the last process left
   // running. Doing it here rather than after `listen` means no request — and no
@@ -173,6 +198,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
 
   const reconcileNote = reconcileSummary(reconciled);
   if (reconcileNote !== "") app.log.warn({ ...reconciled }, reconcileNote);
+  for (const warning of envWarnings) app.log.warn({ warning }, "env file");
   for (const warning of seeded.warnings) app.log.warn({ warning }, "config");
   for (const { slug, env: name } of seeded.missingKeys) {
     app.log.warn({ provider: slug, envVar: name }, "provider disabled: key env var is unset");
@@ -188,6 +214,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     live,
     config,
     reconciled,
+    envWarnings,
     url,
     async stop() {
       // The pidfile goes first, and unconditionally: from the moment we have

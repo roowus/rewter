@@ -251,6 +251,34 @@ wasn't graceful. When it *is* rewter, `stop` sends SIGTERM and waits for the por
 quiet — never SIGKILL, because shutdown drains in-flight SSE streams and killing harder
 mid-drain just hands the client a truncated event.
 
+Its third piece is **living under launchd**, and every part of it follows from one fact:
+launchd starts a process with a nearly-empty environment, so no `~/.zshrc` has run, no
+`ANTHROPIC_API_KEY` is exported, and `PATH` is not something to rely on. Keys therefore come
+from `~/.rewter/env`, read at boot and merged **under** the real environment so a variable
+you exported just now still wins over a file you wrote once. It is separate from
+`config.json` — that is the file people paste into issues — and being the only place a raw
+key sits on disk, a loose mode is reported at boot. Reported, not refused: refusing would
+leave a login daemon dead with its explanation in a log you don't yet know how to read.
+
+`install-service` writes the plist with an absolute node and an absolute CLI path, and it
+carries **no environment block at all** — `launchctl print` reads a plist back to anyone who
+asks, which is exactly why the keys live somewhere whose permissions can be checked.
+`KeepAlive` is conditional on failure, so a crash restarts and `rewter stop` isn't undone a
+second later. Then it stops and prints the two `launchctl` lines rather than running them: a
+tool holding your API keys shouldn't shell out on your behalf, and `bootstrap` is the part
+that fails in ways worth reading.
+
+`rewter logs` reads the files rather than the daemon, because the case it exists for is a
+daemon that is *not* running. Both streams are merged by timestamp with a stable sort, so a
+stack trace stays under the error it followed — "it warned and then died" is only legible
+merged, and launchd will only ever give you two separate files. Fields longer than 80
+characters are dropped: a log reader is not the place to discover a leaked key.
+
+`rewter gc` drops old finished tasks and their workspaces, and refuses two things. It never
+collects a **cost record** — dropping a transcript is a storage decision, dropping its price
+destroys the answer to "what did I spend in March" — and it never collects an **unfinished
+task**, whatever its age.
+
 ## Quickstart
 
 ```sh
@@ -313,7 +341,8 @@ OpenAI clients send) and `x-api-key` (what Anthropic clients send) — so one va
 both surfaces. Leave it unset and the local daemon is open.
 
 Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`,
-`--pidfile <path>` / `REWTER_PIDFILE`.
+`--pidfile <path>` / `REWTER_PIDFILE`, `REWTER_ENV_FILE` (default `~/.rewter/env` — see
+[Running it at login](#running-it-at-login-macos)).
 
 From another terminal — or a script — ask whether one is up, and ask it to stop:
 
@@ -328,6 +357,63 @@ node packages/cli/dist/index.js stop
 `status` exits 0 only when a daemon is really there, so `rewter status && …` behaves. It
 answers by *asking the port*, not by reading a pid — so a leftover pidfile reports as stale
 (and `stop` removes it) instead of sending a signal to whatever now owns that number.
+
+### Running it at login (macOS)
+
+Put the keys where a process with no shell can find them, then write the plist:
+
+```sh
+umask 077 && cat > ~/.rewter/env <<'EOF'
+ANTHROPIC_API_KEY=sk-ant-…
+ZAI_API_KEY=…
+EOF
+chmod 600 ~/.rewter/env
+
+node packages/cli/dist/index.js install-service
+# written: ~/Library/LaunchAgents/com.roowus.rewter.plist
+#
+# put your keys in ~/.rewter/env (chmod 600), then:
+#   launchctl bootout gui/$(id -u)/com.roowus.rewter 2>/dev/null || true
+#   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.roowus.rewter.plist
+```
+
+It prints those two lines instead of running them on purpose — a tool holding your API keys
+shouldn't shell out on your behalf, and `bootstrap` fails in ways worth reading yourself
+(`bootout` goes first because `bootstrap` on an already-loaded label fails with a bare code).
+Run them and rewter comes up at every login. `--dry-run` prints the plist without writing;
+an existing plist that differs is never clobbered, so a key you added by hand survives until
+you pass `--force`. `uninstall-service` removes it again.
+
+The plist contains **no environment block** — anything in it is readable by `launchctl
+print`, whereas `~/.rewter/env`'s mode is something rewter can check and complain about. A
+variable exported in your shell still overrides the file for that run.
+
+When it's launchd starting the daemon, there's no terminal to watch:
+
+```sh
+node packages/cli/dist/index.js logs -n 50            # both streams, merged by time
+node packages/cli/dist/index.js logs --level warn     # the "why didn't it start" filter
+```
+
+### Housekeeping
+
+Every orchestration appends events, work items and worker runs, plus a workspace directory
+per tier-2 task. `gc` collects the finished ones:
+
+```sh
+node packages/cli/dist/index.js gc --older-than 30 --dry-run
+# would remove 12 task(s) finished before 2026-07-30:
+#   4831 event(s), 39 work item(s), 44 worker run(s), 7 approval(s)
+#   12 workspace director(ies)
+#   cost records kept — spend history outlives task detail
+#   (dry run — nothing was deleted)
+```
+
+**Cost records are never collected** — they carry a nullable task id and no foreign key
+precisely so that "what did I spend in March" keeps working after March's transcripts are
+gone. Unfinished tasks are never collected either, whatever their age. Add `--vacuum` to
+actually give the pages back to the filesystem; it's opt-in because `VACUUM` needs room for
+a second copy of the database and locks the whole of it while it runs.
 
 ### Filling the registry automatically
 

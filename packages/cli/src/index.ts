@@ -9,30 +9,48 @@
  *
  * Neither of those trusts the pid in it. A pidfile survives `kill -9` and
  * reboots, and pids get reused, so liveness is decided by probing the URL the
- * file records — see `service/control.ts`. `logs` and `install-service` still
- * need the launchd side and say so rather than pretending.
+ * file records — see `service/control.ts`.
  *
- * `sync-models` is a one-shot: it opens the same database the daemon uses and
- * writes to it directly rather than going through a running server, so it works
- * whether or not the daemon is up. SQLite in WAL mode makes that safe.
+ * `install-service` writes the launchd plist and then stops, printing the two
+ * `launchctl` lines rather than running them: see `service/launchd.ts` for why a
+ * tool holding your API keys should not shell out on your behalf.
+ *
+ * `sync-models`, `card` and `gc` are one-shots: they open the same database the
+ * daemon uses and write to it directly rather than going through a running
+ * server, so they work whether or not the daemon is up. SQLite in WAL mode makes
+ * that safe.
  */
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  LOG_DIR,
+  type LogLevel,
   Router,
+  SERVICE_LABEL,
   bootSummary,
+  collectGarbage,
   daemonStatus,
+  expandPath,
   formatCard,
   formatCardReport,
+  formatGcResult,
+  formatLogs,
   formatStatus,
   formatSyncReport,
   generateCards,
+  installService,
+  logPaths,
   openRegistry,
   pidfilePath,
   presetSlugForProvider,
+  readLogs,
   runUntilSignal,
   startDaemon,
   stopDaemon,
   syncModels,
+  uninstallService,
+  vacuum,
 } from "@rewter/server";
 
 const USAGE = `rewter — an AI model router where the AI runs the routing
@@ -48,18 +66,31 @@ Usage:
   rewter card [<model>...] --using <model> [--all] [--regenerate] [--show]
               [--dry-run]                       write capability cards — what the
                                                 orchestrator reads to pick a model
+  rewter logs [-n <lines>] [--level <level>] [--log-dir <path>]
+                                                what the daemon wrote when
+                                                nobody was watching
+  rewter install-service [--force] [--dry-run] [--config <path>]
+                                                write the launchd plist so it
+                                                starts at login
+  rewter uninstall-service                      remove it again
+  rewter gc [--older-than <days>] [--dry-run] [--vacuum]
+                                                drop old finished tasks; spend
+                                                history is always kept
   rewter version                                print the version
   rewter help                                   this message
 
 Configuration:
   ~/.rewter/config.json          providers, models, port, db path
+  ~/.rewter/env                  KEY=value lines — where launchd gets your keys
   REWTER_CONFIG                  override the config path
+  REWTER_ENV_FILE                override ~/.rewter/env
   REWTER_PORT / REWTER_HOST      override the listen address
   REWTER_DB                      override the database path
   REWTER_PIDFILE                 override ~/.rewter/rewter.pid
 
 API keys are read from the environment by variable *name* — the config file
-records which variable holds a key, never the key itself.
+records which variable holds a key, never the key itself. Under launchd there is
+no shell to have exported them, so put them in ~/.rewter/env (chmod 600).
 `;
 
 export interface RunOptions {
@@ -101,10 +132,16 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
       return await stopCommand(argv.slice(1), opts);
 
     case "logs":
+      return logsCommand(argv.slice(1), opts);
+
     case "install-service":
+      return installCommand(argv.slice(1), opts);
+
+    case "uninstall-service":
+      return uninstallCommand(argv.slice(1), opts);
+
     case "gc":
-      process.stderr.write(`${command}: lands in M8 (daemonization)\n`);
-      return 1;
+      return gcCommand(argv.slice(1), opts);
 
     default:
       process.stderr.write(`unknown command: ${command}\n\n${USAGE}`);
@@ -310,6 +347,154 @@ async function cardCommand(args: string[], opts: RunOptions): Promise<number> {
     });
     process.stdout.write(`${formatCardReport(report)}\n`);
     return report.results.some((r) => r.error !== undefined) ? 1 : 0;
+  } finally {
+    registry.close();
+  }
+}
+
+const LEVELS: LogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
+
+/**
+ * `rewter logs` — what the daemon wrote when nobody was watching.
+ *
+ * Reads the files launchd writes rather than talking to the daemon, so it
+ * answers the case it exists for: the daemon is *not* running and you want to
+ * know why. Both streams are merged; see `service/logs.ts`.
+ */
+function logsCommand(args: string[], opts: RunOptions): number {
+  const env = opts.env ?? process.env;
+  const linesRaw = flagValue(args, "-n") ?? flagValue(args, "--lines");
+  const lines = linesRaw === undefined ? undefined : Number.parseInt(linesRaw, 10);
+  if (lines !== undefined && (Number.isNaN(lines) || lines <= 0)) {
+    process.stderr.write(`-n is not a positive number: ${linesRaw}\n`);
+    return 1;
+  }
+
+  const level = flagValue(args, "--level");
+  if (level !== undefined && !LEVELS.includes(level as LogLevel)) {
+    process.stderr.write(`--level must be one of: ${LEVELS.join(", ")}\n`);
+    return 1;
+  }
+
+  const logDir = expandPath(flagValue(args, "--log-dir") ?? LOG_DIR, env.HOME ?? homedir());
+  const read = readLogs(logPaths(logDir), {
+    ...(lines !== undefined && { lines }),
+    ...(level !== undefined && { minLevel: level as LogLevel }),
+  });
+
+  if (read.length === 0) {
+    // Not an error: before the first launchd boot neither file exists.
+    process.stdout.write(`no logs yet in ${logDir}\n`);
+    return 0;
+  }
+  process.stdout.write(formatLogs(read));
+  return 0;
+}
+
+/**
+ * `rewter install-service` — write the plist, print the two `launchctl` lines.
+ *
+ * It stops short of loading the job on purpose: `bootstrap` needs the right
+ * domain target and fails in ways worth reading, and a tool holding your API
+ * keys should not shell out on your behalf. See `service/launchd.ts`.
+ */
+function installCommand(args: string[], opts: RunOptions): number {
+  const env = opts.env ?? process.env;
+  const home = env.HOME ?? homedir();
+  const configPath = flagValue(args, "--config");
+
+  const result = installService({
+    // Absolute, because launchd starts us with no PATH to search.
+    nodePath: process.execPath,
+    cliPath: fileURLToPath(import.meta.url),
+    logDir: expandPath(LOG_DIR, home),
+    plistPath: plistPathFor(args, env),
+    ...(configPath !== undefined && { configPath }),
+    dryRun: args.includes("--dry-run"),
+    force: args.includes("--force"),
+  });
+
+  if (result.action === "dry-run") {
+    process.stdout.write(`${result.contents}\nwould write ${result.plistPath}\n`);
+    return 0;
+  }
+  if (result.action === "exists") {
+    process.stderr.write(
+      `${result.plistPath} already exists and differs — inspect it, then re-run with --force\n`,
+    );
+    return 1;
+  }
+
+  const verb = result.action === "unchanged" ? "already current" : result.action;
+  process.stdout.write(
+    `${verb}: ${result.plistPath}\n\nput your keys in ~/.rewter/env (chmod 600), then:\n${result.next
+      .map((line) => `  ${line}`)
+      .join("\n")}\n`,
+  );
+  return 0;
+}
+
+/** `rewter uninstall-service` — remove the plist; unloading stays the user's call. */
+function uninstallCommand(args: string[], opts: RunOptions): number {
+  const path = plistPathFor(args, opts.env ?? process.env);
+  const result = uninstallService(path);
+  if (!result.removed) {
+    process.stdout.write(`nothing installed at ${path}\n`);
+    return 0;
+  }
+  process.stdout.write(
+    `removed ${path}\n\nif it is still loaded:\n${result.next.map((l) => `  ${l}`).join("\n")}\n`,
+  );
+  return 0;
+}
+
+function plistPathFor(args: string[], env: NodeJS.ProcessEnv): string {
+  const override = flagValue(args, "--plist");
+  if (override !== undefined) return expandPath(override, env.HOME ?? homedir());
+  return join(env.HOME ?? homedir(), "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
+}
+
+/**
+ * `rewter gc` — drop old finished tasks.
+ *
+ * Writes to the database directly rather than through the daemon, which is safe
+ * (WAL) and means it works whether or not one is running. Spend history is never
+ * collected: see `service/gc.ts`.
+ */
+function gcCommand(args: string[], opts: RunOptions): number {
+  const configPath = flagValue(args, "--config");
+  const daysRaw = flagValue(args, "--older-than");
+  const olderThanDays = daysRaw === undefined ? undefined : Number.parseInt(daysRaw, 10);
+  if (olderThanDays !== undefined && (Number.isNaN(olderThanDays) || olderThanDays < 0)) {
+    process.stderr.write(`--older-than is not a number of days: ${daysRaw}\n`);
+    return 1;
+  }
+
+  const env = opts.env ?? process.env;
+  const registry = openRegistry({
+    ...(configPath !== undefined && { configPath }),
+    ...(opts.env !== undefined && { env: opts.env }),
+  });
+
+  try {
+    const dryRun = args.includes("--dry-run");
+    const result = collectGarbage(registry.db, {
+      ...(olderThanDays !== undefined && { olderThanDays }),
+      dryRun,
+      // Expanded against the same home the config was read with — this argument
+      // decides which directories get removed.
+      workspacesDir: expandPath(registry.config.workspacesDir, env.HOME ?? homedir()),
+    });
+    process.stdout.write(`${formatGcResult(result)}\n`);
+
+    // Separate and opt-in: VACUUM needs room for a second copy of the database
+    // and holds a write lock on the whole of it, which is not something to do to
+    // a running daemon by default.
+    if (args.includes("--vacuum") && !dryRun) {
+      vacuum(registry.db);
+      process.stdout.write("vacuumed\n");
+    }
+    return 0;
   } finally {
     registry.close();
   }
