@@ -36,6 +36,32 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — the shell was hard-coded to zsh, and CI had been telling us since M6c
+
+Eleven tests have been failing in Actions since M6c and passing on this laptop, which is
+the exact shape of a bug worth chasing rather than a flaky runner. `shell` spawned
+`zsh -c` by name. `ubuntu-latest` has no zsh, so every command came back
+`could not run the command: no such file or directory` — and that is not a CI-only
+problem: rewter on any stock Linux host could not run a single worker command, and the
+message a model would read reports it as *its own command being wrong* rather than as the
+daemon being unable to run commands at all. The worst kind of error text: it points the
+reader away from the fault.
+
+`SHELL_PATH` now resolves once at import — zsh, then bash, then `/bin/sh`. zsh stays first
+on purpose: this daemon is built for a macOS host where it is the login shell, and a
+worker's command should behave the way the same command behaves in the user's terminal.
+`$SHELL` is deliberately not consulted, because it can name something that is not
+POSIX-compatible and the tool's contract with the model — pipes, redirects, `&&` — is a
+Bourne-family one.
+
+The new test asserts the resolved path exists. That is the test that was missing: without
+it the symptom was eleven unrelated-looking shell failures, each blaming the command in it,
+rather than one named failure saying the daemon has no shell to run.
+
+Lesson recorded because it will recur: **a green local run and a red CI run is a claim
+about the difference between two hosts, and the difference is usually real.** Two
+milestones shipped over a red board on the assumption it was an environment quirk.
+
 ### 2026-08-29 — M7f: the registry editor, or: making one rule visible
 
 Five `/internal` routes (models list-with-cards, create, patch, delete, card-overrides PUT)

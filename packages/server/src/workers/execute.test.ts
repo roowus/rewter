@@ -16,7 +16,14 @@
  *    know which paths those are, not to block them.
  *  - **Every failure is text.** No test here expects a throw.
  */
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -34,6 +41,7 @@ import { EventBus } from "../events/bus.js";
 import { Approvals } from "./approvals.js";
 import {
   type ExecuteContext,
+  SHELL_PATH,
   editFileTool,
   globToRegExp,
   globTool,
@@ -391,6 +399,15 @@ describe("grep", () => {
 });
 
 describe("shell", () => {
+  it("resolves a shell that exists on this host", () => {
+    // Hard-coding `zsh` meant every command on a host without one came back
+    // "could not run the command: no such file or directory" — which reads as
+    // "your command was wrong", not "this daemon cannot run commands here".
+    // CI was the host that proved it. Asserting the path directly turns that
+    // into one named failure rather than every shell test failing obscurely.
+    expect(existsSync(SHELL_PATH)).toBe(true);
+  });
+
   it("runs a read-only command without asking, and states the exit code", async () => {
     writeFileSync(join(workspace.root, "hello.txt"), "");
     const res = await shellTool(ctx, { command: "ls" });

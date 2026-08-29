@@ -213,7 +213,7 @@ export const WORKER_TOOLS: Record<string, WorkerTool> = {
       parameters: {
         type: "object",
         properties: {
-          command: str("The command line, run through zsh -c."),
+          command: str("The command line, run through a POSIX shell as `-c`."),
           timeout: { type: "integer", description: "Seconds before it is killed. Default 120." },
         },
         required: ["command"],

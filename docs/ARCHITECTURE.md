@@ -982,7 +982,7 @@ it needs no `--using`.
 
 `WorkerAdapter` interface abstracts tiers (`run(ctx)`, optional `send()` for follow-up
 injection). Tier-2 tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`,
-`grep`, `shell` (zsh -c, cwd=workspace, timeout, 32KB output tail cap), `web_fetch`,
+`grep`, `shell` (a POSIX shell `-c`, cwd=workspace, timeout, 32KB output tail cap), `web_fetch`,
 `report_progress`, `finish_report`.
 
 Workspace: `~/.rewter/workspaces/<taskId>/`, shared by a task's workers. Task settings may
@@ -1050,6 +1050,14 @@ Per-tool decisions worth stating:
   audit trail. It runs with **no stdin** — an interactive prompt would hang until the timeout,
   and a worker cannot answer one anyway — and `render` always states the exit code, because a
   worker seeing only output cannot tell a suite that passed from one that failed quietly.
+  The **shell itself is resolved, not hard-coded** (`SHELL_PATH`): zsh first, because it is
+  the login shell on the macOS host this daemon is built for and a worker's command should
+  behave the way the same command behaves in the user's terminal, then bash, then `/bin/sh`.
+  Naming `zsh` outright was a real bug — on any host without one, every command came back
+  `could not run the command: no such file or directory`, which reads to the model as "your
+  command was wrong" rather than "this daemon cannot run commands here". `$SHELL` is
+  deliberately not consulted: it can name something that is not POSIX-compatible, and the
+  tool's contract with the model — pipes, redirects, `&&` — is a Bourne-family one.
 - **`web_fetch` is ungated but http(s)-only.** `file:` would be a way around the path gate
   entirely, which is the one thing a fetch tool must not become. HTML is reduced to text with
   `<script>`/`<style>` bodies dropped *first*, or a page's minified bundle would be the

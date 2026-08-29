@@ -27,7 +27,7 @@
 import { spawn } from "node:child_process";
 // `Dirent` is imported explicitly because `ReturnType<typeof readdir>` resolves
 // to the Buffer-name overload, whose `name` is not a string.
-import type { Dirent } from "node:fs";
+import { type Dirent, existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import type { WorkItemId, WorkerRunId } from "@rewter/shared";
@@ -54,6 +54,27 @@ const MAX_LIST_ENTRIES = 500;
 const MAX_GREP_MATCHES = 200;
 const MAX_GLOB_RESULTS = 300;
 const DEFAULT_SHELL_TIMEOUT_MS = 120_000;
+
+/**
+ * Which shell `shell` runs commands through.
+ *
+ * zsh first because it is the user's login shell on macOS, where this daemon
+ * lives, and a worker's command should behave the way the same command behaves
+ * in the user's terminal. But *hard-coding* it was a real bug: on a host with
+ * no zsh — any stock Linux box, including the CI runner — every shell command
+ * came back `could not run the command: no such file or directory`, which reads
+ * as "your command was wrong" rather than "this daemon cannot run commands
+ * here". Resolved once at import, because the answer cannot change under a
+ * running process and a per-command `existsSync` would be a syscall per tool
+ * call to learn something already known.
+ *
+ * `$SHELL` is deliberately not consulted: it can name something that is not
+ * POSIX-compatible (fish), and the tool's contract with the model — pipes,
+ * redirects, `&&` — is a Bourne-family one.
+ */
+export const SHELL_PATH: string =
+  ["/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash"].find((p) => existsSync(p)) ??
+  "/bin/sh";
 
 export interface ExecuteContext {
   workspace: Workspace;
@@ -406,7 +427,7 @@ export async function shellTool(
 
   const timeoutMs = args.timeout === undefined ? DEFAULT_SHELL_TIMEOUT_MS : args.timeout * 1_000;
   return await new Promise<ToolResult>((resolve) => {
-    const child = spawn("zsh", ["-c", args.command], {
+    const child = spawn(SHELL_PATH, ["-c", args.command], {
       cwd: ctx.workspace.cwd,
       // No stdin: an interactive prompt would hang until the timeout, and a
       // worker cannot answer one anyway.
