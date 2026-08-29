@@ -126,5 +126,11 @@ export {
   type SignalHandlerOptions,
   type StartDaemonOptions,
 } from "./daemon.js";
+export {
+  INTERRUPTED_REASON,
+  reconcileOnBoot,
+  reconcileSummary,
+  type ReconcileResult,
+} from "./reconcile.js";
 
 export const SERVER_VERSION = REWTER_VERSION;

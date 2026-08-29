@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ModelIdSchema, TaskSettingsSchema, newTaskId } from "@rewter/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "./config/config.js";
 import { type RunningDaemon, bootSummary, startDaemon } from "./daemon.js";
@@ -117,6 +118,43 @@ describe("startDaemon", () => {
     expect(second.repos.listProviders()).toHaveLength(1);
     expect(second.repos.listProviders()[0]?.id).toBe(providerId);
     expect(second.repos.listModels()).toHaveLength(1);
+  });
+
+  it("closes out a task the previous process left running, keeping its history", async () => {
+    // The `kill -9` case: the first daemon dies with a task mid-flight, so no
+    // code ever writes a terminal status. The second boot must find it — before
+    // the socket opens — and say what happened, without erasing what came before.
+    const dbPath = join(dir, "crash.db");
+    const first = await boot({ dbPath });
+    const task = first.repos.createTask({
+      id: newTaskId(),
+      status: "pending",
+      title: "left running",
+      initiatorModelId: ModelIdSchema.parse("anthropic/claude-sonnet-5"),
+      conversationFingerprint: null,
+      settings: TaskSettingsSchema.parse({}),
+      resultSummary: null,
+      error: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      finishedAt: null,
+    });
+    first.repos.transitionTask(task.id, "running");
+    const seqBefore = first.bus.eventsAfter(0, task.id).length;
+    // stop() is graceful, but nothing here collapses a task the way a signal
+    // would — the row is left exactly as a killed process would leave it.
+    await first.stop();
+    daemon = undefined;
+
+    const second = await boot({ dbPath });
+
+    expect(second.reconciled.tasks).toEqual([task.id]);
+    expect(second.repos.getTask(task.id)?.status).toBe("interrupted");
+    // The earlier events are still there, with the interruption appended rather
+    // than replacing them: the dashboard's fold replays the whole life.
+    const replayed = second.bus.eventsAfter(0, task.id);
+    expect(replayed.length).toBe(seqBefore + 1);
+    expect(replayed.at(-1)?.payload.type).toBe("task.status_changed");
   });
 
   it("boots with an empty registry rather than refusing", async () => {

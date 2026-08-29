@@ -229,6 +229,17 @@ The editor also carries the capability card beside the price, because what a mod
 is the half that steers the orchestrator; its overrides save separately, since `rewter card
 <model>` regenerates the card underneath and the override is what survives that.
 
+M8 is **daemonization**, and its first piece is **boot reconciliation**. A daemon killed by
+`kill -9`, a reboot or an OOM leaves rows saying `running`, because the code that would have
+written a terminal status died with the process. Every boot now closes them out — before the
+socket opens, so nothing ever observes a task claiming to run with nothing behind it. They
+are marked **`interrupted`**, deliberately not `failed`: a failure is a judgement that
+something tried and did not work, and nothing judged these. Writing `failed` would tell you
+six weeks later that a model got it wrong when the machine simply went away, and it would
+teach the phase-2 learned stats the same untruth. The sweep goes through the ordinary
+lifecycle guards, so the interruption is an event like any other and the dashboard replays
+it rather than showing a task that just stops updating.
+
 ## Quickstart
 
 ```sh

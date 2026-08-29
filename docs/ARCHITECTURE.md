@@ -189,11 +189,14 @@ Entities (zod-typed in `shared`):
 Pure `assertTransition` functions in `shared`, exhaustively tested, invoked by every repo write:
 
 ```
-Task:      pending → running → succeeded|failed|cancelled     (⇅ waiting_approval — pauses the branch, not the task)
-WorkItem:  pending → running → succeeded|failed|cancelled|handed_off (⇅ waiting_approval)
-WorkerRun: created → streaming ⇄ tool_pending → succeeded|failed|cancelled
+Task:      pending → running → succeeded|failed|cancelled|interrupted  (⇅ waiting_approval — pauses the branch, not the task)
+WorkItem:  pending → running → succeeded|failed|cancelled|handed_off|interrupted (⇅ waiting_approval)
+WorkerRun: created → streaming ⇄ tool_pending → succeeded|failed|cancelled|interrupted
 Approval:  pending → approved|denied|auto_approved|expired
 ```
+
+Every non-terminal state of the first three also admits **`interrupted`**, which only boot
+reconciliation writes — see [Boot reconciliation](#boot-reconciliation-m8).
 
 SQLite PRAGMAs: `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`, `synchronous=NORMAL`.
 
@@ -931,7 +934,7 @@ on port 0 and shut it down, and M8's launchd wrapper adds signal handling withou
 module knowing about processes.
 
 ```
-startDaemon(opts) → { app, db, repos, bus, router, config, url, stop() }
+startDaemon(opts) → { app, db, repos, bus, router, config, url, reconciled, stop() }
 bootSummary(d)    → "rewter listening on http://127.0.0.1:20130 — 2 provider(s), 5 model(s)"
 runUntilSignal(d) → Promise<never>   // SIGINT/SIGTERM → graceful drain → exit
 ```
@@ -948,6 +951,50 @@ event rather than seeing a clean end.
 
 `main.ts` is the bare `node dist/main.js` entrypoint, kept separate from the `index.ts`
 library barrel so that importing `@rewter/server` never starts a server as a side effect.
+
+### Boot reconciliation (M8)
+
+A daemon that is killed — `kill -9`, a reboot, an OOM — leaves rows in the database saying
+`running`, because the code that would have written a terminal status died with the process.
+Nothing in the new process is going to finish them. So `reconcileOnBoot(repos)` runs in
+`startDaemon` **before `listen`**, walks the non-terminal rows and marks them `interrupted`.
+Doing it before the socket opens means no request — and no dashboard connection — ever
+observes a task that claims to be running with nothing behind it.
+
+**Why `interrupted` and not `failed`.** A failure is a judgement: something tried and did not
+work. Nothing judged these. `failed` would tell an operator scanning history that the model got
+it wrong, when the machine simply went away — and it would poison the phase-2 learned stats,
+which key off exactly that success/failure distinction. The separate state costs one enum
+member and keeps the record honest.
+
+**Why not resume.** A task's liveness lives entirely in memory: its `AbortController`, the
+promises parked on pending approvals, the open upstream sockets. None of that survives. A
+tier-2 worker killed mid-`shell` has an unknown amount of its command already applied to the
+filesystem, so replaying the event log would re-run side effects that already happened.
+Marking interrupted keeps the whole history — every event is still there for the fold — and
+lets the user decide whether to ask again.
+
+Three properties the implementation is built around:
+
+- **Deepest-first** (runs → work items → tasks), so a parent is never closed while a child of
+  it is still open; anything reading the tree mid-sweep sees a consistent shape.
+- **Through the ordinary lifecycle-guarded repo methods**, so each write emits its
+  `status_changed` event and the dashboard's fold shows the interruption rather than a task
+  that simply stops updating. Interruption is part of the replayable history.
+- **Idempotent by construction** — it only touches non-terminal rows, and `interrupted` *is*
+  terminal. That matters because it runs on *every* boot, including the ones right after a
+  clean stop, where it must find nothing rather than throw on a terminal row.
+
+Pending approvals on a closed task are resolved `expired`. The promise that was waiting on
+them is gone; left pending they would sit in the dashboard's approvals list forever, inviting
+a click that resolves a row nobody is listening to.
+
+Terminality is read off the lifecycle maps via `isTerminal(MAP, status)`, never re-listed —
+in `reconcile.ts`, in the repos' `finishedAt` stamping, in the fold, and in the dashboard. A
+hand-kept copy is one enum member away from disagreeing with `shared`.
+
+The boot log gets one line (`interrupted by a previous shutdown: 1 task(s), 2 work item(s),
+1 run(s)`) and says nothing at all in the ordinary case — not "0 tasks".
 
 ### CLI
 

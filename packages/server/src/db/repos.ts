@@ -18,9 +18,12 @@ import {
   ModelSchema,
   type Provider,
   ProviderSchema,
+  TASK_TRANSITIONS,
   type Task,
   TaskSchema,
   type TaskStatus,
+  WORKER_RUN_TRANSITIONS,
+  WORK_ITEM_TRANSITIONS,
   type WorkItem,
   WorkItemSchema,
   type WorkItemStatus,
@@ -31,6 +34,7 @@ import {
   assertTaskTransition,
   assertWorkItemTransition,
   assertWorkerRunTransition,
+  isTerminal,
 } from "@rewter/shared";
 import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
 import type { EventBus } from "../events/bus.js";
@@ -46,7 +50,9 @@ import {
   workerRuns,
 } from "./schema.js";
 
-const TERMINAL_TASK: readonly TaskStatus[] = ["succeeded", "failed", "cancelled"];
+// Terminality is read off the lifecycle maps, never re-listed here: a hand-kept
+// copy is one enum member away from disagreeing with `shared` about whether a
+// row is finished, and the symptom would be a `finishedAt` that never gets set.
 
 export class Repos {
   constructor(
@@ -255,6 +261,25 @@ export class Repos {
     return row === undefined ? undefined : rowToTask(row);
   }
 
+  /**
+   * Tasks in a non-terminal state, oldest first.
+   *
+   * Exists for boot reconciliation, which needs exactly this set and nothing
+   * else: after an unclean shutdown these are the rows whose in-memory half died
+   * with the process. Filtered in TypeScript against the lifecycle map rather
+   * than by a hard-coded `status NOT IN (...)`, so adding a terminal state to
+   * `shared` cannot leave a stale list here saying otherwise.
+   */
+  listUnfinishedTasks(): Task[] {
+    return this.db
+      .select()
+      .from(tasks)
+      .orderBy(asc(tasks.createdAt))
+      .all()
+      .map(rowToTask)
+      .filter((t) => !isTerminal(TASK_TRANSITIONS, t.status));
+  }
+
   transitionTask(
     id: string,
     to: TaskStatus,
@@ -264,7 +289,7 @@ export class Repos {
     if (current === undefined) throw new Error(`task not found: ${id}`);
     assertTaskTransition(current.status, to);
     const now = this.clock();
-    const finishedAt = TERMINAL_TASK.includes(to) ? now : current.finishedAt;
+    const finishedAt = isTerminal(TASK_TRANSITIONS, to) ? now : current.finishedAt;
     this.db
       .update(tasks)
       .set({
@@ -315,13 +340,12 @@ export class Repos {
     if (current === undefined) throw new Error(`work item not found: ${id}`);
     assertWorkItemTransition(current.status, to);
     const now = this.clock();
-    const terminal: readonly WorkItemStatus[] = ["succeeded", "failed", "cancelled", "handed_off"];
     this.db
       .update(workItems)
       .set({
         status: to,
         updatedAt: now,
-        finishedAt: terminal.includes(to) ? now : current.finishedAt,
+        finishedAt: isTerminal(WORK_ITEM_TRANSITIONS, to) ? now : current.finishedAt,
         ...(patch?.resultSummary !== undefined && { resultSummary: patch.resultSummary }),
         ...(patch?.error !== undefined && { error: patch.error }),
       })
@@ -353,6 +377,17 @@ export class Repos {
     return row === undefined ? undefined : WorkerRunSchema.parse(row);
   }
 
+  /** Every attempt at one work item, oldest first — attempt 1, then the retries. */
+  listWorkerRuns(workItemId: string): WorkerRun[] {
+    return this.db
+      .select()
+      .from(workerRuns)
+      .where(eq(workerRuns.workItemId, workItemId))
+      .orderBy(asc(workerRuns.attempt))
+      .all()
+      .map((r) => WorkerRunSchema.parse(r));
+  }
+
   transitionWorkerRun(
     id: string,
     to: WorkerRunStatus,
@@ -362,13 +397,12 @@ export class Repos {
     if (current === undefined) throw new Error(`worker run not found: ${id}`);
     assertWorkerRunTransition(current.status, to);
     const now = this.clock();
-    const terminal: readonly WorkerRunStatus[] = ["succeeded", "failed", "cancelled"];
     this.db
       .update(workerRuns)
       .set({
         status: to,
         updatedAt: now,
-        finishedAt: terminal.includes(to) ? now : current.finishedAt,
+        finishedAt: isTerminal(WORKER_RUN_TRANSITIONS, to) ? now : current.finishedAt,
         ...(patch?.resultText !== undefined && { resultText: patch.resultText }),
         ...(patch?.error !== undefined && { error: patch.error }),
         ...(patch?.harnessSessionId !== undefined && { harnessSessionId: patch.harnessSessionId }),

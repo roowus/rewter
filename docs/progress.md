@@ -32,9 +32,59 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7e | Costs: `GET /internal/costs` + the spend panel | ✅ 2026-08-28 |
 | M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
 | M7 | *acceptance: approve from the browser while the stream runs* | 🟡 built, not yet run live |
-| M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
+| M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
+| M8 | Daemonization (CLI, launchd, service install) | 🟡 in progress |
 
 ## Log
+
+### 2026-08-29 — M8a: boot reconciliation, and why `interrupted` is not `failed`
+
+A daemon killed with `kill -9` leaves rows saying `running`, because the code that would
+have written a terminal status died with the process. Every boot now sweeps the non-terminal
+rows and closes them — in `startDaemon`, **before `listen`**, so that no request and no
+dashboard socket ever observes a task claiming to be running with nothing behind it.
+
+The decision that took the thinking was which status to write. `failed` was there already
+and would have cost nothing. But a failure is a *judgement* — something tried and did not
+work — and nothing judged these. An operator scanning history six weeks later would read
+"the model got it wrong" where what happened is that the machine went away. Worse, phase-2's
+learned stats key off exactly that success/failure distinction, so every reboot would
+quietly teach the router that some model is unreliable. A new terminal state costs one enum
+member per machine and keeps the record honest.
+
+Not resuming was the other choice, and it is the conservative one. A task's liveness is
+entirely in memory: its `AbortController`, the promises parked on pending approvals, the
+open upstream sockets. Replaying the event log would re-run side effects that already
+happened — a tier-2 worker killed mid-`shell` has an unknown amount of its command already
+applied to the filesystem. Marking interrupted keeps the whole history for the fold and
+leaves it to the user whether to ask again.
+
+Three properties the sweep is built around, each with a failure it prevents:
+
+- **Deepest-first** (runs → work items → tasks), so a parent is never closed while a child
+  is still open — anything reading the tree mid-sweep sees a consistent shape.
+- **Through the ordinary lifecycle-guarded repo methods**, so each write emits its
+  `status_changed` event. Interruption becomes part of the replayable history rather than a
+  task that simply stops updating.
+- **Idempotent by construction** — it only touches non-terminal rows and `interrupted` *is*
+  terminal. This runs on *every* boot including the ones right after a clean stop; were it
+  not a no-op the second time it would throw on a terminal row instead of starting the
+  daemon.
+
+Pending approvals on a closed task resolve to `expired`. The promise waiting on them is
+gone; left pending they would sit in the dashboard forever inviting a click that resolves a
+row nobody is listening to.
+
+One incidental cleanup that was really the risky part of the change: `repos.ts` kept three
+hand-written arrays of terminal statuses, used to decide when to stamp `finishedAt`. Adding
+a fourth terminal state to `shared` would have left all three quietly disagreeing, and the
+symptom would have been an `interrupted` row whose `finishedAt` stayed null — a bug you find
+by noticing an absence. They are now `isTerminal(MAP, status)` reads off the lifecycle maps,
+which is already how `fold.ts`, the events route and the dashboard do it.
+
+Twenty-four tests: eleven on the sweep, one at the daemon level booting twice over the same
+database file and asserting the earlier events survive with the interruption *appended*, and
+the lifecycle sweep's terminal lists extended.
 
 ### 2026-08-29 — the shell was hard-coded to zsh, and CI had been telling us since M6c
 

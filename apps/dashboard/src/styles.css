@@ -543,6 +543,9 @@ button.kill:disabled {
 .status[data-status="tool_pending"] {
   color: var(--warn);
 }
+/* `cancelled` and `interrupted` keep the neutral default on purpose. Neither is
+   a judgement about the work — one was called off, the other lost its process —
+   and colouring them red would read as "this went wrong". */
 
 .plan,
 .steering {

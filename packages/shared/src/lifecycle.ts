@@ -8,6 +8,14 @@
  *   WorkItem:  pending → running → succeeded|failed|cancelled|handed_off (⇅ waiting_approval)
  *   WorkerRun: created → streaming ⇄ tool_pending → succeeded|failed|cancelled
  *   Approval:  pending → approved|denied|auto_approved|expired
+ *
+ * Every non-terminal state of the first three also admits **`interrupted`**, which
+ * only boot reconciliation writes (M8). It is deliberately not `failed`: a task
+ * that was mid-flight when the daemon was killed did not fail — nothing decided
+ * anything about it, and the distinction is what tells an operator "the machine
+ * rebooted" apart from "the model got it wrong". Terminal, because the run's
+ * in-memory state (its AbortController, its parked approval promises, its
+ * upstream sockets) died with the process; there is nothing left to resume into.
  */
 import { z } from "zod";
 
@@ -18,6 +26,7 @@ export const TaskStatusSchema = z.enum([
   "succeeded",
   "failed",
   "cancelled",
+  "interrupted",
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
@@ -29,6 +38,7 @@ export const WorkItemStatusSchema = z.enum([
   "failed",
   "cancelled",
   "handed_off",
+  "interrupted",
 ]);
 export type WorkItemStatus = z.infer<typeof WorkItemStatusSchema>;
 
@@ -39,6 +49,7 @@ export const WorkerRunStatusSchema = z.enum([
   "succeeded",
   "failed",
   "cancelled",
+  "interrupted",
 ]);
 export type WorkerRunStatus = z.infer<typeof WorkerRunStatusSchema>;
 
@@ -54,31 +65,34 @@ export type ApprovalStatus = z.infer<typeof ApprovalStatusSchema>;
 type TransitionMap<S extends string> = Readonly<Record<S, readonly S[]>>;
 
 export const TASK_TRANSITIONS: TransitionMap<TaskStatus> = {
-  pending: ["running", "cancelled", "failed"],
-  running: ["waiting_approval", "succeeded", "failed", "cancelled"],
-  waiting_approval: ["running", "failed", "cancelled"],
+  pending: ["running", "cancelled", "failed", "interrupted"],
+  running: ["waiting_approval", "succeeded", "failed", "cancelled", "interrupted"],
+  waiting_approval: ["running", "failed", "cancelled", "interrupted"],
   succeeded: [],
   failed: [],
   cancelled: [],
+  interrupted: [],
 };
 
 export const WORK_ITEM_TRANSITIONS: TransitionMap<WorkItemStatus> = {
-  pending: ["running", "cancelled", "failed"],
-  running: ["waiting_approval", "succeeded", "failed", "cancelled", "handed_off"],
-  waiting_approval: ["running", "failed", "cancelled"],
+  pending: ["running", "cancelled", "failed", "interrupted"],
+  running: ["waiting_approval", "succeeded", "failed", "cancelled", "handed_off", "interrupted"],
+  waiting_approval: ["running", "failed", "cancelled", "interrupted"],
   succeeded: [],
   failed: [],
   cancelled: [],
   handed_off: [],
+  interrupted: [],
 };
 
 export const WORKER_RUN_TRANSITIONS: TransitionMap<WorkerRunStatus> = {
-  created: ["streaming", "failed", "cancelled"],
-  streaming: ["tool_pending", "succeeded", "failed", "cancelled"],
-  tool_pending: ["streaming", "failed", "cancelled"],
+  created: ["streaming", "failed", "cancelled", "interrupted"],
+  streaming: ["tool_pending", "succeeded", "failed", "cancelled", "interrupted"],
+  tool_pending: ["streaming", "failed", "cancelled", "interrupted"],
   succeeded: [],
   failed: [],
   cancelled: [],
+  interrupted: [],
 };
 
 export const APPROVAL_TRANSITIONS: TransitionMap<ApprovalStatus> = {

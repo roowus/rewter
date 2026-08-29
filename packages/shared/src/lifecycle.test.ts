@@ -85,6 +85,7 @@ sweepMachine("Task", TaskStatusSchema.options, TASK_TRANSITIONS, assertTaskTrans
   "succeeded",
   "failed",
   "cancelled",
+  "interrupted",
 ]);
 
 sweepMachine(
@@ -93,7 +94,7 @@ sweepMachine(
   WORK_ITEM_TRANSITIONS,
   assertWorkItemTransition,
   "pending",
-  ["succeeded", "failed", "cancelled", "handed_off"],
+  ["succeeded", "failed", "cancelled", "handed_off", "interrupted"],
 );
 
 sweepMachine(
@@ -102,7 +103,7 @@ sweepMachine(
   WORKER_RUN_TRANSITIONS,
   assertWorkerRunTransition,
   "created",
-  ["succeeded", "failed", "cancelled"],
+  ["succeeded", "failed", "cancelled", "interrupted"],
 );
 
 sweepMachine(

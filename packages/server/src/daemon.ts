@@ -16,6 +16,7 @@ import { EventBus } from "./events/bus.js";
 import { buildApp } from "./http/app.js";
 import { Orchestrator } from "./orchestrator/engine.js";
 import { LiveTaskIndex } from "./orchestrator/live.js";
+import { type ReconcileResult, reconcileOnBoot, reconcileSummary } from "./reconcile.js";
 import { Router } from "./router/router.js";
 
 export interface StartDaemonOptions {
@@ -38,6 +39,8 @@ export interface RunningDaemon {
   /** Tasks still running, so a shutdown can collapse them. */
   live: LiveTaskIndex;
   config: Config;
+  /** What this boot closed out from a previous unclean shutdown. */
+  reconciled: ReconcileResult;
   /** The address actually bound — resolves port 0 to the real number. */
   url: string;
   /** Close the HTTP server and the database, in that order. */
@@ -102,6 +105,12 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
 export async function startDaemon(opts: StartDaemonOptions = {}): Promise<RunningDaemon> {
   const { db, bus, repos, config, seeded, env } = openRegistry(opts);
 
+  // Before anything can accept work, close out what the last process left
+  // running. Doing it here rather than after `listen` means no request — and no
+  // dashboard socket — ever observes a task that claims to be running with
+  // nothing behind it.
+  const reconciled = reconcileOnBoot(repos);
+
   const router = new Router({ repos, env });
   // The bearer token is read from the environment by *name*, like every other
   // secret here — the config file holds the variable name, never the value.
@@ -141,6 +150,8 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   const url = `http://${config.host}:${boundPort}`;
   orchestrator.setDashboardUrl(url);
 
+  const reconcileNote = reconcileSummary(reconciled);
+  if (reconcileNote !== "") app.log.warn({ ...reconciled }, reconcileNote);
   for (const warning of seeded.warnings) app.log.warn({ warning }, "config");
   for (const { slug, env: name } of seeded.missingKeys) {
     app.log.warn({ provider: slug, envVar: name }, "provider disabled: key env var is unset");
@@ -155,6 +166,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     orchestrator,
     live,
     config,
+    reconciled,
     url,
     async stop() {
       // Tasks first: a running orchestration holds upstream calls open, and
