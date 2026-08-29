@@ -214,6 +214,43 @@ describe("Repos round-trips (in-memory SQLite)", () => {
     expect(repos.listCosts(task.id)).toEqual([cost]);
   });
 
+  it("allCosts returns un-attributed spend, which listCosts structurally cannot", () => {
+    // A pass-through through `/v1` has no task. Reporting daemon spend from
+    // `listCosts` alone would show those calls as costing nothing.
+    const task = makeTask();
+    const priced = (taskId: string | null, createdAt: number) =>
+      repos.recordCost({
+        id: newCostRecordId(),
+        taskId: taskId as never,
+        workerRunId: null,
+        modelId: mdl,
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0.01,
+        pricingSnapshot: {
+          inputPerMTok: 3,
+          outputPerMTok: 15,
+          cacheReadPerMTok: 0.3,
+          cacheWritePerMTok: 3.75,
+        },
+        createdAt,
+      });
+
+    priced(task.id, 1000);
+    priced(null, 2000);
+    priced(null, 3000);
+
+    expect(repos.allCosts()).toHaveLength(3);
+    // Oldest first, so a caller charting a window reads it forward.
+    expect(repos.allCosts().map((c) => c.createdAt)).toEqual([1000, 2000, 3000]);
+    // Half-open: `since` included, `until` excluded, so windows tile.
+    expect(repos.allCosts({ since: 2000, until: 3000 }).map((c) => c.createdAt)).toEqual([2000]);
+    expect(repos.allCosts({ since: 3000 }).map((c) => c.createdAt)).toEqual([3000]);
+    expect(repos.allCosts({ until: 2000 }).map((c) => c.createdAt)).toEqual([1000]);
+  });
+
   it("foreign keys are enforced (work item without task rejected)", () => {
     expect(() =>
       repos.createWorkItem({

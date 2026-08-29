@@ -32,7 +32,7 @@ import {
   assertWorkItemTransition,
   assertWorkerRunTransition,
 } from "@rewter/shared";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
 import type { EventBus } from "../events/bus.js";
 import type { Db } from "./connection.js";
 import {
@@ -459,10 +459,34 @@ export class Repos {
       .where(eq(costRecords.taskId, taskId))
       .orderBy(desc(costRecords.createdAt))
       .all()
-      .map((r) =>
-        CostRecordSchema.parse({ ...r, pricingSnapshot: JSON.parse(r.pricingSnapshotJson) }),
-      );
+      .map(toCostRecord);
   }
+
+  /**
+   * Every cost row in a time window, oldest first.
+   *
+   * The aggregation itself lives in `summarizeCosts` in `shared`, not in SQL:
+   * the dashboard receives `cost.recorded` over the socket and can bucket what
+   * it already has, so keeping one implementation means the page and the
+   * endpoint cannot disagree. This is the row supply for it. The window is
+   * half-open (`since <= t < until`) to match.
+   */
+  allCosts(window: { since?: number | null; until?: number | null } = {}): CostRecord[] {
+    const clauses = [];
+    if (window.since !== undefined && window.since !== null) {
+      clauses.push(gte(costRecords.createdAt, window.since));
+    }
+    if (window.until !== undefined && window.until !== null) {
+      clauses.push(lt(costRecords.createdAt, window.until));
+    }
+    const query = this.db.select().from(costRecords);
+    const filtered = clauses.length === 0 ? query : query.where(and(...clauses));
+    return filtered.orderBy(asc(costRecords.createdAt)).all().map(toCostRecord);
+  }
+}
+
+function toCostRecord(r: typeof costRecords.$inferSelect): CostRecord {
+  return CostRecordSchema.parse({ ...r, pricingSnapshot: JSON.parse(r.pricingSnapshotJson) });
 }
 
 function modelToRow(m: Model): typeof models.$inferInsert {

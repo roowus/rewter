@@ -194,8 +194,20 @@ restart, whose `running` is a lie left on disk — the route settles the row its
 because "I cut off your workers" and "I tidied up a stale row" are different things to have
 done. Clicking a task that already finished gets a 409 rather than a fake success.
 
-Still to come in M7 — each blocked on a route that does not exist yet: a costs page and the
-registry editor.
+The fourth piece breaks the rule on purpose: the spend panel **fetches**
+(`GET /internal/costs`). Two reasons the fold structurally cannot answer "what has this
+daemon cost": a pass-through request has no task, so its cost event is orphaned and
+dropped — while pass-through is most of a router's traffic — and a fold holds only what
+the socket replayed, so a browser opened today would report a week-old daemon's spend as
+this morning's. What stays shared is the aggregation: `summarizeCosts` lives in
+`@rewter/shared`, and the endpoint and the panel compute their answers through the same
+code so they cannot disagree. Every number in it carries the split the router exists to
+expose — what the initiator spent *planning* versus what its workers spent *working* —
+because an orchestrator that out-thinks its own budget reads as a perfectly healthy
+total. Group it by model, by day (in the zone the response names), or by task, with
+`since`/`until` windows that tile.
+
+Still to come in M7: the registry editor, which needs the models CRUD routes first.
 
 ## Quickstart
 

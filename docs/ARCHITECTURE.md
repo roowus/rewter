@@ -1212,8 +1212,8 @@ done-pattern) so any CLI harness is addable by config.
   `afterSeq` reads as 0 rather than erroring), approvals — `GET
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
   `POST /internal/tasks/:id/cancel` (`{task, aborted, alreadyFinished}`; 404 unknown, 409
-  already terminal — see [Kill](#kill-who-writes-the-row-m7d)), and `WS /internal/ws`
-  (see below).
+  already terminal — see [Kill](#kill-who-writes-the-row-m7d)), `GET /internal/costs`
+  (see below), and `WS /internal/ws` (see below).
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -1351,7 +1351,10 @@ included) at port 20130 instead of rebuilding the bundle on every keystroke.
 "what is happening" *is* the event stream, and the fold that turns it into a task tree already
 lives in `shared`. A REST layer beside it would be a second answer to the same question, and
 the one on screen would be the one nobody tested. That is why there is no TanStack Query here
-and no router: the whole app is one page over one `FoldState`.
+and no router: the whole app is one page over one `FoldState`. The costs panel
+([M7e](#costs-the-one-panel-that-fetches-m7e)) is the one deliberate exception — for reasons
+the fold structurally cannot answer — and its aggregation is shared code precisely so the
+exception cannot become a precedent.
 
 The store (`src/store.ts`, zustand) is therefore almost entirely socket lifecycle, and four
 decisions in it are load-bearing:
@@ -1429,8 +1432,62 @@ The engine-side test hangs a worker's upstream call until its signal aborts, whi
 state where a kill is distinguishable from a no-op: a worker that had already reported leaves
 nothing to collapse, and the test would pass against a `cancel()` that did nothing.
 
-Still unbuilt in M7, and server work first in each case: the costs page needs
-`GET /internal/costs?groupBy=`, and the registry editor needs the models CRUD routes.
+Still unbuilt in M7: the registry editor, which needs the models CRUD routes first.
+
+### Costs: the one panel that fetches (M7e)
+
+`GET /internal/costs?groupBy=model|day|task&since=&until=&tz=` returns a `CostSummary`:
+totals plus buckets, every bucket carrying the same totals shape. The grouping key is
+validated, not defaulted — an unknown `groupBy` is a 400, because defaulting would
+answer a question the caller did not ask and the numbers would look plausible. Same for
+`tz` (pre-flighted through `Intl.DateTimeFormat` so a typo is a 400 rather than a 500
+thrown from inside the bucketer) and for a non-numeric `since`/`until`. The response
+echoes the zone it bucketed in, so a page can label its day column with the zone that
+actually shaped it.
+
+**Why this is a fetch and not a fold** — the dashboard's stated architecture is "no
+fetching layer and no cache", so this needed better reasons than convenience, and it has
+two. First, a `cost.recorded` event with `taskId: null` — every plain `/v1` pass-through,
+which is most of a router's traffic — has no task to attach to, so the fold counts it as
+orphaned and drops the number. A costs panel built on the fold would report the
+*orchestrated* spend of a daemon whose real bill is dominated by pass-through. Second, a
+fold holds only what the socket replayed: a client that connected today would report a
+week-old daemon's spend as this morning's. The compromise that preserves the original
+principle: the **aggregation is shared code** (`summarizeCosts` in `shared/src/costs.ts`),
+so the endpoint and the page cannot disagree — only the row supply differs.
+
+**Why the aggregation is TypeScript and not SQL.** Grouping and summing in the query
+would be a second implementation of the split (initiator vs worker, decided by
+`workerRunId === null`) that drifts from the shared one the first time the definition
+changes. A local daemon's cost table is thousands of rows, not millions — the day SQL is
+faster is the day this moves, and the contract above it will not change when it does.
+`Repos.allCosts(window)` therefore pulls whole rows (half-open `since <= t < until`, so
+adjacent windows tile) and the summary is computed once, in `shared`, where both the
+endpoint tests and the panel's expectations point at it.
+
+**The initiator/worker split is the point.** Every total and every bucket carries
+`initiatorCostUsd` (spend with `workerRunId === null` — the orchestrator's own planning
+tokens) alongside `workerCostUsd`, and the two always sum to `costUsd`. A single number
+would hide the failure the whole design exists to catch: an initiator that spends more
+deciding than its cheap workers spend *doing* has failed at the thing it is for, and
+reads as a perfectly healthy total. `NO_TASK_KEY` (`"(no task)"`) buckets the
+pass-through spend under `groupBy: "task"` rather than dropping it — dropping it is what
+the fold already does, and is the reason this endpoint exists.
+
+Day buckets sort by key ascending (a chart reads left-to-right in time); model and task
+buckets sort by cost descending with a key tiebreak, so the expensive thing is the first
+row and equal snapshots are stable. Day keys come from `Intl` with the `en-CA` locale —
+its short date format *is* ISO order, and fixed-offset arithmetic would misbucket an
+hour of every DST-shifted day.
+
+The panel (`src/CostsPanel.tsx`) is a small block above the task tree, not a page: cost
+is context for the task that is running, not a destination. It subscribes to the store's
+`fold.lastSeq` purely as a "something happened" tick and refetches — cheap on localhost,
+and it avoids reimplementing the aggregation client-side. A failed refetch keeps the
+last good numbers on screen with an error line: the panel refetches on every socket
+event, so a transient failure is routine, and a panel that blanked would read as
+"spent nothing". The fetched body is schema-parsed — `undefined` formatted as a dash is
+the one wrong answer that looks like good news.
 
 ## Phases
 

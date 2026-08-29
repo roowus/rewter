@@ -8,6 +8,7 @@
  */
 import { tasksInOrder } from "@rewter/shared";
 import { useEffect, useState } from "react";
+import { CostsPanel } from "./CostsPanel.js";
 import { TaskTree } from "./TaskTree.js";
 import { useDashboard } from "./store.js";
 
@@ -68,6 +69,10 @@ export function App(): JSX.Element {
           trimmed, or this feed started partway through.
         </p>
       )}
+
+      {/* Above the tree: it is the daemon's whole spend, including the
+          pass-through traffic no task in the tree accounts for. */}
+      <CostsPanel />
 
       {tasks.length === 0 ? (
         <p className="empty">

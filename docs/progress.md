@@ -29,10 +29,59 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7b | `WS /internal/ws` — replay then live, over one socket | ✅ 2026-08-28 |
 | M7c | Dashboard app: store, task tree, approval cards | ✅ 2026-08-28 |
 | M7d | Kill: `POST /internal/tasks/:id/cancel` + the button | ✅ 2026-08-28 |
-| M7 | Dashboard (+ costs page, registry editor) | 🟡 |
+| M7e | Costs: `GET /internal/costs` + the spend panel | ✅ 2026-08-28 |
+| M7 | Dashboard (+ registry editor) | 🟡 |
 | M8 | Daemonization (CLI, launchd, boot reconciliation) | ⚪ |
 
 ## Log
+
+### 2026-08-28 — M7e: costs — the one panel that fetches
+
+`GET /internal/costs?groupBy=model|day|task&since=&until=&tz=` plus the spend panel above
+the task tree. 1063 tests green (from 1025). Closes the second third of
+[#6](https://github.com/roowus/rewter/issues/6).
+
+The interesting decision was against the dashboard's own architecture. The store has no
+fetching layer and no cache, on the principle that the event stream *is* the answer to
+"what is happening" — so a costs panel built on the fold needed either a rebuttal or a
+redesign. It got the rebuttal, on two structural grounds: a `cost.recorded` with
+`taskId: null` (every plain `/v1` pass-through — most of a router's traffic) is an
+orphaned event the fold drops, so a folded costs panel would report a daemon's
+orchestrated spend while its real bill was pass-through; and a fold holds only what the
+socket replayed, so a client connecting today would report a week-old daemon's spend as
+this morning's. The panel fetches — but the **aggregation is shared code**
+(`summarizeCosts` in `@rewter/shared`), so the endpoint and the page cannot disagree.
+Only the row supply differs. The exception is fenced in ARCHITECTURE.md so it cannot
+become a precedent.
+
+Inside `summarizeCosts`, the load-bearing idea is the **initiator/worker split**: every
+total and every bucket carries `initiatorCostUsd` (spend with `workerRunId === null` —
+the orchestrator's own planning tokens) beside `workerCostUsd`, always summing to
+`costUsd`. A single total hides the failure the whole router exists to catch: an
+initiator spending more *deciding* than its cheap workers spend *doing* reads as a
+perfectly healthy number. There is a test for the case that would otherwise pass
+vacuously — one model used both as initiator and as worker, where a top-level-only
+split would look right and read wrong.
+
+Aggregation is TypeScript, not SQL, deliberately: grouping in the query would be a
+second implementation of the split that drifts from the shared one the first time the
+definition changes. `Repos.allCosts(window)` pulls whole rows (half-open, so adjacent
+windows tile); `summarizeCosts` computes the answer once where both sides' tests point
+at it. Day bucketing goes through `Intl` with the `en-CA` locale — its short date
+*is* ISO order, and fixed-offset arithmetic misbuckets an hour of every DST-shifted
+day. The zone is echoed in the response so the panel labels its day column with the
+zone that actually shaped it.
+
+Route hardening: unknown `groupBy` → 400 (defaulting would answer a question the caller
+did not ask, and the numbers would look plausible); bad `tz` pre-flighted through
+`Intl.DateTimeFormat` → 400 rather than a 500 thrown from inside the bucketer;
+non-numeric `since`/`until` → 400. The panel keeps the last good numbers on a failed
+refetch — it refetches on every socket event, so a transient failure is routine, and a
+panel that blanked would read as "spent nothing" — and schema-parses the body, because
+`undefined` formatted as a dash is the one wrong answer that looks like good news.
+
+Test counts: shared `costs.test.ts` 13, server `app.costs.test.ts` 9 + one new
+`repos.test.ts` case, dashboard `costs.test.ts` 8 + `CostsPanel.test.tsx` 7.
 
 ### 2026-08-28 — M7d: kill, and the question of who writes the row
 

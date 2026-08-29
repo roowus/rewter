@@ -14,6 +14,7 @@ import {
   type ApprovalId,
   type ChatMessage,
   type ChatResponse,
+  CostGroupBySchema,
   type OpenAIChatChunk,
   type OpenAIChatCompletion,
   OpenAIChatRequestSchema,
@@ -27,6 +28,7 @@ import {
   fromAnthropicMessages,
   fromAnthropicTools,
   isTerminal,
+  summarizeCosts,
   toAnthropicStopReason,
   toAnthropicUsage,
   toChatMessages,
@@ -514,6 +516,47 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       aborted: false,
       alreadyFinished: false,
     };
+  });
+
+  // ── Costs ─────────────────────────────────────────────────────────────────
+  /**
+   * `GET /internal/costs?groupBy=model|day|task&since=&until=&tz=`.
+   *
+   * The bucketing is `summarizeCosts` from `shared` — the same function the
+   * dashboard can run over the `cost.recorded` events it already holds. Doing
+   * it in SQL here would be a second implementation of the initiator/worker
+   * split, and the two would drift the first time one of them was fixed.
+   */
+  app.get("/internal/costs", async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const groupBy = CostGroupBySchema.safeParse(q.groupBy ?? "model");
+    if (!groupBy.success) {
+      return reply.code(400).send({
+        error: { message: `groupBy must be one of: ${CostGroupBySchema.options.join(", ")}` },
+      });
+    }
+
+    const window: { since?: number; until?: number } = {};
+    for (const field of ["since", "until"] as const) {
+      const raw = q[field];
+      if (raw === undefined) continue;
+      const value = Number.parseInt(raw, 10);
+      if (Number.isNaN(value)) {
+        return reply.code(400).send({ error: { message: `${field} must be a ms timestamp` } });
+      }
+      window[field] = value;
+    }
+
+    // An unknown zone makes `Intl` throw from inside the bucketer, which would
+    // surface as a 500 for what is a typo in a query string.
+    const timeZone = q.tz ?? "UTC";
+    try {
+      new Intl.DateTimeFormat("en-CA", { timeZone });
+    } catch {
+      return reply.code(400).send({ error: { message: `unknown time zone: ${timeZone}` } });
+    }
+
+    return summarizeCosts(repos.allCosts(window), { groupBy: groupBy.data, timeZone, ...window });
   });
 
   app.get("/internal/events", async (req) => {

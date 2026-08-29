@@ -94,6 +94,108 @@ pre,
   color: var(--dim);
 }
 
+/* ── costs ──────────────────────────────────────────────────────────── */
+
+.costs {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.costs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.costs-head h2 {
+  font-size: 0.8rem;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.costs-total {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.15rem;
+}
+
+.costs-split {
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+/* Pushed right so the tabs do not read as part of the number beside them. */
+.costs-tabs {
+  margin-left: auto;
+  display: flex;
+  gap: 0.3rem;
+}
+
+.costs-tabs button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.costs-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.costs-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.7rem;
+  font-size: 0.85rem;
+}
+
+.costs-table th,
+.costs-table td {
+  text-align: right;
+  padding: 0.25rem 0.4rem;
+  border-top: 1px solid var(--line);
+}
+
+/* The key column is the label; everything else is a figure to compare down. */
+.costs-table th[scope="row"],
+.costs-table thead th:first-child {
+  text-align: left;
+  font-weight: normal;
+}
+
+.costs-table thead th {
+  border-top: none;
+  color: var(--dim);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.costs-table td {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--dim);
+}
+
+.costs-table td:first-of-type {
+  color: var(--text);
+}
+
+.costs-zone {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
 /* ── task ───────────────────────────────────────────────────────────── */
 
 .task {
