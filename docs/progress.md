@@ -35,9 +35,52 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
 | M8c | `~/.rewter/env`, launchd plist, `rewter logs`, `rewter gc` | ✅ 2026-08-29 |
-| M8 | *acceptance: README walkthrough verbatim; survives a reboot* | 🟡 built, not yet run live |
+| M8 | *acceptance: README walkthrough run verbatim (found #13); reboot not yet run* | 🟡 partly |
 
 ## Log
+
+### 2026-08-29 — M8 acceptance, part one: the walkthrough, run verbatim
+
+Ran the README start to finish against a scratch `HOME`, copying each block rather than
+retyping it — which is the only way this test means anything, and is how the one real bug
+surfaced.
+
+**#13: the quickstart's config would not load.** The config example is fenced ```` ```jsonc ````
+and annotated (`{ "preset": "anthropic" },  // reads $ANTHROPIC_API_KEY`), but the loader was
+a bare `JSON.parse`. Pasting the block in and running `rewter start` failed with
+`invalid JSON: Unexpected token '/'` — on the *first* command a new user runs, with an error
+that names the parser rather than the docs, so the natural conclusion is "my file is wrong".
+
+Fixed by teaching the loader comments rather than by de-annotating the README: the notes are
+doing real work there (they are what tells you `apiKeyEnv` is a variable *name*), and a file
+people are told to hand-edit should tolerate the notes they leave themselves. The strip is
+string-aware — every `baseUrl` contains `//`, and eating it would truncate the value into a
+parse error pointing somewhere else entirely — and blanks comment bodies instead of deleting
+them so byte offsets, and the excerpt `JSON.parse` quotes back, still match the file on disk.
+Six tests, including the escaped-quote case (`"a\"// not a comment"`) that a
+naive in-string tracker gets wrong.
+
+**What the walkthrough verified, all of it passing:**
+
+- `pnpm install && pnpm build`, config written, `rewter start` — 2 models, and the two
+  key-less providers seeded *disabled*, exactly as the README claims.
+- `/v1/models` lists the registry plus `auto/orchestrator`; a disabled provider answers
+  **503 naming itself** on both `/v1/chat/completions` and `/v1/messages`, not a confusing
+  "unknown model".
+- **The launchd claim, tested properly**: `env -i HOME=… PATH=…` — no shell, nothing
+  exported — and the daemon came up with **2 provider(s) enabled**, read entirely from
+  `~/.rewter/env`. This is the whole point of M8c and it works.
+- `chmod 644` on that file produces a warning and **still boots** (refusing would leave a
+  login daemon dead with its explanation in a log the user does not yet know to read).
+- `install-service`: `plutil -lint` OK, **no `EnvironmentVariables` block**, idempotent
+  (`already current`), refuses to clobber a hand-edited plist until `--force`, prints the
+  `launchctl` pair instead of running it. `uninstall-service` removes it.
+- `logs` merges both streams by time, tags `[err]`, passes non-JSON lines through verbatim,
+  filters by `--level`, and exits **0** when there are no logs yet.
+- `gc --older-than 30 --dry-run`, `status` (exit 0 running / 1 not), `stop`.
+
+Still outstanding for M8: the reboot. That one needs the plist installed in the real
+`~/Library/LaunchAgents` with real keys in `~/.rewter/env`, so it waits on the user.
 
 ### 2026-08-29 — M8c: living under launchd
 

@@ -874,6 +874,16 @@ surface being called: Anthropic's error envelope on `/v1/messages`, OpenAI's els
 `~/.rewter/config.json` (override with `REWTER_CONFIG`, or `rewter start --config <path>`).
 Everything has a default, so the file is optional and an empty `{}` is valid.
 
+**Comments are allowed** — `//` and `/* … */`. This is the one file rewter tells people to
+open in an editor, and `// this one is my cheap provider` is exactly what gets written in
+it; JSON has nowhere to put that, so the loader strips comments before parsing rather than
+failing on the first line of the quickstart (which is what it used to do — see
+[#13](https://github.com/roowus/rewter/issues/13), found by running the README walkthrough
+verbatim). The strip is string-aware, because every `baseUrl` contains a `//` and eating it
+would truncate the value into a parse error pointing at the wrong place; comment bodies are
+blanked rather than deleted so byte offsets, and therefore the excerpt `JSON.parse` quotes
+back in its error, still match the file on disk.
+
 ```jsonc
 {
   "port": 20130,                    // not 20128 — that is 9router's, so both can run at once

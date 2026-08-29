@@ -56,6 +56,56 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ path, env: {} })).toThrow(path);
   });
 
+  it("tolerates line comments — the README's example is annotated", () => {
+    // The quickstart hands people a jsonc block. Copying it verbatim is the
+    // first thing a new user does, so it has to load. (#13)
+    const path = writeConfig(`{
+  "providers": [
+    { "preset": "anthropic" },              // reads $ANTHROPIC_API_KEY
+    { "preset": "zai" }                     // reads $ZAI_API_KEY
+  ],
+  "port": 20130
+}`);
+    const { config } = loadConfig({ path, env: {} });
+    expect(config.providers.map((p) => p.preset)).toEqual(["anthropic", "zai"]);
+    expect(config.port).toBe(20130);
+  });
+
+  it("tolerates block comments, including mid-line and multi-line", () => {
+    const path = writeConfig(`{
+  /* the cheap one first
+     — it is the default for fan-out */
+  "port": /* inline */ 20131,
+  "providers": []
+}`);
+    expect(loadConfig({ path, env: {} }).config.port).toBe(20131);
+  });
+
+  it("does not strip a // inside a string value", () => {
+    // The trap a naive comment-stripper falls into: every base URL contains
+    // `//`, and eating it truncates the string into a parse error pointing at
+    // the wrong line.
+    const path = writeConfig(`{
+  "providers": [
+    { "slug": "local", "kind": "openai-compat", "baseUrl": "http://localhost:11434/v1" } // ollama
+  ]
+}`);
+    const { config } = loadConfig({ path, env: {} });
+    expect(config.providers[0]?.baseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  it("does not strip a comment marker hidden behind an escaped quote", () => {
+    const path = writeConfig(`{ "providers": [], "models": [], "dbPath": "a\\"// not a comment" }`);
+    expect(loadConfig({ path, env: {} }).config.dbPath).toBe('a"// not a comment');
+  });
+
+  it("still points at the real syntax error when a comment precedes it", () => {
+    // Comments are blanked rather than removed, so byte offsets — and the
+    // excerpt JSON.parse quotes back — match the file the operator has open.
+    const path = writeConfig(`{\n  // a note\n  "port": oops\n}`);
+    expect(() => loadConfig({ path, env: {} })).toThrow(/"port": oops/);
+  });
+
   it("rejects a non-object config", () => {
     const path = writeConfig([1, 2, 3]);
     expect(() => loadConfig({ path, env: {} })).toThrow(/must be a JSON object/);

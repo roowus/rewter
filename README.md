@@ -287,7 +287,8 @@ pnpm install && pnpm build
 
 Write `~/.rewter/config.json` — name providers by preset slug, and export the keys
 separately. **The config file never holds a key**: `apiKeyEnv` is the *name* of an
-environment variable.
+environment variable. Comments are fine (`//` and `/* … */`), so the annotations below can
+stay in the file you paste this into.
 
 ```jsonc
 {

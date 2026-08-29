@@ -177,10 +177,73 @@ function parseJsonFile(path: string): unknown {
     throw new ConfigError(`cannot read config: ${(err as Error).message}`, path);
   }
   try {
-    return JSON.parse(text);
+    return JSON.parse(stripComments(text));
   } catch (err) {
     throw new ConfigError(`invalid JSON: ${(err as Error).message}`, path);
   }
+}
+
+/**
+ * Strip `//` and slash-star comments so a hand-edited config can carry the notes
+ * its author left themselves.
+ *
+ * This file is the one people are told to open in an editor, and `// this one is
+ * my cheap provider` is exactly what they write in it. JSON has nowhere to put
+ * that, so the loader tolerates it rather than failing on the first line of the
+ * quickstart.
+ *
+ * String-aware, because it has to be: `"baseUrl": "https://…"` contains `//`
+ * inside a string, and a naive strip would truncate every base URL in the file
+ * into a parse error pointing at the wrong place. Tracks whether it is inside a
+ * string and honours backslash escapes; comment bodies are replaced by spaces
+ * rather than removed so byte offsets — and therefore the positions in
+ * `JSON.parse`'s error messages — still line up with the file on disk.
+ */
+function stripComments(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      // Keep the newline itself: line numbers in errors stay honest.
+      if (i < text.length) out += "\n";
+      continue;
+    }
+
+    if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      // An unterminated block comment eats the rest of the file; JSON.parse then
+      // fails on the truncation, which is the right complaint to make.
+      const stop = end === -1 ? text.length : end + 2;
+      for (; i < stop; i++) out += text[i] === "\n" ? "\n" : " ";
+      i--;
+      continue;
+    }
+
+    out += ch;
+  }
+  return out;
 }
 
 function applyEnvOverrides(
