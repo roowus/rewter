@@ -1582,9 +1582,11 @@ done-pattern) so any CLI harness is addable by config.
   completion from one model, bounded and itemised — see
   [What the model actually receives](#what-the-model-actually-receives)),
   `POST /internal/run` (starts an **orchestration**; 202 with an id, results arrive as
-  events — see [Starting a task from the dashboard](#starting-a-task-from-the-dashboard-m7h))
-  — and `WS /internal/ws` (see below). The last two are the two routes on `/internal` that
-  spend, and each refuses the other's model string.
+  events — see [Starting a task from the dashboard](#starting-a-task-from-the-dashboard-m7h)),
+  `POST /internal/shutdown` (202 `ShutdownResult` **then** drains; 501 on a daemon built
+  without a shutdown hook — see [Stopping the daemon from its own UI](#stopping-the-daemon-from-its-own-ui-m7i))
+  — and `WS /internal/ws` (see below). `run` and `chat-test` are the two routes on
+  `/internal` that spend, and each refuses the other's model string.
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -2379,6 +2381,79 @@ On success it shows one terse line naming the initiator and nothing else, and it
 prompt but keeps the settings, since the next thing anyone does here is the same run worded
 differently. The pin dropdown fills from the registry, and a registry that will not load does
 not take the form with it: the empty pin is the common case and needs no list at all.
+
+### Stopping the daemon from its own UI (M7i)
+
+`rewter stop` has always existed; it needs a terminal, and the pidfile it reads is written
+only by a daemon started as a service ([The pidfile](#the-pidfile-and-talking-to-a-daemon-you-did-not-start-m8)).
+`POST /internal/shutdown` is the same act from the page the daemon is serving.
+
+**Answer, then act.** A response body cannot cross a socket the server has already closed,
+so the route builds the payload, schedules the stop on `setImmediate`, and returns **202**.
+`ok: true` therefore means *accepted and draining*, never *stopped* — the port going away is
+the rest of the story, and the caller is expected to watch for it. A hook that throws on that
+later tick has nothing to catch it but the route's own handler, so it logs there rather than
+becoming an unhandled rejection. The route is a **POST**: a `GET` that stopped the daemon
+could be fired by a prefetch.
+
+**`stop()` and `requestStop()` are different things**, and the split is what makes the route
+testable. `stop()` drains — pidfile, live index, server, database. `requestStop()` drains
+*and* ends the process, through an `onExit` hook that whoever owns the process lifetime
+installs; `runUntilSignal` installs it, an embedded daemon installs nothing, and then the two
+are identical. Without the split, a route that only drained would leave a process with no
+port and no database still running (a hang, from the operator's side), and an unconditional
+`process.exit` would take the test runner with it. The drain is memoised **on its promise**,
+not a boolean: a SIGTERM racing the button must await the *same* drain, or the second caller
+returns while the first is still closing the database and the close throws.
+
+**There is no Restart button.** The generated LaunchAgent sets `KeepAlive` to
+`{ SuccessfulExit: false }` on purpose ([Living under launchd](#living-under-launchd-m8)) —
+a crash comes back, a clean exit stays down, so that `rewter stop` is not silently undone a
+second later. A Restart button would therefore stop the daemon and then wait for something
+deliberately not coming. What ships instead is the daemon telling the truth about its own
+situation: `ShutdownResult` (in `shared`) carries `supervisor`, `willRestart` and the exact
+`restartWith` command.
+
+**`willRestart` is nullable, and that is the point.** `detectSupervisor`
+(`service/supervisor.ts`) answers `launchd` only when `XPC_SERVICE_NAME` **equals rewter's own
+label** — a rewter started by hand inside someone else's launchd job inherits *that* job's
+label, and answering "launchd" there would print a `kickstart` line naming a service that is
+not rewter's. A process under a login shell inherits the placeholder `"0"`, which is why the
+check is an equality and not a presence test. When it genuinely cannot tell — reparented to
+init, or under a container or third-party supervisor — the answer is `willRestart: null`, not
+`false`, because "nothing will restart this" would be a guess printed as a fact. The field is
+**nullable, not optional**: a client reading `undefined` could not tell a daemon that declined
+to guess from one too old to have been asked.
+
+**501, not `ok: false`.** A daemon built without a shutdown hook (an embedded one, a
+deployment that withheld it) cannot do this at all, and the schema has no failure shape —
+a shutdown that could not start is a status code, and the dashboard turns it into "this
+daemon cannot stop itself — use `rewter stop`". `cannot` is not `failed`.
+
+**The client's honest network error.** A `fetch` that rejects here is almost always the
+shutdown winning the race against its own reply — a successful stop wearing a `TypeError`'s
+clothes. `shutdownDaemon` reads it as `{ ok: true, result: null }` and says "the connection
+closed before it answered", because reporting "daemon unreachable" would be true and useless.
+An accepted-but-unparseable body lands in the same arm for the same reason: it is going down
+regardless, and a failure message would leave someone waiting for a daemon that is already
+gone.
+
+**The footer** (`src/DaemonFooter.tsx`) carries both halves of the survey's item 8. The
+button is **armed, not immediate** — the first click opens an `alertdialog` naming what is
+lost, and only the second posts; a misclick here does not lose a form, it kills the process
+serving the page. Once accepted the control is **spent and does not return**, because a
+second POST lands on a draining socket and reads as the first one having failed; the 501 case
+is the exception, since nothing was attempted. Beside it, the persistent **Local Mode**
+sentence: rewter looks exactly like a hosted control plane and says nowhere that it is not
+one, so the footer states that tasks, events, costs and the registry live in a SQLite file on
+this machine and that API keys are read from the environment by name and never saved. The
+version renders from `/internal/health` when it arrives and is **omitted entirely** until
+then — `v—` reads as a version the daemon reported.
+
+**The header liveness dot** is the same `data-status` the connection label already carried,
+drawn as a dot in `currentColor` so colour and words cannot drift apart. Only `reconnecting`
+pulses (and not under `prefers-reduced-motion`): a steady dot is the resting state and must
+not compete with the tree, while a blinking one means "this view may already be stale".
 
 ## Design docs
 

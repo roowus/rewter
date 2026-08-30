@@ -9,6 +9,7 @@
 import { type DaemonHealth, tasksInOrder } from "@rewter/shared";
 import { useEffect, useState } from "react";
 import { CostsPanel } from "./CostsPanel.js";
+import { DaemonFooter } from "./DaemonFooter.js";
 import { EventsPanel } from "./EventsPanel.js";
 import { HealthPanel } from "./HealthPanel.js";
 import { ProvidersPanel } from "./ProvidersPanel.js";
@@ -60,7 +61,13 @@ export function App(): JSX.Element {
     <main>
       <header className="app-head">
         <h1>rewter</h1>
+        {/* The dot carries the same `data-status` as the words beside it, so
+            colour and text can never disagree; it exists because the words are
+            small and grey and a reader scanning the page skips them, which is
+            precisely the moment a dead socket matters. `aria-hidden` because it
+            is a second rendering of the label, not a second fact. */}
         <span className="conn" data-status={status}>
+          <span className="conn-dot" data-status={status} aria-hidden="true" />
           {STATUS_TEXT[status]}
         </span>
         {/* `replayed` distinguishes "already current" from "still loading" — a
@@ -119,6 +126,10 @@ export function App(): JSX.Element {
       ) : (
         tasks.map((task) => <TaskTree task={task} now={now} key={task.task.id} />)
       )}
+
+      {/* Last, and below everything: the standing "this is your machine"
+          statement, and the only control on the page that ends the process. */}
+      <DaemonFooter version={health?.version ?? null} />
     </main>
   );
 }

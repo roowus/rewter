@@ -65,8 +65,25 @@ export interface RunningDaemon {
   envWarnings: string[];
   /** The address actually bound — resolves port 0 to the real number. */
   url: string;
-  /** Close the HTTP server and the database, in that order. */
+  /**
+   * Close the HTTP server and the database, in that order. Idempotent: a second
+   * call joins the first rather than closing a closed database.
+   */
   stop(): Promise<void>;
+  /**
+   * Stop, and then end the process — the route-reachable equivalent of SIGTERM,
+   * which is what `POST /internal/shutdown` needs.
+   *
+   * `stop()` alone is not enough for a daemon someone is running: the signal
+   * handlers `runUntilSignal` installs are libuv handles, so draining the server
+   * leaves a process with no port, no database and nothing to do, still alive.
+   * Whoever owns the process lifetime installs the second half through `onExit`.
+   * Nobody having installed one is a legitimate state — an embedded daemon in a
+   * test owns no process — and then this is exactly `stop()`.
+   */
+  requestStop(): Promise<void>;
+  /** Install the process-ending half of `requestStop`. `runUntilSignal` does this. */
+  onExit(fn: (code: number) => void): void;
 }
 
 export interface OpenRegistryOptions {
@@ -203,6 +220,50 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     },
   });
   const live = new LiveTaskIndex();
+
+  // ── The stop sequence, defined before the app so the app can call it ───────
+  //
+  // `POST /internal/shutdown` needs a handle on this, and the app is built
+  // before the object holding it exists — so the functions live here and the
+  // returned object hands them out.
+  //
+  // Memoised on the promise rather than guarded by a boolean: two callers (a
+  // SIGTERM racing the dashboard button) must both wait for the *same* drain,
+  // and a boolean would let the second return while the first was still closing.
+  let stopping: Promise<void> | null = null;
+  /** Installed by whoever owns the process lifetime. See `RunningDaemon.onExit`. */
+  let exit: ((code: number) => void) | null = null;
+
+  const stop = (): Promise<void> => {
+    stopping ??= (async () => {
+      // The pidfile goes first, and unconditionally: from the moment we have
+      // decided to stop, the claim it makes is no longer true, and a `status`
+      // racing the drain should read "not running" rather than point at a
+      // socket that is closing. A `stop` waiting on us sees the health probe
+      // stop answering either way.
+      if (opts.pidfilePath !== undefined) removePidfile(opts.pidfilePath);
+      // Tasks next: a running orchestration holds upstream calls open, and
+      // closing the socket out from under it would leave them billing with
+      // nobody left to read the answer.
+      live.shutdown();
+      await app.close();
+      db.$client.close();
+    })();
+    return stopping;
+  };
+
+  const requestStop = async (): Promise<void> => {
+    try {
+      await stop();
+    } catch (err) {
+      // The process still has to go — a drain that failed halfway is a worse
+      // thing to leave running than one that finished. Exit code says which.
+      exit?.(1);
+      throw err;
+    }
+    exit?.(0);
+  };
+
   const dashboardDir = opts.dashboardDir === undefined ? findDashboardDir() : opts.dashboardDir;
   // `url` is filled in below, once `listen` has resolved port 0 into a number.
   // The health route reads this object per request rather than closing over a
@@ -221,6 +282,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // The same environment the registry was seeded against — so "test this
     // provider" answers for the process that would serve the request.
     env,
+    // The dashboard's Shutdown button. `requestStop`, not `stop`: a route that
+    // drained the server and left the process alive would look like a hang.
+    shutdown: requestStop,
   });
 
   const port = opts.port ?? config.port;
@@ -271,19 +335,10 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     reconciled,
     envWarnings,
     url,
-    async stop() {
-      // The pidfile goes first, and unconditionally: from the moment we have
-      // decided to stop, the claim it makes is no longer true, and a `status`
-      // racing the drain should read "not running" rather than point at a
-      // socket that is closing. A `stop` waiting on us sees the health probe
-      // stop answering either way.
-      if (opts.pidfilePath !== undefined) removePidfile(opts.pidfilePath);
-      // Tasks next: a running orchestration holds upstream calls open, and
-      // closing the socket out from under it would leave them billing with
-      // nobody left to read the answer.
-      live.shutdown();
-      await app.close();
-      db.$client.close();
+    stop,
+    requestStop,
+    onExit(fn) {
+      exit = fn;
     },
   };
 }
@@ -330,6 +385,13 @@ export interface SignalHandlerOptions {
  * Draining matters more here than in a typical server: an SSE stream severed
  * mid-frame leaves the client parsing a truncated event rather than seeing a
  * clean end.
+ *
+ * It also registers `onStopped` as the daemon's exit hook, which is what makes
+ * the dashboard's Shutdown button end the process rather than merely close the
+ * port: this function is the only place that knows the process is meant to run
+ * until told otherwise, so it is the only place that can say what "otherwise"
+ * does. A daemon nobody called this on — an embedded one in a test — has no
+ * hook and its `requestStop` is just a drain, correctly.
  */
 export function runUntilSignal(
   daemon: RunningDaemon,
@@ -339,20 +401,17 @@ export function runUntilSignal(
   const onStopped = opts.onStopped ?? ((code: number) => process.exit(code));
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
 
-  let stopping = false;
+  daemon.onExit(onStopped);
+
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     proc.on(signal, () => {
-      // A second Ctrl-C during shutdown must not start a second stop().
-      if (stopping) return;
-      stopping = true;
       log(`${signal} — shutting down`);
-      daemon.stop().then(
-        () => onStopped(0),
-        (err: unknown) => {
-          log(`shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
-          onStopped(1);
-        },
-      );
+      // A second Ctrl-C — or a Ctrl-C racing the dashboard button — joins the
+      // drain already in flight rather than starting a second one: `stop()` is
+      // memoised on its own promise, so the guard lives there and not here.
+      daemon.requestStop().catch((err: unknown) => {
+        log(`shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     });
   }
   return new Promise<never>(() => {});

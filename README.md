@@ -415,6 +415,17 @@ started from Claude Code. Leaving the budget blank inherits whatever the daemon 
 with; the word `uncapped` removes the cap. Asking it for a plain model gets you pointed at
 the Test button above, which is the thing that wants one.
 
+At the foot of the page: a standing reminder that this is your machine — tasks, events, costs
+and the registry live in a SQLite file here, and API keys are read from your environment by
+name, never saved — and a **Shut down** button, since the daemon is otherwise stopped from a
+terminal you may not have open. It asks first, and afterwards it tells you the truth about
+what happens next: nothing on this machine restarts rewter by itself, so the message names the
+exact command that does (`launchctl kickstart …` if you installed the service, `rewter start`
+if you didn't). There is no Restart button on purpose — the LaunchAgent is configured so that
+a clean stop *stays* stopped, which is what makes `rewter stop` reliable, and a Restart button
+would be waiting on something deliberately not coming. If rewter can't tell what started it,
+it says so rather than guessing. Watch the dot next to the title go dark for confirmation.
+
 (If you are working on the dashboard itself, run `pnpm --filter @rewter/dashboard dev`
 instead and use :5273, which proxies back here rather than rebuilding the bundle on every
 keystroke.)

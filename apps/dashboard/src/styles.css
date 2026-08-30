@@ -71,12 +71,41 @@ pre,
 .conn {
   font-size: 0.8rem;
   color: var(--dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 .conn[data-status="live"] {
   color: var(--ok);
 }
 .conn[data-status="reconnecting"] {
   color: var(--warn);
+}
+
+/* The liveness dot. `currentColor` rather than its own palette lookup: the dot
+   and the word next to it are one status, and two colour rules could drift. */
+.conn-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+/* Only reconnecting pulses. A steady green dot is the resting state and must
+   not compete with the tree for attention; a blinking one means "this view may
+   already be stale", which is worth the movement. */
+.conn-dot[data-status="reconnecting"] {
+  animation: conn-pulse 1.2s ease-in-out infinite;
+}
+@keyframes conn-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conn-dot[data-status="reconnecting"] {
+    animation: none;
+  }
 }
 
 .replayed,
@@ -1390,4 +1419,86 @@ button.kill:disabled {
 .run-started {
   margin: 0.6rem 0 0;
   font-size: 0.82rem;
+}
+
+/* ── footer: local-mode notice + shutdown ───────────────────────────── */
+
+.app-foot {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.local-mode {
+  margin: 0;
+  max-width: 42rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+/* Green, and the same size as the header's liveness dot: this one is not a
+   status, it is the claim being made — data stays here. */
+.local-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--ok);
+  margin-right: 0.4rem;
+}
+
+.daemon-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.daemon-controls button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.7rem;
+  cursor: pointer;
+}
+
+/* Outlined, not filled: the destructive colour marks it without making it the
+   brightest thing on a page whose actual content is the task tree. */
+.daemon-controls button.danger {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  max-width: 34rem;
+  border: 1px solid var(--bad);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel);
+}
+
+.confirm p {
+  margin: 0;
+  flex: 1 1 16rem;
+  line-height: 1.45;
+}
+
+.stopping {
+  margin: 0;
+  max-width: 26rem;
+  line-height: 1.45;
+  color: var(--warn);
 }

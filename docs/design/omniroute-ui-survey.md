@@ -466,6 +466,18 @@ If we implement from this survey, roughly in value order:
    route refusing an orchestrator. See ARCHITECTURE.md → "Starting a task from the
    dashboard".
 8. **Shutdown button** behind a confirm modal; a header liveness dot; a "Local Mode" footer.
+   **DONE 2026-08-30** — all three. `POST /internal/shutdown` answers 202 *then* drains on the
+   next tick, because a body cannot cross a socket the server has already closed; `ok: true`
+   therefore means accepted-and-draining, never stopped, and the client reads a mid-request
+   connection death as the shutdown winning the race rather than as an error. The reply names
+   the supervisor and whether anything will restart the daemon — under our own LaunchAgent
+   nothing will, since `KeepAlive {SuccessfulExit: false}` is what makes `rewter stop` stick,
+   which is also why the survey's Restart button was **not** built: it would wait on something
+   deliberately not coming. A daemon that cannot recognise what started it says "may or may
+   not" instead of guessing. The button arms a confirmation before it posts and is spent
+   afterwards (a second POST would hit a draining socket and read as the first having failed);
+   a 501 is the exception, since nothing was attempted. See ARCHITECTURE.md → "Stopping the
+   daemon from its own UI".
 9. **Registry export/import** — models + cards + overrides only, never `apiKeyRef` values.
 
 Deliberately excluded: combos, compression, gamification, batch, MCP/A2A, sidebar

@@ -33,6 +33,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
 | M7g | Budget: `POST /internal/tasks/:id/settings` + the cap control | ✅ 2026-08-30 |
 | M7h | Run: `POST /internal/run` + the run panel | ✅ 2026-08-30 |
+| M7i | Shutdown: `POST /internal/shutdown` + footer, liveness dot, Local Mode | ✅ 2026-08-30 |
 | M7 | *acceptance: approve from the browser while the stream runs* | ✅ 2026-08-29 |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
@@ -42,6 +43,55 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 **Phase 1 is complete — every milestone's acceptance has been run live.**
 
 ## Log
+
+### 2026-08-30 — stopping the daemon from its own UI (survey item 8)
+
+`POST /internal/shutdown`, plus the footer that presses it. The route **answers 202 and then
+drains**, because a body cannot cross a socket the server has closed — so `ok: true` means
+*accepted*, never *stopped*, and the payload says "draining" for exactly that reason. It is a
+POST: a `GET` that stopped the daemon could be fired by a prefetch.
+
+The interesting design question was Restart, and the plist answered it. The generated
+LaunchAgent sets `KeepAlive` to `{ SuccessfulExit: false }` deliberately, so that
+`rewter stop` is not undone a second later — which means a clean exit *stays* stopped, and a
+Restart button would stop the daemon and then wait for something not coming. **There is no
+Restart button.** What ships instead is the daemon reporting its own situation:
+`ShutdownResult` carries `supervisor`, `willRestart` and the exact `restartWith` command.
+
+`willRestart` is **nullable**, and the null is load-bearing. `detectSupervisor` claims
+`launchd` only when `XPC_SERVICE_NAME` equals rewter's own label — a rewter started by hand
+inside someone else's launchd job inherits *that* label, and answering "launchd" there would
+print a `kickstart` line naming a service that is not rewter's, which does nothing and reads
+as the button having lied. Under a login shell the variable is the placeholder `"0"`, so the
+check is an equality, not a presence test. Where it truly cannot tell, the answer is `null`,
+not `false`: "nothing will restart this" would be a guess printed as a fact. Nullable rather
+than optional, so a declining daemon and a too-old daemon are distinguishable.
+
+`stop()` split into `stop()` and `requestStop()`. The first drains; the second drains and
+ends the process through an `onExit` hook that `runUntilSignal` installs and an embedded
+daemon does not. Without the split, the route would leave a process with no port and no
+database still running (a hang, from outside) — or an unconditional `process.exit` would take
+the test runner with it, which is asserted by a test whose whole claim is that it reached its
+last line. The drain is memoised **on its promise**: a SIGTERM racing the button must await
+the *same* drain, or the second caller returns while the first is still closing the database.
+
+On the client, a rejected `fetch` is read as **success**: it is almost always the shutdown
+beating its own reply across the socket, and "daemon unreachable" there would be true and
+useless. An unparseable 202 lands in the same arm. 501 is the one genuine refusal, and it gets
+its own sentence — a daemon without the hook *cannot* do this, which is not the same as
+having failed.
+
+The footer carries the other two halves of the survey item. The button is armed, not
+immediate: the first click opens an `alertdialog` naming what is lost, only the second posts,
+and once accepted the control does not come back (a second POST hits a draining socket and
+reads as the first one failing). Beside it, the persistent **Local Mode** line — rewter looks
+exactly like a hosted control plane and said nowhere that it is not one — stating that tasks,
+events, costs and the registry live in a SQLite file here, and that API keys are read from the
+environment by name and never saved. The version is omitted until health answers rather than
+shown as a placeholder. The header's connection label gained a dot in `currentColor`, pulsing
+only while reconnecting, and not at all under `prefers-reduced-motion`.
+
+- 40 new tests (5 shared, 17 server, 18 dashboard); **1624 green**.
 
 ### 2026-08-30 — starting a task from the dashboard (survey item 7)
 

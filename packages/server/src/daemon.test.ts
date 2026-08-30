@@ -237,6 +237,71 @@ describe("startDaemon — pidfile", () => {
   });
 });
 
+/**
+ * Stopping via the route rather than a signal — survey shortlist item 8.
+ *
+ * The seam has two halves on purpose. `stop()` drains; `requestStop()` drains
+ * *and* ends the process, through a hook whoever owns the process lifetime
+ * installs. A daemon embedded in a test owns no process and installs none, and
+ * then the two are the same thing — which is what makes the route testable
+ * without a `process.exit` in the middle of a test run.
+ */
+describe("startDaemon — stopping", () => {
+  it("serves shutdown, and the route really stops the daemon", async () => {
+    const d = await boot();
+    const url = d.url;
+
+    const res = await fetch(`${url}/internal/shutdown`, { method: "POST" });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ ok: true, pid: process.pid });
+
+    // The reply came back before the drain, so wait for the port to actually go
+    // — that gap is the whole reason the payload says "draining", not "stopped".
+    daemon = undefined;
+    await expect
+      .poll(async () => {
+        try {
+          await fetch(`${url}/internal/health`);
+          return "up";
+        } catch {
+          return "down";
+        }
+      })
+      .toBe("down");
+  });
+
+  it("is idempotent — a signal racing the button drains once", async () => {
+    const d = await boot();
+    // Both callers must await the *same* drain: a boolean guard would let the
+    // second return early while the first was still closing the database, and
+    // the second close would throw.
+    await Promise.all([d.stop(), d.stop(), d.requestStop()]);
+    daemon = undefined;
+  });
+
+  it("runs the exit hook once the drain is done, not before", async () => {
+    const d = await boot();
+    const codes: number[] = [];
+    d.onExit((code) => codes.push(code));
+
+    const pending = d.requestStop();
+    expect(codes).toEqual([]);
+    await pending;
+    daemon = undefined;
+
+    expect(codes).toEqual([0]);
+  });
+
+  it("has no exit hook by default — an embedded daemon owns no process", async () => {
+    const d = await boot();
+    await d.requestStop();
+    daemon = undefined;
+    // Reaching here at all is the assertion: an unconditional `process.exit`
+    // in `requestStop` would have taken the test runner with it.
+    expect(true).toBe(true);
+  });
+});
+
 describe("bootSummary", () => {
   it("reports the URL and enabled counts, and no secrets", async () => {
     const d = await boot(

@@ -36,9 +36,11 @@ import {
   REWTER_VERSION,
   RunTaskRequestSchema,
   type RunTaskResult,
+  type ShutdownResult,
   SocketClientMessageSchema,
   type SocketServerMessage,
   type StreamChunk,
+  type Supervisor,
   TASK_TRANSITIONS,
   type TaskId,
   TaskSettingsSchema,
@@ -48,6 +50,7 @@ import {
   fromAnthropicMessages,
   fromAnthropicTools,
   isTerminal,
+  restartAdvice,
   summarizeCosts,
   toAnthropicStopReason,
   toAnthropicUsage,
@@ -78,6 +81,8 @@ import {
   isOrchestratorModel,
 } from "../router/resolve.js";
 import type { RouteRequest, Router } from "../router/router.js";
+import { SERVICE_LABEL } from "../service/launchd.js";
+import { detectSupervisor } from "../service/supervisor.js";
 import { AnthropicStreamTranslator } from "./anthropic-stream.js";
 import { type StreamFrameContext, roleFrame, toOpenAIChunk } from "./openai-stream.js";
 import { SseWriter, type SseWriterOptions } from "./sse.js";
@@ -136,6 +141,24 @@ export interface AppOptions {
    * the network.
    */
   probeProvider?: (provider: Provider, opts: ProbeOptions) => Promise<ProviderTestResult>;
+  /**
+   * What `POST /internal/shutdown` calls, after it has answered.
+   *
+   * Absent — as in every test that does not exercise it — the route 501s
+   * instead: the app cannot stop the daemon, because the app *is* the thing
+   * being stopped and closing itself would leave the pidfile, the live tasks
+   * and the database open behind it. The daemon owns that sequence (`stop()`),
+   * so the daemon passes it in.
+   *
+   * Called with the reply already flushed, so anything it throws has nowhere to
+   * go but the log. It must not reject in a way a caller depends on.
+   */
+  shutdown?: (() => void | Promise<void>) | null;
+  /**
+   * Which supervisor to report in the shutdown payload. Injected so the answer
+   * a test asserts is the answer under test, not whatever started vitest.
+   */
+  supervisor?: Supervisor;
 }
 
 /**
@@ -538,6 +561,70 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       },
     };
     return health;
+  });
+
+  /**
+   * Stop the daemon — survey shortlist item 8.
+   *
+   * Three things make this defensible on a route rather than a terminal.
+   *
+   * **It is already localhost-bound and already destructive company.** Whoever
+   * can reach `/internal` can cancel every running task one at a time; letting
+   * them stop the process is not a new power, it is the same power spelled once.
+   *
+   * **It answers before it acts**, because there is no other order: a body
+   * cannot cross a socket the server has closed. So `ok: true` means *accepted
+   * and draining*, never *stopped* — the confirmation the operator reads is a
+   * promise about the next second, and the dashboard words it that way. The
+   * `setImmediate` is what buys that second: it lets Fastify flush this reply
+   * before `stop()` starts closing the server out from under it.
+   *
+   * **It says what it did *not* do.** Under rewter's LaunchAgent a clean exit
+   * stays down on purpose (`KeepAlive` is `{SuccessfulExit: false}`), so there
+   * is no Restart button here and no pretending one is implied: the payload
+   * names the supervisor, states plainly that nothing is coming to bring it
+   * back, and carries the exact command that does. `willRestart: null` is the
+   * honest answer when the process cannot tell what started it — the same
+   * distinction the kill button's `aborted: true|false` draws.
+   *
+   * 501 without a `shutdown` hook, matching `auto/orchestrator` without an
+   * engine: the app cannot stop the daemon on its own, since it is the part
+   * being stopped, and a route that closed only itself would leave the pidfile
+   * lying and the database open.
+   */
+  app.post("/internal/shutdown", async (_req, reply) => {
+    const stop = opts.shutdown ?? null;
+    if (stop === null) {
+      return reply.code(501).send({
+        error: { message: "this daemon was not started with a shutdown hook" },
+      });
+    }
+
+    const supervisor: Supervisor = opts.supervisor ?? detectSupervisor();
+    const advice = restartAdvice(supervisor, SERVICE_LABEL);
+    const body: ShutdownResult = {
+      ok: true,
+      pid: process.pid,
+      supervisor,
+      willRestart: advice.willRestart,
+      restartWith: advice.restartWith,
+    };
+
+    // Scheduled, not awaited: the handler must return for the reply to be
+    // written, and `stop()` closes the server that would write it.
+    setImmediate(() => {
+      void (async () => {
+        try {
+          await stop();
+        } catch (err) {
+          // Nowhere left to report it — the reply is gone and the process is
+          // going. The log is the only reader, and it is the right one.
+          app.log.error({ err }, "shutdown failed");
+        }
+      })();
+    });
+
+    return reply.code(202).send(body);
   });
 
   app.get("/internal/providers", async () =>
