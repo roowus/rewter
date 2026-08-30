@@ -244,7 +244,10 @@ something tried and did not work, and nothing judged these. Writing `failed` wou
 six weeks later that a model got it wrong when the machine simply went away, and it would
 teach the phase-2 learned stats the same untruth. The sweep goes through the ordinary
 lifecycle guards, so the interruption is an event like any other and the dashboard replays
-it rather than showing a task that just stops updating.
+it rather than showing a task that just stops updating. Verified the blunt way on
+2026-08-29: a tier-2 task in flight, `kill -9` on the listening process, and the restart
+logged `interrupted by a previous shutdown: 1 task(s)` before the socket opened — with the
+events from before the kill still sitting intact ahead of the new one.
 
 Its second piece is **`rewter status` and `rewter stop`** — talking to a daemon this shell
 did not start. `start` records where it bound in `~/.rewter/rewter.pid`, and neither of the

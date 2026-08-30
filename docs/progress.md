@@ -35,9 +35,39 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
 | M8c | `~/.rewter/env`, launchd plist, `rewter logs`, `rewter gc` | ✅ 2026-08-29 |
-| M8 | *acceptance: README walkthrough run verbatim (found #13); reboot not yet run* | 🟡 partly |
+| M8 | *acceptance: walkthrough verbatim (#13) + `kill -9` mid-task; reboot not yet run* | 🟡 two of three |
 
 ## Log
+
+### 2026-08-29 — M8 acceptance, part two: `kill -9` mid-task
+
+The criterion: *`kill -9` mid-task → restart shows interrupted task w/ full history.* Run
+against the real daemon, with a tier-2 task in flight and nothing terminal written for it.
+
+Killed the listening process (`kill -9 38312`) with the task at `running`. On restart, before
+the socket opened:
+
+```
+{"level":40,"tasks":["task_ynvchnma8plm"],"workItems":[],"workerRuns":[],
+ "msg":"interrupted by a previous shutdown: 1 task(s), 0 work item(s), 0 run(s)"}
+```
+
+Both halves hold. The **status**: seq 39 is `running → interrupted`, written by the *new*
+process. The **history**: seqs 37–38 from before the kill sit intact ahead of it, and folding
+the whole stream gives all three tasks of the session — two `succeeded`, one `interrupted` —
+across 39 events. Nothing was lost and nothing was rewritten; the log is append-only and the
+new process only added to it.
+
+The client holding the SSE stream got `UND_ERR_SOCKET` — a truncated response. That is the
+correct outcome and not a gap: `kill -9` leaves no opportunity to close a stream politely.
+The graceful path is `runUntilSignal`'s, and SIGTERM draining is already covered.
+
+One thing worth recording about the mechanics: `lsof -ti :20130` returned **two** PIDs, and
+the first was Chrome — the dashboard tab, holding established connections *to* the port.
+Piping that straight into `kill -9` would have killed the browser and left the daemon running,
+which looks identical in the terminal right up until the restart shows nothing was
+interrupted. The daemon is the process holding the socket in `LISTEN`, and `lsof -i :port -P`
+is what distinguishes it from everyone merely talking to it.
 
 ### 2026-08-29 — M7 acceptance: approved from the browser, mid-stream
 
