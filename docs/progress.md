@@ -39,6 +39,33 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — the daemon never actually served the dashboard (#16)
+
+Opened the URL `rewter start` prints, to run the M7 acceptance. `GET /` returned a 404 JSON
+body.
+
+ARCHITECTURE.md says "built static, served by the same daemon" in three places, and has since
+the first commit — but `buildApp` never registered a static plugin and `@fastify/static` was
+not even a dependency. The dashboard was reachable **only** through `vite dev`'s `/internal`
+proxy on :5273. Every dashboard test drives components directly or injects at `/internal`, so
+nothing was watching the one route a human actually types.
+
+That is two acceptance criteria, not one: M7's "approve from the browser" assumes the
+daemon's own URL serves the UI, and M8's "reboot, confirm daemon **and dashboard** up" has
+nothing to confirm — a launchd-started daemon has no `vite dev` behind it.
+
+Registered `@fastify/static` **last**, after every route, so a file cannot shadow an
+endpoint; unmatched GETs fall back to `index.html` for client-side routing, but `/v1` and
+`/internal` are excluded and still 404 as JSON — answering a mistyped fetch with HTML turns a
+404 into a parse error in the caller. The bundle is found from the module's own path, since
+launchd starts from `/` and the CLI from wherever you are standing. A missing bundle logs a
+warning and boots the API anyway; being unable to debug a provider because the UI was not
+built is a worse failure than no UI.
+
+8 tests, and the four that matter are the negative ones: `/v1/models` still answers,
+`/internal/typo` still 404s as JSON, a POST is not served the page, and a checkout with no
+bundle still boots.
+
 ### 2026-08-29 — two bugs the acceptance kept turning up (#14, #15)
 
 Pointing the acceptance daemon at a keyless local provider (Ollama, `qwen3:4b`) so the

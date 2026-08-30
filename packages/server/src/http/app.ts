@@ -5,7 +5,9 @@
  * Built as a factory returning an un-listened instance so tests can drive it
  * through `app.inject()` — no ports, no teardown races.
  */
+import { existsSync } from "node:fs";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import {
   type AnthropicMessageResponse,
@@ -75,6 +77,16 @@ export interface AppOptions {
   orchestrator?: Orchestrator | null;
   /** Injectable so tests need not wait out a 30-second grace period. */
   live?: LiveTaskIndex;
+  /**
+   * The dashboard's built bundle, served at the root. Absent — as in every
+   * test — nothing is mounted and `/` 404s like any other unknown route.
+   *
+   * A path that does not exist is *not* an error: a fresh checkout that has not
+   * run `pnpm build` should still boot a working API, because an operator
+   * debugging a provider does not also need a UI. The daemon logs why the
+   * dashboard is missing instead of refusing to start over it.
+   */
+  dashboardDir?: string | null;
 }
 
 /** The header carrying the task id back to the client, and back to us. */
@@ -737,6 +749,28 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       });
     });
   });
+
+  // The dashboard, last: every API route above is already declared, so a static
+  // file can never shadow one. Registered only when the bundle is actually
+  // there — see `dashboardDir` on the options for why a missing build is a log
+  // line rather than a boot failure.
+  const dashboardDir = opts.dashboardDir ?? null;
+  if (dashboardDir !== null && existsSync(dashboardDir)) {
+    app.register(fastifyStatic, { root: dashboardDir });
+
+    // Client-side routing: the dashboard owns its own paths, so a deep link the
+    // server has never heard of is the SPA's to resolve, not a 404. API
+    // prefixes are excluded explicitly — answering `GET /internal/typo` with a
+    // page of HTML would turn a mistyped fetch into a JSON parse error in the
+    // caller, which is a much worse thing to debug than a 404.
+    app.setNotFoundHandler((request, reply) => {
+      const isApi = request.url.startsWith("/v1") || request.url.startsWith("/internal");
+      if (request.method !== "GET" || isApi) {
+        return reply.code(404).send({ error: { message: "not found", type: "not_found" } });
+      }
+      return reply.sendFile("index.html");
+    });
+  }
 
   return app;
 }

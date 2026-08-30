@@ -315,6 +315,11 @@ Port **20130** is deliberately not 9router's 20128, so both can run side by side
 switch. A provider whose key variable is unset still appears — seeded *disabled*, so asking
 for its model gives a 503 that names it rather than a confusing "unknown model".
 
+Open that URL in a browser and you get the dashboard — the same daemon serves the API and the
+UI, so there is no second thing to start. (If you are working on the dashboard itself, run
+`pnpm --filter @rewter/dashboard dev` instead and use :5273, which proxies back here rather
+than rebuilding the bundle on every keystroke.)
+
 Point any OpenAI client at it:
 
 ```sh

@@ -5,9 +5,10 @@
  * tests can boot a real daemon on port 0 and shut it down, and M8's launchd
  * wrapper can add signal handling without this module knowing about processes.
  */
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { REWTER_VERSION } from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { type Config, expandPath, loadConfig } from "./config/config.js";
@@ -40,6 +41,12 @@ export interface StartDaemonOptions {
   pidfilePath?: string | undefined;
   /** See `OpenRegistryOptions.envFile`. `null` skips `~/.rewter/env`. */
   envFile?: string | null;
+  /**
+   * The dashboard bundle to serve at `/`. Defaults to locating
+   * `apps/dashboard/dist` from this module; `null` serves no UI at all, which
+   * is what every test wants.
+   */
+  dashboardDir?: string | null;
 }
 
 export interface RunningDaemon {
@@ -179,6 +186,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     },
   });
   const live = new LiveTaskIndex();
+  const dashboardDir = opts.dashboardDir === undefined ? findDashboardDir() : opts.dashboardDir;
   const app = buildApp({
     router,
     repos,
@@ -187,6 +195,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     logger: config.logger,
     orchestrator,
     live,
+    dashboardDir,
   });
 
   const port = opts.port ?? config.port;
@@ -206,6 +215,14 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       startedAt: Date.now(),
       version: REWTER_VERSION,
     });
+  }
+
+  // Said out loud, because the alternative is a 404 at the URL we just printed
+  // and no clue anywhere as to why. #16 was exactly this, minus the log line.
+  if (dashboardDir === null) {
+    app.log.warn(
+      "dashboard bundle not found — API is up, UI is not; run `pnpm build` in the checkout",
+    );
   }
 
   const reconcileNote = reconcileSummary(reconciled);
@@ -243,6 +260,26 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       db.$client.close();
     },
   };
+}
+
+/**
+ * Locate the dashboard's built bundle, or `null` if it has not been built.
+ *
+ * Resolved from this module's own location rather than `process.cwd()`: the
+ * daemon is started by launchd from `/`, by the CLI from wherever the operator
+ * happens to be standing, and by tests from the package root — a relative path
+ * would find the UI in exactly one of those. The two candidates are the
+ * workspace layout (`packages/server/dist/` → `apps/dashboard/dist`) and an
+ * installed one, where the bundle ships inside the server package.
+ */
+function findDashboardDir(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    `${here}/../../../apps/dashboard/dist`,
+    `${here}/../dashboard`,
+    `${here}/../../dashboard`,
+  ];
+  return candidates.find((dir) => existsSync(`${dir}/index.html`)) ?? null;
 }
 
 /** A one-line boot summary — what the operator needs to see and nothing secret. */

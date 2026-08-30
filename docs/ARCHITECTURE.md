@@ -1589,6 +1589,22 @@ folding all of it at once, because replay-then-live *is* that split.
 process to start and one to forget to start. In dev, `vite dev` proxies `/internal` (socket
 included) at port 20130 instead of rebuilding the bundle on every keystroke.
 
+**How it is mounted.** `@fastify/static` is registered **last**, after every `/v1` and
+`/internal` route is declared, so a file can never shadow an endpoint. Unmatched `GET`s fall
+back to `index.html` — the dashboard does its own routing, and a deep link the server has
+never heard of is the SPA's to resolve — but `/v1` and `/internal` paths are excluded from
+that fallback and still 404 as JSON, because answering a mistyped fetch with a page of HTML
+turns a 404 into a parse error inside the caller.
+
+The bundle is located from the server module's own path, not `process.cwd()`: launchd starts
+the daemon from `/`, the CLI from wherever the operator is standing, and tests from the
+package root. A missing bundle is **not** fatal — a checkout that has not run `pnpm build`
+boots a working API and logs why the UI is absent, since an operator debugging a provider
+should not be blocked on a UI they are not looking at. This was all missing until
+[#16](https://github.com/roowus/rewter/issues/16): the docs claimed static serving from the
+first commit, but nothing registered it, and the dashboard was reachable only through
+`vite dev`.
+
 **There is no fetching layer, because there is nothing to fetch.** The daemon's answer to
 "what is happening" *is* the event stream, and the fold that turns it into a task tree already
 lives in `shared`. A REST layer beside it would be a second answer to the same question, and
