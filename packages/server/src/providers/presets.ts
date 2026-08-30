@@ -250,7 +250,11 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     kind: "openai-compat",
     baseUrl: "http://localhost:11434/v1",
     apiKeyEnv: null,
-    quirks: { usageOptional: true, noStreamOptions: true },
+    // Ollama honours `stream_options.include_usage` (verified against 0.32.0),
+    // so ask for it: suppressing the request made every local call record zero
+    // tokens, which `usageOptional` then accepted without complaint (#14).
+    // `usageOptional` stays as the safety net for older builds that ignore it.
+    quirks: { usageOptional: true },
     listModels: true,
     local: true,
   },

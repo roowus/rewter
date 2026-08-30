@@ -58,6 +58,16 @@ describe("provider presets", () => {
     }
   });
 
+  it("asks local runtimes for streaming usage", () => {
+    // `usageOptional` is a safety net for upstreams that don't answer, not a
+    // reason to stop asking. Pairing it with `noStreamOptions` made every local
+    // call record zero tokens and look like a legitimately free request — the
+    // one failure `usageOptional` is designed not to complain about (#14).
+    for (const preset of PROVIDER_PRESETS.filter((p) => p.local === true)) {
+      expect(preset.quirks?.noStreamOptions).not.toBe(true);
+    }
+  });
+
   it("getPreset resolves by slug and returns undefined for unknowns", () => {
     expect(getPreset("openrouter")?.name).toBe("OpenRouter");
     expect(getPreset("ollama")?.local).toBe(true);

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -30,6 +30,26 @@ describe("loadConfig", () => {
     expect(config.port).toBe(DEFAULT_PORT);
     expect(config.providers).toEqual([]);
     expect(config.models).toEqual([]);
+  });
+
+  it("resolves the default path against the passed HOME, not the process's", () => {
+    // This test only fails on a machine that has a real ~/.rewter/config.json,
+    // which is why it went unnoticed until the M8 acceptance created one. Under
+    // launchd — or `sudo -u`, or a test — reading the invoking user's home
+    // instead of the named one loads a stranger's providers. (#15)
+    const home = mkdtempSync(join(tmpdir(), "rewter-home-"));
+    try {
+      writeFileSync(join(home, ".rewter-marker"), "x");
+      expect(loadConfig({ env: { HOME: home } }).source).toBeNull();
+
+      mkdirSync(join(home, ".rewter"));
+      writeFileSync(join(home, ".rewter", "config.json"), JSON.stringify({ port: 20177 }));
+      const loaded = loadConfig({ env: { HOME: home } });
+      expect(loaded.source).toBe(join(home, ".rewter", "config.json"));
+      expect(loaded.config.port).toBe(20177);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("reads a config file and reports its path as the source", () => {

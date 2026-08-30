@@ -39,6 +39,39 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — two bugs the acceptance kept turning up (#14, #15)
+
+Pointing the acceptance daemon at a keyless local provider (Ollama, `qwen3:4b`) so the
+remaining M7/M8 runs need no keys — and both bugs fell out of doing that rather than out of
+reading the code.
+
+**#14: every local call recorded zero tokens.** A successful streamed completion came back
+`usage: 0/0/0` while Ollama's own response reported 15/152/167. The Ollama preset carried
+`noStreamOptions: true` *and* `usageOptional: true`: the first meant rewter never asked for
+`stream_options.include_usage`, and the second then accepted the resulting zeros without
+complaint. A free-looking request is exactly the failure `usageOptional` is built not to
+notice, so nothing anywhere said a word.
+
+Ollama 0.32.0 does stream usage when asked — verified directly against the upstream before
+changing anything, which is what turned "qwen3 is odd" into "our preset is wrong". Dropped
+`noStreamOptions` from the preset; `usageOptional` stays as the net for older builds that
+ignore the request. **Live before/after: 0/0/0 → 13/214/227.** `noStreamOptions` keeps a real
+user (Perplexity's Sonar 400s on it), so the quirk itself stays; a preset test now asserts no
+*local* runtime carries it.
+
+**#15: `~` expanded against the process's home, not the passed one.** `expandPath`'s second
+argument defaults to `homedir()`, so three call sites that omitted it — the default config
+path, `dbPath`, `workspacesDir` — quietly ignored the `HOME` they were handed. Under launchd,
+under `sudo -u`, or in a test given a scratch home, that reads one operator's providers while
+opening another's database.
+
+It surfaced the moment the walkthrough left a real `~/.rewter/config.json` behind:
+`applies defaults when no config file exists` started returning that path where it expected
+`null`. Fixed by threading the resolved home explicitly, and `openRegistry` now *returns* it
+so `startDaemon` expands `workspacesDir` against the same one instead of recomputing. Swept
+for the whole class rather than the instance, which is how the two `daemon.ts` sites turned
+up at all.
+
 ### 2026-08-29 — M8 acceptance, part one: the walkthrough, run verbatim
 
 Ran the README start to finish against a scratch `HOME`, copying each block rather than

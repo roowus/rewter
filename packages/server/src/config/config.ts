@@ -148,7 +148,13 @@ export interface LoadedConfig {
 export function loadConfig(opts: LoadConfigOptions = {}): LoadedConfig {
   const env = opts.env ?? process.env;
   const explicit = opts.path ?? env.REWTER_CONFIG;
-  const path = explicit === undefined ? expandPath(DEFAULT_CONFIG_PATH) : expandPath(explicit);
+  // Expand against the *passed* HOME, not the process's. Anything else reads a
+  // different operator's config than the one the caller named — which under
+  // launchd, or a test, or `sudo -u`, is a file that has nothing to do with this
+  // run. It failed silently for as long as no real ~/.rewter/config.json existed.
+  const home = env.HOME ?? homedir();
+  const path =
+    explicit === undefined ? expandPath(DEFAULT_CONFIG_PATH, home) : expandPath(explicit, home);
 
   let raw: unknown = {};
   let source: string | null = null;

@@ -82,6 +82,12 @@ export interface OpenRegistry {
   seeded: SeedResult;
   /** The real environment with `~/.rewter/env` layered underneath. */
   env: NodeJS.ProcessEnv;
+  /**
+   * The home the env file, config and database were all resolved against —
+   * returned rather than recomputed so anything expanding a later `~` path
+   * (workspaces) lands in the same operator's directory as the rest.
+   */
+  home: string;
   /** What the env file had to say for itself — a loose mode, a bad line. */
   envWarnings: string[];
   close(): void;
@@ -110,7 +116,12 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
     opts.config ??
     loadConfig({ env, ...(opts.configPath !== undefined && { path: opts.configPath }) }).config;
 
-  const dbPath = expandPath(config.dbPath);
+  // Same home as the env file and the config were resolved with — a daemon that
+  // reads one operator's config and opens another's database is not a
+  // combination worth making possible.
+  const home = realEnv.HOME ?? homedir();
+
+  const dbPath = expandPath(config.dbPath, home);
   if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
   const db = openDb(dbPath);
   const bus = new EventBus(db);
@@ -129,6 +140,7 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
     config,
     seeded,
     env,
+    home,
     envWarnings: file.warnings,
     close() {
       db.$client.close();
@@ -137,7 +149,7 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
 }
 
 export async function startDaemon(opts: StartDaemonOptions = {}): Promise<RunningDaemon> {
-  const { db, bus, repos, config, seeded, env, envWarnings } = openRegistry(opts);
+  const { db, bus, repos, config, seeded, env, home, envWarnings } = openRegistry(opts);
 
   // Before anything can accept work, close out what the last process left
   // running. Doing it here rather than after `listen` means no request — and no
@@ -158,7 +170,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // Not created here: `openWorkspace` mkdirs the per-task directory (and its
     // parents) on the first tier-2 spawn, so a daemon that never orchestrates
     // never makes the directory.
-    workspacesDir: expandPath(config.workspacesDir),
+    workspacesDir: expandPath(config.workspacesDir, home),
     maxTurns: config.orchestrator.maxTurns,
     maxHandoffs: config.orchestrator.maxHandoffs,
     defaultSettings: {

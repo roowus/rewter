@@ -633,6 +633,15 @@ Two semantics are load-bearing and easy to get wrong, so they are spelled out he
 | `maxCompletionTokens` | send `max_completion_tokens` instead of the legacy `max_tokens` |
 | `noStreamOptions` | omit `stream_options: {include_usage: true}` — some servers 400 on it |
 
+**The two usage quirks must not be paired.** `usageOptional` is a safety net for an
+upstream that does not answer; `noStreamOptions` is a reason to stop asking. Setting both —
+as the Ollama preset once did — means rewter never requests streaming usage, and then
+accepts the resulting zeros without complaint. Every local call recorded 0 tokens and looked
+like a legitimately free request, which is the one failure `usageOptional` is designed not to
+notice ([#14](https://github.com/roowus/rewter/issues/14)). Local runtimes keep
+`usageOptional` for older builds that ignore the request, and a preset test asserts none of
+them carries `noStreamOptions`.
+
 **Gemini's finish reason is a lie.** Gemini reports `STOP` even when the turn is entirely
 function calls — its wire has no `tool_calls` value. The adapter therefore lets a *seen*
 function call outrank a plain `STOP` and normalizes to `finishReason: "tool_calls"`, so the
@@ -883,6 +892,15 @@ verbatim). The strip is string-aware, because every `baseUrl` contains a `//` an
 would truncate the value into a parse error pointing at the wrong place; comment bodies are
 blanked rather than deleted so byte offsets, and therefore the excerpt `JSON.parse` quotes
 back in its error, still match the file on disk.
+
+**A leading `~` expands against the passed `HOME`, never the process's.** The config path,
+`dbPath` and `workspacesDir` are all resolved against one home, computed once in
+`openRegistry` and returned on its result so `startDaemon` cannot pick a different one.
+Defaulting to `homedir()` at each call site — which is what the code did until
+[#15](https://github.com/roowus/rewter/issues/15) — means that under launchd, under
+`sudo -u`, or in a test handed a scratch `HOME`, the daemon reads one operator's providers
+while opening another's database. It failed silently for exactly as long as no real
+`~/.rewter/config.json` existed on the machine.
 
 ```jsonc
 {
