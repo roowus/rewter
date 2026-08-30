@@ -34,6 +34,8 @@ import {
   type Provider,
   type ProviderTestResult,
   REWTER_VERSION,
+  RunTaskRequestSchema,
+  type RunTaskResult,
   SocketClientMessageSchema,
   type SocketServerMessage,
   type StreamChunk,
@@ -59,7 +61,11 @@ import type { ZodError } from "zod";
 import { computeCost } from "../costs/compute.js";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
-import { type Orchestrator, OrchestratorError } from "../orchestrator/engine.js";
+import {
+  type Orchestrator,
+  OrchestratorError,
+  type StartedOrchestration,
+} from "../orchestrator/engine.js";
 import { type LiveTask, LiveTaskIndex, conversationKey } from "../orchestrator/live.js";
 import { type ApprovalCommand, parseSteering } from "../orchestrator/steering.js";
 import { collectStream } from "../providers/collect.js";
@@ -750,6 +756,106 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       costUsd: cost.incomplete ? null : cost.totalUsd,
       latencyMs: Math.max(0, clock() - startedAt),
     } satisfies ChatTestResult);
+  });
+
+  // ── Run a task from here ──────────────────────────────────────────────────
+  /**
+   * Start an orchestration with no client involved — survey shortlist item 7.
+   *
+   * The whole route is four lines of work wrapped in the reasons it is not
+   * three. It builds a one-message conversation, hands it to the same
+   * `orchestrator.start` the chat route uses, registers the result with the
+   * `LiveTaskIndex`, and returns the id.
+   *
+   * **It returns before the task runs, and that is the design.** The dashboard
+   * is already folding every event this task will emit; a route that awaited
+   * the answer would hold a socket open for minutes to deliver a second copy of
+   * something the tree is about to show anyway — and would kill the task if the
+   * browser tab closed. Started, watched, and answered are three different
+   * moments, and only the first one is an HTTP response.
+   *
+   * **It registers with the live index**, which is what makes the task survive
+   * this request. Registration also has two side effects worth stating: a
+   * client that later POSTs a conversation whose prefix hashes the same way can
+   * *adopt* this task and steer it, and the grace timer cannot fire, because
+   * that timer is started by the last subscriber leaving and this task never
+   * has one. A dashboard-started task therefore runs to completion or until
+   * something cancels it — the kill button, the budget ceiling, shutdown —
+   * exactly like a client task whose user walked away.
+   *
+   * **It refuses a concrete model**, the mirror of `chat-test` refusing an
+   * orchestrator: a task row wrapped around a single completion is not what
+   * either button is for, and the two errors point at each other.
+   */
+  app.post("/internal/run", async (req, reply) => {
+    const parsed = RunTaskRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: { message: `invalid request: ${issues(parsed.error)}` } });
+    }
+    const { prompt, model, settings } = parsed.data;
+
+    if (!isOrchestratorModel(model)) {
+      return reply.code(400).send({
+        error: {
+          message: `${model} is a single model — use auto/orchestrator here, or the chat tester for one completion`,
+        },
+      });
+    }
+    if (orchestrator === null) {
+      return reply.code(501).send({ error: { message: new OrchestratorUnavailable().message } });
+    }
+
+    const conversation: ChatMessage[] = [{ role: "user", content: prompt }];
+    let box: LiveTask | null = null;
+    let started: StartedOrchestration;
+    try {
+      // Eager, like the chat route: a pin naming a model that does not exist,
+      // or a registry with nothing that can lead, throws here — while a JSON
+      // error is still possible to send.
+      started = orchestrator.start({
+        conversation,
+        requestedModel: model,
+        // Spread field by field rather than passed whole: under
+        // `exactOptionalPropertyTypes` an explicit `autoApprove: undefined` is
+        // not the same as an absent one, and only the absent one falls through
+        // to the daemon's configured default — which is what omitting a field
+        // in the form is asking for.
+        settings: {
+          ...(settings?.maxSpendUsd !== undefined && { maxSpendUsd: settings.maxSpendUsd }),
+          ...(settings?.autoApprove !== undefined && { autoApprove: settings.autoApprove }),
+          ...(settings?.concurrency !== undefined && { concurrency: settings.concurrency }),
+        },
+        steering: () => box?.drainSteering() ?? [],
+      });
+    } catch (err) {
+      return reply
+        .code(statusForOrchestratorError(err))
+        .send({ error: { message: (err as Error).message, type: errorTypeFor(err) } });
+    }
+
+    box = live.register({
+      taskId: started.taskId,
+      key: conversationKey(conversation),
+      abort: started.abort,
+      source: started.stream,
+    });
+
+    // Read back rather than echoed: the engine resolved the initiator and
+    // merged three layers of settings, and the row is the only place those
+    // answers exist. `start` writes it before returning, so a miss here is not
+    // a race — it is the row being gone, which is worth a 500 rather than a
+    // 202 carrying the request's own words back as if they were facts.
+    const task = repos.getTask(started.taskId);
+    if (task === undefined) {
+      return reply.code(500).send({ error: { message: `task ${started.taskId} was not written` } });
+    }
+    return reply.code(202).send({
+      taskId: started.taskId,
+      title: task.title,
+      initiatorModelId: task.initiatorModelId,
+    } satisfies RunTaskResult);
   });
 
   // ── Registry ──────────────────────────────────────────────────────────────

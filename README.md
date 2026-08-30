@@ -405,6 +405,16 @@ anyone meant. The reply says which of two things happened: a *running* task took
 or the row was saved with nothing executing under it. The number on screen doesn't move until
 the daemon says it did.
 
+Expand "run" to start an orchestration from the page rather than from a client. Type the
+task, optionally pin who leads and what it may spend, press Run — and the panel tells you one
+thing, which model ended up leading, because the task tree below is already showing you
+everything else. It answers as soon as the task has an id rather than waiting for the answer,
+so the run is not tied to the tab: close the browser and it keeps going, and the progress,
+approvals, spend and final answer all arrive in the tree the same way they do for a task
+started from Claude Code. Leaving the budget blank inherits whatever the daemon is configured
+with; the word `uncapped` removes the cap. Asking it for a plain model gets you pointed at
+the Test button above, which is the thing that wants one.
+
 (If you are working on the dashboard itself, run `pnpm --filter @rewter/dashboard dev`
 instead and use :5273, which proxies back here rather than rebuilding the bundle on every
 keystroke.)

@@ -14,3 +14,4 @@ export * from "./chat.js";
 export * from "./openai.js";
 export * from "./anthropic.js";
 export * from "./translate.js";
+export * from "./run.js";

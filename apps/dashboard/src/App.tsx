@@ -14,6 +14,7 @@ import { HealthPanel } from "./HealthPanel.js";
 import { ProvidersPanel } from "./ProvidersPanel.js";
 import { ReadinessCard } from "./ReadinessCard.js";
 import { RegistryPanel } from "./RegistryPanel.js";
+import { RunPanel } from "./RunPanel.js";
 import { TaskTree } from "./TaskTree.js";
 import { TranslatePanel } from "./TranslatePanel.js";
 import { useDashboard } from "./store.js";
@@ -103,6 +104,12 @@ export function App(): JSX.Element {
       {/* Also collapsed: the raw log is the inspection view — expanded when
           someone wants to know exactly what the daemon did, in order. */}
       <EventsPanel />
+
+      {/* Directly above the tree, because the tree is where its output goes:
+          the task this starts appears in the next rows down, and the panel
+          deliberately shows nothing of it beyond a name. Collapsed, unlike the
+          reporting panels — it is the one control on the page that spends. */}
+      <RunPanel />
 
       {/* The empty state earns its space by saying whether a task *could* run,
           not just that none has. Once one has, the question is answered by

@@ -456,8 +456,15 @@ If we implement from this survey, roughly in value order:
    and reports `applied` so "a running task changed course" is never claimed for what was
    only a row write. `null` removes the cap, `0` is refused everywhere, and the control is
    absent on a terminal task. See ARCHITECTURE.md → "Moving the cap".
-7. **Run-a-task-from-the-dashboard** — the "test run" affordance; today every task must come
-   from a client.
+7. ~~**Run-a-task-from-the-dashboard** — the "test run" affordance; today every task must
+   come from a client.~~ **Done** (2026-08-30). `POST /internal/run` answers 202 with an id
+   rather than a result — the answer arrives as events, in the fold the dashboard is already
+   running, so the row on screen stays the daemon's. It registers with the `LiveTaskIndex`,
+   which is what makes the task outlive the request (and lets a client adopt it later); a
+   task nobody subscribes to never starts the disconnect grace timer, so it is not on a
+   clock. It refuses a concrete model and points at the chat tester, the mirror of that
+   route refusing an orchestrator. See ARCHITECTURE.md → "Starting a task from the
+   dashboard".
 8. **Shutdown button** behind a confirm modal; a header liveness dot; a "Local Mode" footer.
 9. **Registry export/import** — models + cards + overrides only, never `apiKeyRef` values.
 

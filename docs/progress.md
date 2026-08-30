@@ -32,6 +32,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7e | Costs: `GET /internal/costs` + the spend panel | ✅ 2026-08-28 |
 | M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
 | M7g | Budget: `POST /internal/tasks/:id/settings` + the cap control | ✅ 2026-08-30 |
+| M7h | Run: `POST /internal/run` + the run panel | ✅ 2026-08-30 |
 | M7 | *acceptance: approve from the browser while the stream runs* | ✅ 2026-08-29 |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
@@ -41,6 +42,45 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 **Phase 1 is complete — every milestone's acceptance has been run live.**
 
 ## Log
+
+### 2026-08-30 — starting a task from the dashboard (survey item 7)
+
+Everything on `/internal` reported on tasks that already existed, and every task came from a
+client. `POST /internal/run` makes one. It is the counterpart to `chat-test` and the two
+refuse each other's model strings: that route is one model, one completion, bill attached;
+this one is an orchestration, a task row, results by event. Each 400 names the other, because
+"use the chat tester" is the whole answer someone pressed the button to get.
+
+It answers **202 with an id**, not a result. The dashboard is already folding every event the
+task will emit, so returning the answer would hand back a second copy of the fold that could
+disagree with the first — and awaiting it would tie the task's life to a browser tab. What
+comes back is only what this side could not compute: the title the engine derived and the
+initiator the registry picked.
+
+Registering with the `LiveTaskIndex` is what buys survival past the request, and it turned out
+to be free: the 30-second disconnect grace timer is started by the **last subscriber leaving**,
+so a task nobody ever subscribed to never starts one. That is easy to state and easy to get
+wrong, so a test lets a run finish to `succeeded` with no SSE stream ever opened. Registration
+also means a client that later re-POSTs the same conversation can adopt and steer it.
+
+Two things were fixed rather than papered over while writing the tests. `prompt` was
+`z.string().min(1)`, which a textarea holding a stray newline passes — it is now `.trim()`ed
+in the schema, so a whitespace prompt is refused rather than starting a task with a blank
+title. And a pin naming a model that does not exist answers **404**, not 400: the route
+delegates to the same `statusForResolveError` the chat routes use, and inventing a second
+vocabulary for the same mistake would be one more thing to learn. Nothing is written on that
+path — `start()`'s eager half throws before the generator, which is also the only window in
+which a status code is still sendable.
+
+The panel is collapsed by default and sits directly above the tree, because the tree is where
+its output goes. The Run button is `disabled` on an empty prompt rather than validating on
+click; a stray click starting an unbounded fan-out is the failure worth designing against.
+The budget box keeps three meanings distinct all the way to the wire — blank inherits the
+daemon's configured default, the word `uncapped` sends `null`, `0` is refused on both sides —
+because the engine layers request over configured over schema, and a form posting absent
+fields as present would silently overwrite the daemon's configuration with the schema's.
+
+32 new tests (12 route, 13 client, 7 panel); 1584 green.
 
 ### 2026-08-30 — moving the cap (survey item 6: the budget UI)
 

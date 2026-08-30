@@ -1578,10 +1578,13 @@ done-pattern) so any CLI harness is addable by config.
   (a catalog read against the real upstream; every upstream failure is a **200 carrying a
   verdict**, 404 only for a provider rewter does not have — see
   [Readiness](#readiness-would-this-thing-actually-answer)) — `POST /internal/translate`
-  (all three stages of a request, sending nothing) and `POST /internal/chat-test` (the one
-  `/internal` route that **does** spend, bounded and itemised — see
-  [What the model actually receives](#what-the-model-actually-receives)) — and
-  `WS /internal/ws` (see below).
+  (all three stages of a request, sending nothing), `POST /internal/chat-test` (one real
+  completion from one model, bounded and itemised — see
+  [What the model actually receives](#what-the-model-actually-receives)),
+  `POST /internal/run` (starts an **orchestration**; 202 with an id, results arrive as
+  events — see [Starting a task from the dashboard](#starting-a-task-from-the-dashboard-m7h))
+  — and `WS /internal/ws` (see below). The last two are the two routes on `/internal` that
+  spend, and each refuses the other's model string.
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -2320,6 +2323,62 @@ POST the daemon refused leaves the old cap visible, which is true. `FoldedTask` 
 carries the whole `Task`, so *displaying* the cap needed no new plumbing; only setting it did.
 The control is absent on a terminal task for the same reason `Kill` is: offering it would be
 offering the 409. The cap itself still shows, because it is history worth reading.
+
+### Starting a task from the dashboard (M7h)
+
+Every other route on `/internal` reports on tasks that already exist; every task itself came
+from a client. `POST /internal/run` is the one that makes one, and it is the counterpart to
+[`chat-test`](#what-the-model-actually-receives): that route is *one model, one completion,
+bill attached*, this one is *an orchestration, a task row, results by event*. Neither wants
+to be the other's cheap version, so **each refuses the other's model string** — a concrete
+model here is a 400 pointing at the chat tester, and `auto/orchestrator` there is a 400
+pointing back — and the refusal names the route that does want it, because "use the chat
+tester" is the entire answer someone pressed the button to get.
+
+**It answers 202 with an id, not a result.** The task is started and the request is done.
+Awaiting the answer would tie the task's life to a browser tab and would hand back a second
+copy of something the dashboard already has: the socket is folding every event this task will
+emit, so the row on screen is the daemon's, not a local optimistic one that could disagree
+with it. What comes back is only what the caller could not compute — the title the engine
+derived and the initiator the registry picked.
+
+**Registration is what makes it outlive the request**, and it is free. `live.register(...)`
+would elsewhere put a task on the 30-second disconnect clock, but that timer is started by
+`LiveTask.subscribe`'s `finally` — by the **last subscriber leaving**. A task nobody ever
+subscribed to has therefore never started one, and a dashboard-started run is not on a clock
+at all. The test that pins this simply lets a run finish with no SSE stream ever opened.
+Registering also means a client that later re-POSTs the same conversation can adopt and steer
+it, which is the whole point of the index and costs nothing extra here.
+
+**A refused run leaves no row behind.** `Orchestrator.start()` writes the task row eagerly, so
+a bad initiator pin throws in the half of `start` that runs before the generator — the only
+window in which a status code is still sendable — and nothing is written. The status is the
+registry's own 404 for a name it does not know, the same one the chat routes give: a second
+vocabulary for the same mistake would be one more thing to learn.
+
+**The three meanings of an empty budget box.** Blank is *say nothing* and inherits whatever
+the daemon is configured with; the word `uncapped` sends `null` and clears it; `0` is refused
+on both sides, because the dangerous reading is "no limit" and nobody types the other one on
+purpose. This matters because the engine layers request over configured over schema, so a form
+that posted absent fields as present would silently overwrite the daemon's configuration with
+the schema's — hence `parseBudget` returning `undefined | null | number` and the client
+omitting `settings` entirely when nothing was chosen. `prompt` is `z.string().trim().min(1)`:
+a textarea holding a stray newline is refused here rather than starting a task whose title is
+blank.
+
+**`workspaceDir` is deliberately not exposed.** A filesystem path typed into a web form is a
+different feature with a different threat model, and the panel is a "try an orchestration"
+control, not a project launcher.
+
+**The panel** (`src/RunPanel.tsx`) is collapsed by default and sits directly above the tree,
+because the tree is where its output goes. It is the only reporting-adjacent panel that starts
+collapsed, for the reason its button is drawn with the accent border: it is the one control on
+the page that spends *unboundedly*. The Run button is `disabled` on an empty prompt rather than
+validating on click — a stray click starting a fan-out is the failure worth designing against.
+On success it shows one terse line naming the initiator and nothing else, and it clears the
+prompt but keeps the settings, since the next thing anyone does here is the same run worded
+differently. The pin dropdown fills from the registry, and a registry that will not load does
+not take the form with it: the empty pin is the common case and needs no list at all.
 
 ## Design docs
 

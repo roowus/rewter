@@ -1269,3 +1269,125 @@ button.kill:disabled {
   font-size: 0.82rem;
   color: var(--dim);
 }
+
+/* ── run ────────────────────────────────────────────────────────────── */
+
+/* The one control on the page that starts work, so it is drawn as a panel
+   like its neighbours rather than as a hero: the tree below it is still the
+   thing being looked at, and a prompt box that dominated the page would
+   change what this dashboard is for. */
+.run {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.run-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.run-head h2 {
+  font-size: 0.8rem;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.run-head button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.run-form {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+
+.run-form label {
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+
+.run-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+/* The settings sit on one line under the prompt, in the order they are
+   decided: who leads, what it may spend, whether it may act unattended. The
+   Run button is last because it is the consequence of the three. */
+.run-settings {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.run-settings select,
+.run-settings input[type="text"],
+.run-settings input:not([type]) {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.run-settings input:not([type]) {
+  width: 9rem;
+}
+
+.run-check {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Accented rather than neutral, unlike every other button in a panel header:
+   this one spends money, and the affordance should not read as "expand". */
+.run-settings button {
+  margin-left: auto;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.9rem;
+  cursor: pointer;
+}
+
+.run-settings button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  border-color: var(--line);
+  color: var(--dim);
+}
+
+.run-started {
+  margin: 0.6rem 0 0;
+  font-size: 0.82rem;
+}
