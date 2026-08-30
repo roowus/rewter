@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clockTime, duration, elapsed, shortModelId, usd } from "./format.js";
+import { bytes, clockTime, duration, elapsed, shortModelId, usd } from "./format.js";
 
 describe("usd", () => {
   it("keeps digits on the amounts orchestration actually spends", () => {
@@ -54,5 +54,19 @@ describe("shortModelId", () => {
 describe("clockTime", () => {
   it("includes seconds so two events in one minute are different lines", () => {
     expect(clockTime(1_756_252_800_000)).toMatch(/\d{1,2}:\d{2}:\d{2}/);
+  });
+});
+
+describe("bytes", () => {
+  it("scales the unit to the magnitude", () => {
+    expect(bytes(512)).toBe("512 B");
+    expect(bytes(421_888)).toBe("412 KB");
+    expect(bytes(1.44 * 1024 * 1024)).toBe("1.4 MB");
+  });
+
+  it("keeps a decimal where the difference between neighbours matters", () => {
+    // Two SQLite files a tenth of a MB apart should not both read "1 MB".
+    expect(bytes(1.06 * 1024 * 1024)).toBe("1.1 MB");
+    expect(bytes(1.42 * 1024 * 1024)).toBe("1.4 MB");
   });
 });

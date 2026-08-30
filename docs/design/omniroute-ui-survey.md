@@ -414,7 +414,9 @@ If we implement from this survey, roughly in value order:
 
 1. **Health / status panel** — uptime, version, port, DB path + size, provider and
    enabled-model counts, latency percentiles. Everything but the percentiles is already known
-   to the daemon and shown nowhere.
+   to the daemon and shown nowhere. **DONE 2026-08-29** — `DaemonHealthSchema` +
+   `HealthPanel`, percentiles deliberately omitted (nothing is instrumented; see
+   ARCHITECTURE.md → Health).
 2. **Event-log table** — filter by task / payload type / time, toggleable columns, count
    summary. rewter's log is its best asset and is currently only readable as a tree.
 3. **Time-range control on costs** (1D/7D/30D/All) + three or four honest stat cards.

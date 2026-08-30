@@ -47,6 +47,17 @@ export function clockTime(ts: number): string {
 }
 
 /**
+ * `512 B`, `412 KB`, `1.4 MB` — the size question is "roughly how much", so
+ * binary-vs-decimal prefixes are not worth the reader's attention; 1024 it is.
+ */
+export function bytes(size: number): string {
+  if (size < 1024) return `${Math.round(size)} B`;
+  if (size < 1024 ** 2) return `${(size / 1024).toFixed(0)} KB`;
+  if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} MB`;
+  return `${(size / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/**
  * Provider-qualified ids are long and the provider half repeats down a column,
  * so the model name carries the information: `anthropic/claude-sonnet-5` reads
  * as `claude-sonnet-5`. Kept as a function rather than inlined because the

@@ -196,6 +196,57 @@ pre,
   color: var(--dim);
 }
 
+/* ── daemon health ─────────────────────────────────────────────────── */
+
+.health {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.health h2 {
+  font-size: 0.8rem;
+  margin: 0 0 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+/* Facts, not a table: each pair stands alone and the grid keeps them scannable
+   on a narrow window without horizontal scrolling. */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.4rem 1.5rem;
+  margin: 0;
+}
+
+.fact dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+.fact dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.pending {
+  color: var(--warn);
+}
+
+.behind {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: var(--warn);
+}
+
 /* ── registry ───────────────────────────────────────────────────────── */
 
 .registry {

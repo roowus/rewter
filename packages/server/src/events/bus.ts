@@ -11,7 +11,7 @@ import {
   type NewEvent,
   NewEventSchema,
 } from "@rewter/shared";
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, count, eq, gt, max } from "drizzle-orm";
 import type { Db } from "../db/connection.js";
 import { events } from "../db/schema.js";
 
@@ -52,6 +52,22 @@ export class EventBus {
   subscribe(listener: EventListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * How much log there is, without reading any of it.
+   *
+   * `lastSeq` is `MAX(seq)` rather than the count: AUTOINCREMENT never reuses a
+   * number, so once anything is deleted the two diverge, and the cursor a
+   * dashboard compares itself against is the max. Both are one indexed scan, so
+   * the health route can answer them on every poll.
+   */
+  stats(): { count: number; lastSeq: number } {
+    const row = this.db
+      .select({ count: count(), lastSeq: max(events.seq) })
+      .from(events)
+      .get();
+    return { count: row?.count ?? 0, lastSeq: row?.lastSeq ?? 0 };
   }
 
   /** Replay: all events with seq > afterSeq, in seq order. */

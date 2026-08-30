@@ -95,9 +95,25 @@ export interface OpenRegistry {
    * (workspaces) lands in the same operator's directory as the rest.
    */
   home: string;
+  /** The database file actually opened, `~` already expanded. */
+  dbPath: string;
   /** What the env file had to say for itself — a loose mode, a bad line. */
   envWarnings: string[];
   close(): void;
+}
+
+/**
+ * Facts `/internal/health` reports that the app cannot work out for itself.
+ *
+ * A mutable object rather than constructor arguments because one of them is not
+ * knowable yet: the bound URL exists only after `listen()` resolves port 0, and
+ * the app has to be built before it can listen. Handing the route a reference it
+ * reads per request closes that circle without a second `buildApp` call.
+ */
+export interface RuntimeFacts {
+  startedAt: number;
+  dbPath: string;
+  url: string | null;
 }
 
 /**
@@ -148,6 +164,7 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
     seeded,
     env,
     home,
+    dbPath,
     envWarnings: file.warnings,
     close() {
       db.$client.close();
@@ -156,7 +173,7 @@ export function openRegistry(opts: OpenRegistryOptions = {}): OpenRegistry {
 }
 
 export async function startDaemon(opts: StartDaemonOptions = {}): Promise<RunningDaemon> {
-  const { db, bus, repos, config, seeded, env, home, envWarnings } = openRegistry(opts);
+  const { db, bus, repos, config, seeded, env, home, dbPath, envWarnings } = openRegistry(opts);
 
   // Before anything can accept work, close out what the last process left
   // running. Doing it here rather than after `listen` means no request — and no
@@ -187,6 +204,10 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   });
   const live = new LiveTaskIndex();
   const dashboardDir = opts.dashboardDir === undefined ? findDashboardDir() : opts.dashboardDir;
+  // `url` is filled in below, once `listen` has resolved port 0 into a number.
+  // The health route reads this object per request rather than closing over a
+  // value, which is what lets it be built before the socket exists.
+  const runtime: RuntimeFacts = { startedAt: Date.now(), dbPath, url: null };
   const app = buildApp({
     router,
     repos,
@@ -196,6 +217,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     orchestrator,
     live,
     dashboardDir,
+    runtime,
   });
 
   const port = opts.port ?? config.port;
@@ -203,6 +225,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   const address = app.server.address();
   const boundPort = typeof address === "object" && address !== null ? address.port : port;
   const url = `http://${config.host}:${boundPort}`;
+  runtime.url = url;
   orchestrator.setDashboardUrl(url);
 
   // Written after `listen`, never before: the file's whole purpose is to tell

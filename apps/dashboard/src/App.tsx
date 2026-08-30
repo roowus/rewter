@@ -9,6 +9,7 @@
 import { tasksInOrder } from "@rewter/shared";
 import { useEffect, useState } from "react";
 import { CostsPanel } from "./CostsPanel.js";
+import { HealthPanel } from "./HealthPanel.js";
 import { RegistryPanel } from "./RegistryPanel.js";
 import { TaskTree } from "./TaskTree.js";
 import { useDashboard } from "./store.js";
@@ -70,6 +71,10 @@ export function App(): JSX.Element {
           trimmed, or this feed started partway through.
         </p>
       )}
+
+      {/* Above the tree: the daemon's own facts — uptime, registry reachability,
+          database footprint, approvals parked. Facts it already knew. */}
+      <HealthPanel now={now} />
 
       {/* Above the tree: it is the daemon's whole spend, including the
           pass-through traffic no task in the tree accounts for. */}

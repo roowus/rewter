@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelIdSchema, TaskSettingsSchema, newTaskId } from "@rewter/shared";
+import { DaemonHealthSchema, ModelIdSchema, TaskSettingsSchema, newTaskId } from "@rewter/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "./config/config.js";
 import { type RunningDaemon, bootSummary, startDaemon } from "./daemon.js";
@@ -37,6 +37,19 @@ describe("startDaemon", () => {
     const res = await fetch(`${d.url}/internal/health`);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: "ok" });
+  });
+
+  it("serves health with the real runtime facts, not the app's fallbacks", async () => {
+    // The fallbacks (url: null, db path "unknown") are for injected apps; a
+    // booted daemon must know both, because an operator reading the dashboard
+    // is reading them to point curl at the right socket and du at the right file.
+    const d = await boot();
+    const health = DaemonHealthSchema.parse(await (await fetch(`${d.url}/internal/health`)).json());
+    expect(health.url).toBe(d.url);
+    expect(health.db.path).toBe(join(dir, "nested", "rewter.db"));
+    expect(health.db.sizeBytes).not.toBeNull();
+    expect(health.startedAt).toBeGreaterThan(0);
+    expect(health.uptimeMs).toBeGreaterThanOrEqual(0);
   });
 
   it("creates the database directory if it does not exist", async () => {

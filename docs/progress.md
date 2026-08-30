@@ -41,6 +41,46 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — the daemon tells you about itself (survey item 1: health)
+
+First dashboard item off the [OmniRoute UI survey](design/omniroute-ui-survey.md) shortlist,
+which called it the biggest single gap: the daemon knew its uptime, its URL, how much of the
+registry was enabled, its database's footprint, and whether anything was parked on an
+approval gate — and showed none of it. `GET /internal/health` grew from the M8 liveness
+probe into a full ops summary (`DaemonHealthSchema`, in `shared`), and the dashboard got a
+facts strip above the spend.
+
+The parts that were decisions rather than plumbing:
+
+- **The M8 fields stayed frozen.** `status`/`version`/`models`/`providers` are what
+  `rewter status` reads to decide the thing on the port is rewter, so an older CLI must
+  still recognise a newer daemon — `models`/`providers` stay the *enabled* counts and the
+  totals moved into a new `registry` object. While testing this I initially assumed a
+  disabled provider also disabled its model rows; it does not (that's a routing concern,
+  not a registry one), and the enabled/total splits are shown separately precisely because
+  they diverge.
+- **No latency row.** Nothing in rewter times a request, and a percentile computed from
+  worker-run timings would be orchestration latency wearing a router's label. A blank row
+  is honest; a plausible one is not. Circuit-breaker state is absent for the same reason.
+- **The db size sums the WAL sidecars.** A busy daemon's main file can sit unchanged for
+  hours while `-wal` grows — a main-file-only number answers "is this getting big?" with a
+  confident no at exactly the wrong moment. `:memory:` and a vanished file both report
+  `null` rather than 500ing.
+- **`lastSeq` is `MAX(seq)`, not `COUNT(*)`.** AUTOINCREMENT never reuses a number, so the
+  two diverge after any deletion — and the max is the cursor a replaying dashboard compares
+  itself against. The panel uses exactly that comparison to say "catching up, N events
+  behind" when the daemon's log is ahead of the fold, because replay lag is otherwise
+  invisible and a task not on screen yet is not finished either.
+- **The URL arrives after `listen`, but the app is built before it.** A mutable
+  `RuntimeFacts` object the route dereferences per request closes that without a second
+  `buildApp`; `startDaemon` fills in `url` one line after `listen()` resolves port 0. And
+  `uptimeMs` is measured from that boot, not `process.uptime()` — under a launchd
+  KeepAlive restart the two differ by exactly the interval an operator is trying to notice.
+
+The panel follows the costs panel's rules (schema-parsed, keep-last-good-on-failure, tick
+refetch) and adds a slow 10s interval — its facts move without the socket when the socket
+is down or the traffic is pass-through. 1392 tests green. Survey shortlist: 1 down, 8 to go.
+
 ### 2026-08-29 — 28 upstreams → 75, every one of them dialled
 
 The other half of the OmniRoute request: *"copy over some code from omnirouter to support so

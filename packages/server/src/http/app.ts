@@ -5,7 +5,7 @@
  * Built as a factory returning an un-listened instance so tests can drive it
  * through `app.inject()` — no ports, no teardown races.
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
@@ -18,6 +18,7 @@ import {
   type ChatMessage,
   type ChatResponse,
   CostGroupBySchema,
+  type DaemonHealth,
   ModelCreateSchema,
   ModelPatchSchema,
   type OpenAIChatChunk,
@@ -25,6 +26,7 @@ import {
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  REWTER_VERSION,
   SocketClientMessageSchema,
   type SocketServerMessage,
   type StreamChunk,
@@ -87,6 +89,19 @@ export interface AppOptions {
    * dashboard is missing instead of refusing to start over it.
    */
   dashboardDir?: string | null;
+  /**
+   * Facts about the process, for `/internal/health`. The app cannot know these:
+   * the database path is resolved during boot, and "started at" means the moment
+   * the port was bound, which happens after the app is built. Absent, health
+   * still answers — with `url: null`, an unknown db path and this instant as the
+   * start time, which is what a test injecting an app has anyway.
+   */
+  runtime?: {
+    startedAt?: number;
+    dbPath?: string;
+    /** Set after `listen()`, once port 0 has resolved to a real number. */
+    url?: string | null;
+  };
 }
 
 /** The header carrying the task id back to the client, and back to us. */
@@ -98,6 +113,8 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   const { router, repos } = opts;
   const orchestrator = opts.orchestrator ?? null;
   const live = opts.live ?? new LiveTaskIndex();
+  /** Fallback for `runtime.startedAt`: an injected app's age is its own. */
+  const bootedAt = clock();
 
   /**
    * Turn an orchestrator request into a stream to write, resolving it against
@@ -431,12 +448,55 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   });
 
   // ── /internal ─────────────────────────────────────────────────────────────
-  app.get("/internal/health", async () => ({
-    status: "ok",
-    version: process.env.npm_package_version ?? "0.1.0",
-    models: repos.listModels({ enabledOnly: true }).length,
-    providers: repos.listProviders({ enabledOnly: true }).length,
-  }));
+  /**
+   * Liveness *and* the ops summary, from one route.
+   *
+   * The first four fields are load-bearing: `service/control.ts` has read
+   * `status`/`version`/`models`/`providers` since M8 to decide whether the thing
+   * on the port is rewter, so their names and meanings are frozen — `models` and
+   * `providers` stay the *enabled* counts, and the totals live under `registry`.
+   * Everything after them is new, and every one of it is something the process
+   * already knew and displayed nowhere.
+   *
+   * Cheap enough to poll: five indexed counts and a `stat`. Nothing here reads a
+   * payload or walks the event log.
+   */
+  app.get("/internal/health", async () => {
+    const providersAll = repos.listProviders();
+    const modelsAll = repos.listModels();
+    const modelsEnabled = modelsAll.filter((m) => m.enabled).length;
+    const providersEnabled = providersAll.filter((p) => p.enabled).length;
+    const dbPath = opts.runtime?.dbPath ?? "unknown";
+    const startedAt = opts.runtime?.startedAt ?? bootedAt;
+
+    const health: DaemonHealth = {
+      status: "ok",
+      version: REWTER_VERSION,
+      models: modelsEnabled,
+      providers: providersEnabled,
+      // Not `process.uptime()`: that is the runtime's age, and under a launchd
+      // KeepAlive restart the two differ by exactly the interval an operator is
+      // trying to notice.
+      uptimeMs: Math.max(0, clock() - startedAt),
+      startedAt,
+      pid: process.pid,
+      url: opts.runtime?.url ?? null,
+      registry: {
+        providersTotal: providersAll.length,
+        providersEnabled,
+        modelsTotal: modelsAll.length,
+        modelsEnabled,
+        cards: repos.listCards().length,
+      },
+      db: { path: dbPath, sizeBytes: dbSizeBytes(dbPath) },
+      events: opts.bus.stats(),
+      tasks: {
+        running: repos.listUnfinishedTasks().filter((t) => t.status === "running").length,
+        pendingApprovals: repos.listPendingApprovals().length,
+      },
+    };
+    return health;
+  });
 
   app.get("/internal/providers", async () =>
     // Only the env var *name* is ever stored, so this is safe to serve as-is.
@@ -998,6 +1058,33 @@ function toAnthropicResponse(
     stop_sequence: null,
     usage: toAnthropicUsage(result.usage),
   };
+}
+
+/**
+ * The database's footprint on disk, sidecars included.
+ *
+ * WAL mode keeps recent writes in `-wal` until a checkpoint folds them back, so
+ * a busy daemon's main file can sit unchanged while the sidecar grows for hours.
+ * Reporting the main file alone would answer "is this getting big?" with a
+ * confident no at exactly the moment it is.
+ *
+ * `null` for `:memory:`, and `null` rather than a throw if the file has gone:
+ * an ops panel that 500s because it could not stat something is worse than one
+ * that says it does not know.
+ */
+function dbSizeBytes(path: string): number | null {
+  if (path === ":memory:" || path === "unknown") return null;
+  let total = 0;
+  let found = false;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      total += statSync(`${path}${suffix}`).size;
+      found = true;
+    } catch {
+      // A missing sidecar is normal — they exist only while WAL is active.
+    }
+  }
+  return found ? total : null;
 }
 
 /**

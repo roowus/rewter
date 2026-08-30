@@ -4,6 +4,10 @@
  * this", so they assert on raw bytes for the streaming path rather than on
  * parsed objects.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DaemonHealthSchema, REWTER_VERSION } from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db, openDb } from "../db/connection.js";
@@ -441,6 +445,86 @@ describe("/internal", () => {
       models: 1,
       providers: 1,
     });
+  });
+
+  it("answers the full DaemonHealth contract, parsed with the shared schema", async () => {
+    // The schema is the contract; parsing (not casting) is the proof the route
+    // cannot drift from what the dashboard and CLI import.
+    setup([[]]);
+    const res = await app.inject({ method: "GET", url: "/internal/health" });
+    const health = DaemonHealthSchema.parse(res.json());
+    expect(health).toMatchObject({
+      status: "ok",
+      version: REWTER_VERSION,
+      // An injected app has no runtime facts: url unknown, db unknown, and
+      // sizeBytes null rather than a guess.
+      url: null,
+      db: { path: "unknown", sizeBytes: null },
+      pid: process.pid,
+      registry: { providersTotal: 1, providersEnabled: 1, modelsTotal: 1, modelsEnabled: 1 },
+      tasks: { running: 0, pendingApprovals: 0 },
+    });
+  });
+
+  it("keeps the M8 fields as enabled counts while the totals live under registry", async () => {
+    // A disabled provider disables routing, not its model rows — the two enabled
+    // flags are independent, which is exactly why both are reported.
+    repos.upsertModel(model("anthropic/retired", PRV_A, { enabled: false }));
+    repos.upsertProvider(provider(PRV_A, { enabled: false }));
+    setup([[]]);
+    const health = DaemonHealthSchema.parse(
+      (await app.inject({ method: "GET", url: "/internal/health" })).json(),
+    );
+    expect(health.models).toBe(1); // the beforeEach model; "retired" is off
+    expect(health.providers).toBe(0);
+    expect(health.registry).toMatchObject({ modelsTotal: 2, providersTotal: 1 });
+  });
+
+  it("reports the db's footprint on disk, WAL sidecars included", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rewter-health-"));
+    try {
+      const dbPath = join(dir, "rewter.db");
+      writeFileSync(dbPath, "0123456789"); // 10 bytes
+      writeFileSync(`${dbPath}-wal`, "xx"); // 2 more, invisible to a naive stat
+      const adapter = new FakeAdapter([[]]);
+      const router = new Router({
+        repos,
+        createAdapter: () => adapter,
+        sleep: async () => undefined,
+      });
+      const sideApp = buildApp({
+        router,
+        repos,
+        bus,
+        clock: () => CREATED_MS,
+        runtime: { dbPath, startedAt: CREATED_MS, url: "http://localhost:9999" },
+      });
+      try {
+        const health = DaemonHealthSchema.parse(
+          (await sideApp.inject({ method: "GET", url: "/internal/health" })).json(),
+        );
+        expect(health.db).toEqual({ path: dbPath, sizeBytes: 12 });
+        expect(health.url).toBe("http://localhost:9999");
+        expect(health.uptimeMs).toBe(0);
+      } finally {
+        await sideApp.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("describes the event log: row count and the replay cursor", async () => {
+    setup([[text("x"), end()]]);
+    await app.inject({ method: "POST", url: "/v1/chat/completions", payload: chatBody() });
+    const health = DaemonHealthSchema.parse(
+      (await app.inject({ method: "GET", url: "/internal/health" })).json(),
+    );
+    const all = (await app.inject({ method: "GET", url: "/internal/events" })).json<{
+      events: Array<{ seq: number }>;
+    }>();
+    expect(health.events.count).toBe(all.events.length);
+    expect(health.events.lastSeq).toBe(Math.max(...all.events.map((e) => e.seq)));
   });
 
   it("serves providers without leaking secrets — only env var names are stored", async () => {

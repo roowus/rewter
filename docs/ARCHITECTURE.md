@@ -1560,7 +1560,8 @@ done-pattern) so any CLI harness is addable by config.
 - `/internal`: tasks list/detail/`events?afterSeq=`, `cancel|steer|settings`, approvals
   list/resolve, models CRUD + `sync` + `generate-card`, provider CRUD, `costs?groupBy=`,
   `health`, and `WS /internal/ws` (`{subscribe, afterSeq?}` → replay then live).
-  Live today: `health` (with registry counts), `providers`, `models` (**including**
+  Live today: `health` (the full ops summary, not just counts — see
+  [Health](#health-what-the-daemon-knows-about-itself)), `providers`, `models` (**including**
   disabled ones, unlike `/v1/models`), `events?afterSeq=[&taskId=]` (a non-numeric
   `afterSeq` reads as 0 rather than erroring), approvals — `GET
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
@@ -1723,9 +1724,10 @@ first commit, but nothing registered it, and the dashboard was reachable only th
 lives in `shared`. A REST layer beside it would be a second answer to the same question, and
 the one on screen would be the one nobody tested. That is why there is no TanStack Query here
 and no router: the whole app is one page over one `FoldState`. The costs panel
-([M7e](#costs-the-one-panel-that-fetches-m7e)) is the one deliberate exception — for reasons
-the fold structurally cannot answer — and its aggregation is shared code precisely so the
-exception cannot become a precedent.
+([M7e](#costs-the-one-panel-that-fetches-m7e)) broke that rule first and the health strip
+([below](#health-what-the-daemon-knows-about-itself)) broke it second — each for reasons
+the fold structurally cannot answer — and both keep the shape of the answer in `shared`,
+where the endpoint and the panel point at one schema.
 
 The store (`src/store.ts`, zustand) is therefore almost entirely socket lifecycle, and four
 decisions in it are load-bearing:
@@ -1857,6 +1859,65 @@ last good numbers on screen with an error line: the panel refetches on every soc
 event, so a transient failure is routine, and a panel that blanked would read as
 "spent nothing". The fetched body is schema-parsed — `undefined` formatted as a dash is
 the one wrong answer that looks like good news.
+
+### Health: what the daemon knows about itself
+
+First item off the [OmniRoute UI survey](design/omniroute-ui-survey.md)'s shortlist, and
+the survey's own words for it: the biggest single gap. The daemon knew its uptime, its
+bound URL, how much of the registry was actually enabled, its database's path and
+footprint, how much event log there was, and whether anything was parked on an approval
+gate — and displayed none of it anywhere a person could read. `GET /internal/health`
+grew from a liveness probe into the ops summary; the schema is `DaemonHealthSchema` in
+`shared/src/health.ts`, and the dashboard renders it as a facts strip above the spend.
+
+Two constraints shaped the schema, and both are load-bearing:
+
+- **`status`, `version`, `models`, `providers` keep their names *and their meanings*.**
+  `service/control.ts` has read those four since M8 to decide whether the thing on the
+  port is rewter at all; an older CLI probing a newer daemon must not decide it has
+  found a stranger. `models`/`providers` therefore stay the *enabled* counts — what the
+  router can actually reach — and the totals live in a new `registry` object beside
+  them, which also carries the card count (the half of the registry that steers
+  routing). A disabled provider disables routing but not its model rows; the two
+  enabled flags are independent, which is exactly why both splits are shown.
+- **Everything reported is a fact the process already has.** No latency percentiles:
+  rewter instruments nothing per request today, and a percentile computed from worker-run
+  timings would be orchestration latency wearing a router's label. A number on an ops
+  page is read as measured; better a missing row than a plausible one. (Circuit-breaker
+  state is absent for the same reason — it is not a rewter concept yet.)
+
+Three of the fields are subtler than they look:
+
+- **`db.sizeBytes` sums the `-wal` and `-shm` sidecars with the main file** (and is
+  `null` for `:memory:`, or when nothing could be stat'd — an ops panel that 500s
+  because it could not stat something is worse than one that says it does not know).
+  WAL mode keeps recent writes in the sidecar until a checkpoint, so a busy daemon's
+  main file can sit unchanged for hours while the sidecar grows; reporting the main
+  file alone would answer "is this getting big?" with a confident no at exactly the
+  moment it is getting big.
+- **`events.lastSeq` is `MAX(seq)`, not the row count** (`EventBus.stats()` supplies
+  both). AUTOINCREMENT never reuses a number, so once anything is deleted the two
+  diverge — and `lastSeq` is the cursor a replaying dashboard compares itself against.
+  Both are one indexed scan, cheap enough to answer on every poll.
+- **`uptimeMs`/`startedAt` come from `RuntimeFacts`, not `process.uptime()`.** The
+  process's age and the daemon's age are different things under a launchd KeepAlive
+  restart, and differ by exactly the interval an operator is trying to notice. The one
+  ordering wrinkle — the bound URL exists only after `listen()` resolves port 0, but the
+  app must be built before it can listen — is closed by handing the route a *mutable*
+  facts object it dereferences per request, which `startDaemon` fills in one line after
+  `listen`. An injected app (every test) gets fallbacks: `url: null`, an unknown db
+  path, and the instant of its own construction as the start time.
+
+The panel (`src/HealthPanel.tsx`) follows the costs panel's rules and adds one of its
+own. It refetches on the socket's `lastSeq` tick *and* on a slow interval (10s) — the
+facts it shows move without the socket when the socket is down or the traffic is
+pass-through. A failed refetch keeps the last good facts up with an error line: a
+health strip that blanks reads as "daemon gone", which is a louder claim than "one
+fetch failed". Uptime ticks against the page's shared `now` clock rather than
+refetching every second — the fetch is for facts only the daemon can count, not for
+the passage of time. The new rule: when `events.lastSeq` is ahead of the fold's own
+`lastSeq`, the panel says so — "catching up, N events behind" — because a task that is
+not on screen yet is not finished either, and replay lag is otherwise invisible.
 
 ### The registry editor (M7f)
 
