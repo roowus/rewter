@@ -31,13 +31,47 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7d | Kill: `POST /internal/tasks/:id/cancel` + the button | ✅ 2026-08-28 |
 | M7e | Costs: `GET /internal/costs` + the spend panel | ✅ 2026-08-28 |
 | M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
-| M7 | *acceptance: approve from the browser while the stream runs* | 🟡 built, not yet run live |
+| M7 | *acceptance: approve from the browser while the stream runs* | ✅ 2026-08-29 |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
 | M8c | `~/.rewter/env`, launchd plist, `rewter logs`, `rewter gc` | ✅ 2026-08-29 |
 | M8 | *acceptance: README walkthrough run verbatim (found #13); reboot not yet run* | 🟡 partly |
 
 ## Log
+
+### 2026-08-29 — M7 acceptance: approved from the browser, mid-stream
+
+The criterion, verbatim: *approve from the browser while progress streams into Claude Code*.
+Run against the real daemon on :20130 with a keyless Ollama initiator (`ollama/qwen3-4b`), so
+the whole thing costs nothing and needs no provider key.
+
+An `auto/orchestrator` task asked for one tier-2 worker to run `uname -a`. The gate fired, the
+browser answered it, and the worker resumed — one continuous SSE response throughout:
+
+```
+▶ [w1 · ollama/qwen3-4b · tier2] run uname -a — started
+⏸ approval needed — uname -a
+   (reply "approve apr_5nugr73ezyof" or "deny apr_5nugr73ezyof", or answer in the dashboard)
+✔ [w1] done ($0, 5m10s)
+
+Darwin mac.lan 25.2.0 … arm64
+```
+
+The event log names the path taken, which is the part that makes this M7's acceptance rather
+than M6's: `approval.resolved … resolvedBy: "dashboard"`. A `curl` to the same route would
+have said `"dashboard"` too — but the daemon's request log also shows the page polling
+`/internal/costs` throughout, so the UI answering was genuinely the running one.
+
+**The first attempt tested nothing.** It asked for `date`, which is on the read-only
+allowlist, so it auto-approved and completed without ever parking. That is correct behaviour
+and a useless test: an acceptance for an approval gate has to name a command the allowlist
+does *not* cover. `uname -a` parks; `date` never could.
+
+Also worth writing down because it nearly sent me editing the wrong file: polling
+`/internal/approvals` twice right after the spawn returned `{"approvals":[]}`, which read like
+a broken list route. It was not — a 4B model on a laptop simply had not reached the tool call
+yet. The row appeared on its own. When the timing is the variable, read the event log (which
+is ordered and durable) before concluding anything about a route.
 
 ### 2026-08-29 — the daemon never actually served the dashboard (#16)
 

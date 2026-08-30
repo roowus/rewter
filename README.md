@@ -229,6 +229,12 @@ The editor also carries the capability card beside the price, because what a mod
 is the half that steers the orchestrator; its overrides save separately, since `rewter card
 <model>` regenerates the card underneath and the override is what survives that.
 
+M7 closed live on 2026-08-29: a `uname -a` parked mid-orchestration, the card was answered in
+the browser, and the same still-open stream carried on and finished with the kernel string.
+The distinction from M6's run is which path resolved it — `resolvedBy: "dashboard"` — and the
+daemon serving the page it was clicked on, which it had never actually done until
+[#16](https://github.com/roowus/rewter/issues/16).
+
 M8 is **daemonization**, and its first piece is **boot reconciliation**. A daemon killed by
 `kill -9`, a reboot or an OOM leaves rows saying `running`, because the code that would have
 written a terminal status died with the process. Every boot now closes them out — before the
