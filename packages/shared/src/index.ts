@@ -16,3 +16,4 @@ export * from "./anthropic.js";
 export * from "./translate.js";
 export * from "./run.js";
 export * from "./shutdown.js";
+export * from "./transfer.js";

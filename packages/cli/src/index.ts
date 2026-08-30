@@ -20,6 +20,7 @@
  * server, so they work whether or not the daemon is up. SQLite in WAL mode makes
  * that safe.
  */
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,7 @@ import {
   type LogLevel,
   Router,
   SERVICE_LABEL,
+  applyImport,
   bootSummary,
   collectGarbage,
   daemonStatus,
@@ -35,6 +37,7 @@ import {
   formatCard,
   formatCardReport,
   formatGcResult,
+  formatImportReport,
   formatLogs,
   formatStatus,
   formatSyncReport,
@@ -52,6 +55,7 @@ import {
   uninstallService,
   vacuum,
 } from "@rewter/server";
+import { REGISTRY_BUNDLE_VERSION, RegistryBundleSchema, buildBundle } from "@rewter/shared";
 
 const USAGE = `rewter — an AI model router where the AI runs the routing
 
@@ -66,6 +70,11 @@ Usage:
   rewter card [<model>...] --using <model> [--all] [--regenerate] [--show]
               [--dry-run]                       write capability cards — what the
                                                 orchestrator reads to pick a model
+  rewter export-registry [<file>] [--note <text>]
+                                                write models + cards to a file
+                                                (or stdout) — never any keys
+  rewter import-registry <file> [--overwrite] [--dry-run]
+                                                merge such a file back in
   rewter logs [-n <lines>] [--level <level>] [--log-dir <path>]
                                                 what the daemon wrote when
                                                 nobody was watching
@@ -112,6 +121,12 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
 
     case "card":
       return await cardCommand(argv.slice(1), opts);
+
+    case "export-registry":
+      return exportRegistryCommand(argv.slice(1), opts);
+
+    case "import-registry":
+      return importRegistryCommand(argv.slice(1), opts);
 
     case "version":
     case "--version":
@@ -352,6 +367,128 @@ async function cardCommand(args: string[], opts: RunOptions): Promise<number> {
   }
 }
 
+/**
+ * The registry, as a file.
+ *
+ * The counterpart to the dashboard's download button, and the same
+ * `buildBundle` behind both, so the two produce byte-identical files. Named a
+ * file, it writes one; named nothing, it writes to stdout — because
+ * `rewter export-registry | jq '.models | length'` is a reasonable thing to
+ * want, and a tool that insists on a path to answer a question is a tool you
+ * end up writing to `/tmp` around.
+ *
+ * It carries no credentials, structurally: provider entries hold identity only,
+ * and `apiKeyRef` — an env-var *name*, not a key — is not among the fields the
+ * bundle schema has. See `shared/transfer.ts`.
+ */
+function exportRegistryCommand(args: string[], opts: RunOptions): number {
+  const configPath = flagValue(args, "--config");
+  const note = flagValue(args, "--note");
+  const out = positional(args, ["--config", "--note"])[0];
+
+  const registry = openRegistry({
+    ...(configPath !== undefined && { configPath }),
+    ...(opts.env !== undefined && { env: opts.env }),
+  });
+
+  try {
+    const bundle = buildBundle(
+      {
+        providers: registry.repos.listProviders(),
+        models: registry.repos.listModels(),
+        // Raw, not merged: the overrides are the part a person typed, and
+        // flattening them into the generated text means the next `rewter card`
+        // on the far machine silently discards them.
+        cards: registry.repos.listRawCards(),
+      },
+      { now: Date.now(), note: note ?? null },
+    );
+    // Pretty-printed for the same reason the dashboard's download is: a bundle
+    // is a file someone opens in a year to see what a price used to be.
+    const json = `${JSON.stringify(bundle, null, 2)}\n`;
+
+    if (out === undefined) {
+      process.stdout.write(json);
+      return 0;
+    }
+    writeFileSync(out, json, "utf8");
+    process.stdout.write(
+      `wrote ${out} — ${bundle.models.length} models, ${bundle.cards.length} cards, no keys\n`,
+    );
+    return 0;
+  } finally {
+    registry.close();
+  }
+}
+
+/**
+ * Merge such a file back in.
+ *
+ * `--dry-run` runs the identical planner and writes nothing, so what it prints
+ * is what a real run would do rather than an estimate of it — the CLI's version
+ * of the dashboard's preview step.
+ *
+ * The file is parsed here, with the version checked by hand before zod gets a
+ * look, because "made by a newer rewter" is a useful thing to say about a file
+ * the user believes is an export and `Invalid literal value, expected 1` is
+ * not.
+ */
+function importRegistryCommand(args: string[], opts: RunOptions): number {
+  const configPath = flagValue(args, "--config");
+  const file = positional(args, ["--config"])[0];
+  if (file === undefined) {
+    process.stderr.write("name a bundle file: rewter import-registry <file>\n");
+    return 1;
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    process.stderr.write(
+      `${file}: ${err instanceof SyntaxError ? "not JSON" : "could not be read"}\n`,
+    );
+    return 1;
+  }
+
+  const version = (raw as { version?: unknown } | null)?.version;
+  if (typeof version === "number" && version !== REGISTRY_BUNDLE_VERSION) {
+    process.stderr.write(
+      version > REGISTRY_BUNDLE_VERSION
+        ? `${file} was made by a newer rewter (bundle v${version}, this one reads v${REGISTRY_BUNDLE_VERSION})\n`
+        : `${file} is a v${version} bundle; this rewter reads v${REGISTRY_BUNDLE_VERSION}\n`,
+    );
+    return 1;
+  }
+
+  const parsed = RegistryBundleSchema.safeParse(raw);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    const where = first === undefined ? "" : ` (${first.path.join(".")}: ${first.message})`;
+    process.stderr.write(`${file} is not a rewter registry bundle${where}\n`);
+    return 1;
+  }
+
+  const registry = openRegistry({
+    ...(configPath !== undefined && { configPath }),
+    ...(opts.env !== undefined && { env: opts.env }),
+  });
+
+  try {
+    const report = applyImport(registry.repos, parsed.data, {
+      onConflict: args.includes("--overwrite") ? "overwrite" : "skip",
+      dryRun: args.includes("--dry-run"),
+      now: Date.now(),
+    });
+    process.stdout.write(`${formatImportReport(report)}\n`);
+    // A missing provider is not a crash, but it is not a success either: the
+    // models it names did not land, and a scripted import needs to know that.
+    return report.missingProviders.length > 0 ? 1 : 0;
+  } finally {
+    registry.close();
+  }
+}
+
 const LEVELS: LogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
 
 /**
@@ -503,6 +640,26 @@ function gcCommand(args: string[], opts: RunOptions): number {
 /** Matches how sync names a provider, so `--provider` filters on what gets printed. */
 function slugOf(provider: { id: string; name: string }): string {
   return presetSlugForProvider(provider);
+}
+
+/**
+ * Bare arguments — everything that is neither a `--flag` nor the value of one.
+ *
+ * `valued` names the flags that take a value, so `--note "before reinstall"`
+ * does not leave the note looking like a filename.
+ */
+function positional(args: string[], valued: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === undefined) continue;
+    if (arg.startsWith("--")) {
+      if (valued.includes(arg)) i += 1;
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
 }
 
 /** `--flag value`; returns undefined when absent, and throws nothing on a trailing flag. */

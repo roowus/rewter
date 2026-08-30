@@ -214,6 +214,24 @@ export class Repos {
       .map((r) => mergeCardOverrides(rowToCard(r)));
   }
 
+  /**
+   * Unmerged, as stored — the list counterpart of `getRawCard`.
+   *
+   * Export uses this rather than `listCards` for the same reason the editor
+   * uses `getRawCard`: merging is lossy in the direction that matters. Once
+   * `userOverrides` is folded into the generated text there is no way to tell
+   * what a person corrected from what a model wrote, and the next regeneration
+   * on the far machine discards the correction without a trace.
+   */
+  listRawCards(): CapabilityCard[] {
+    return this.db
+      .select()
+      .from(capabilityCards)
+      .orderBy(asc(capabilityCards.modelId))
+      .all()
+      .map(rowToCard);
+  }
+
   /** Replace the override patch. `null` clears it, restoring the generated card. */
   setCardOverrides(modelId: string, overrides: Record<string, unknown> | null): CapabilityCard {
     const existing = this.getRawCard(modelId);

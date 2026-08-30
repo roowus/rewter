@@ -34,6 +34,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7g | Budget: `POST /internal/tasks/:id/settings` + the cap control | ✅ 2026-08-30 |
 | M7h | Run: `POST /internal/run` + the run panel | ✅ 2026-08-30 |
 | M7i | Shutdown: `POST /internal/shutdown` + footer, liveness dot, Local Mode | ✅ 2026-08-30 |
+| M7j | Registry transfer: export/import routes + CLI verbs + the dashboard control | ✅ 2026-08-30 |
 | M7 | *acceptance: approve from the browser while the stream runs* | ✅ 2026-08-29 |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
@@ -43,6 +44,49 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 **Phase 1 is complete — every milestone's acceptance has been run live.**
 
 ## Log
+
+### 2026-08-30 — moving a registry between machines (survey item 9: export/import)
+
+A registry is hours of syncing, card generation and hand-typed corrections, and until now it
+lived in exactly one SQLite file. `GET /internal/registry/export` and
+`POST /internal/registry/import` move it as a file, with `rewter export-registry` /
+`rewter import-registry` doing the same against the database directly, daemon or no daemon.
+
+**The "no keys" promise is structural, not a filter.** The obvious implementation exports the
+`Provider` row and deletes `apiKeyRef` on the way out — which is a promise that a column added
+next month quietly breaks. Instead the bundle has its own `.strict()` provider schema with
+four fields (id, name, kind, base URL), and `buildBundle` constructs it field-by-field rather
+than spreading and deleting: there is nowhere in the format to put a secret, and a new
+`Provider` column cannot ride along. The test that guards it exports with a distinctive value
+in the environment and greps the written **bytes** for it — asserting the schema rejects
+`apiKeyRef` would only prove the schema does what the schema does.
+
+**Cards export raw.** `getCard` returns generated text with `userOverrides` merged over it,
+which is the right view for everything except this: merging is lossy in exactly the direction
+that matters, since the half a person typed becomes indistinguishable from the half a model
+wrote. The bundle carries both layers, so a regeneration on the far machine leaves the
+corrections standing, as it does here.
+
+**Import inherits sync's two rules and adds a third.** Never overwrite a human (`skip` unless
+`--overwrite`); never delete (a local model the bundle omits is simply not in the plan — cost
+records name model ids forever). The third is that an import never *creates a provider*: a
+bundle carries no credentials, so an invented upstream would look configured and surface later
+as a 503 from inside a running task. Models whose provider is missing are reported **by name
+with a count** — the one failure that has a fix, so it is the one thing worth naming.
+
+**One pure planner answers both the preview and the write.** `planImport` takes the bundle and
+the current rows and returns per-row decisions; the dashboard's preview and the actual apply
+call the *same* function, so the counts under the button always describe that button rather
+than a second implementation of it. Provider ids match across machines because
+`providerIdForSlug` derives them deterministically from the slug — two machines that
+configured the same preset agree without coordinating.
+
+Four surfaces over one merge (`registry/transfer.ts`): the two routes, the dashboard's
+pick → preview → apply control, and the two CLI verbs. The CLI checks the bundle version by
+hand before zod, so a file from a newer rewter says so instead of failing as a field error,
+and exits non-zero when models were skipped for a missing provider.
+
+- 67 new tests (18 shared, 15 server routes, 23 dashboard, 11 CLI); **1691 green**.
 
 ### 2026-08-30 — stopping the daemon from its own UI (survey item 8)
 

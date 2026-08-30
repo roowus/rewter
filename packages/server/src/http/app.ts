@@ -34,6 +34,7 @@ import {
   type Provider,
   type ProviderTestResult,
   REWTER_VERSION,
+  RegistryImportRequestSchema,
   RunTaskRequestSchema,
   type RunTaskResult,
   type ShutdownResult,
@@ -47,6 +48,7 @@ import {
   TranslateRequestSchema,
   type TranslateResponse,
   applyModelPatch,
+  buildBundle,
   fromAnthropicMessages,
   fromAnthropicTools,
   isTerminal,
@@ -73,6 +75,7 @@ import { type LiveTask, LiveTaskIndex, conversationKey } from "../orchestrator/l
 import { type ApprovalCommand, parseSteering } from "../orchestrator/steering.js";
 import { collectStream } from "../providers/collect.js";
 import { type ProbeOptions, probeProvider as realProbeProvider } from "../registry/probe.js";
+import { applyImport } from "../registry/transfer.js";
 import {
   AmbiguousModelError,
   ModelNotFoundError,
@@ -1046,6 +1049,63 @@ export function buildApp(opts: AppOptions): FastifyInstance {
         .send({ error: { message: `no capability card for ${id} — generate one first` } });
     }
     return { card: repos.setCardOverrides(id, parsed.data.overrides) };
+  });
+
+  // ── Registry export / import ──────────────────────────────────────────────
+  /**
+   * The registry, as a file.
+   *
+   * A GET because it is a read of rewter's own state and nothing else — the
+   * dashboard's download button is an anchor, and `curl -O` is a backup. The
+   * shape comes from `buildBundle` in `shared` so that this route, the CLI, and
+   * anything later produce byte-identical files, and so the promise that a
+   * bundle carries no credential is testable in one place rather than asserted
+   * at each exit.
+   *
+   * Cards go out **raw**: `listRawCards`, not `listCards`. The merged view
+   * would flatten `userOverrides` into the generated text, which is the one
+   * lossy direction that matters — the overrides are the part a person typed,
+   * and the next `rewter card` on the far machine would silently discard them.
+   */
+  app.get("/internal/registry/export", async (req) => {
+    const q = req.query as { note?: string };
+    return buildBundle(
+      {
+        providers: repos.listProviders(),
+        models: repos.listModels(),
+        cards: repos.listRawCards(),
+      },
+      { now: clock(), note: q.note ?? null },
+    );
+  });
+
+  /**
+   * Merge a bundle in.
+   *
+   * The merge itself is `applyImport` in `registry/transfer.ts`, over decisions
+   * from `planImport` in `shared` — pure, and the *same* function for `dryRun`
+   * and for the real write. A preview that ran different logic from the write
+   * would be a preview of nothing, which is the only way a confirm step could be
+   * worse than no confirm step. The route's own job is the 400.
+   *
+   * It inherits sync's two rules: never overwrite a human (an existing row is
+   * skipped unless `onConflict: "overwrite"`), and never delete (a local model
+   * the bundle does not mention is not in the plan at all, so nothing can
+   * remove it). It also refuses to *create* providers, which is why a bundle
+   * from a machine with more upstreams configured produces named skips rather
+   * than a set of half-configured providers with no keys.
+   */
+  app.post("/internal/registry/import", async (req, reply) => {
+    const parsed = RegistryImportRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      // A malformed bundle is a 400 with the field path, not a 500: the caller
+      // handed us a file, and "which line of it" is the whole question.
+      return reply
+        .code(400)
+        .send({ error: { message: `invalid bundle: ${issues(parsed.error)}` } });
+    }
+    const { bundle, onConflict, dryRun } = parsed.data;
+    return applyImport(repos, bundle, { onConflict, dryRun, now: clock() });
   });
 
   // ── Approvals ─────────────────────────────────────────────────────────────

@@ -65,6 +65,11 @@ export {
 } from "./registry/cards.js";
 export { renderDigest, type DigestEntry, type DigestOptions } from "./registry/digest.js";
 export {
+  applyImport,
+  formatImportReport,
+  type ApplyImportOptions,
+} from "./registry/transfer.js";
+export {
   formatSyncReport,
   syncModels,
   type ProviderSyncReport,

@@ -42,8 +42,12 @@ const fail = (message: string): Result<never> => ({ ok: false, message });
  * complaint naming the field, most usefully. Surfacing that verbatim is the
  * whole point: "pricing.inputPerMTok: Number must be greater than or equal to
  * 0" tells the user what to fix, and "daemon said 400" does not.
+ *
+ * Exported for `transfer.ts`, which is the same editor's import/export half and
+ * wants the same error vocabulary — a bundle rejected for its version should
+ * read exactly like a price rejected for its sign.
  */
-async function request<T>(
+export async function request<T>(
   url: string,
   init: RequestInit,
   // Input is `unknown`, not `T`: several of these schemas unwrap an envelope

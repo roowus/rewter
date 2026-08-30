@@ -1147,6 +1147,9 @@ logs. `rewter status` and `rewter stop` talk to a daemon this process did not st
 start](#the-pidfile-and-talking-to-a-daemon-you-did-not-start-m8).
 `rewter install-service` / `uninstall-service`, `rewter logs` and `rewter gc` are the
 launchd side and are described in [Living under launchd](#living-under-launchd-m8).
+`rewter export-registry` / `import-registry` move models and cards between machines as a
+file, without a daemon —
+see [Moving a registry](#moving-a-registry-between-machines-m7j).
 `rewter version` / `rewter help` round it out.
 
 ### The pidfile, and talking to a daemon you did not start (M8)
@@ -1584,7 +1587,10 @@ done-pattern) so any CLI harness is addable by config.
   `POST /internal/run` (starts an **orchestration**; 202 with an id, results arrive as
   events — see [Starting a task from the dashboard](#starting-a-task-from-the-dashboard-m7h)),
   `POST /internal/shutdown` (202 `ShutdownResult` **then** drains; 501 on a daemon built
-  without a shutdown hook — see [Stopping the daemon from its own UI](#stopping-the-daemon-from-its-own-ui-m7i))
+  without a shutdown hook — see [Stopping the daemon from its own UI](#stopping-the-daemon-from-its-own-ui-m7i)),
+  `GET /internal/registry/export[?note=]` and `POST /internal/registry/import`
+  (`{bundle, onConflict?, dryRun?}` → a per-row report; 400 names the field that failed —
+  see [Moving a registry](#moving-a-registry-between-machines-m7j))
   — and `WS /internal/ws` (see below). `run` and `chat-test` are the two routes on
   `/internal` that spend, and each refuses the other's model string.
   Providers are safe to serve as-is: only the env var *name* is ever stored.
@@ -2454,6 +2460,71 @@ then — `v—` reads as a version the daemon reported.
 drawn as a dot in `currentColor` so colour and words cannot drift apart. Only `reconnecting`
 pulses (and not under `prefers-reduced-motion`): a steady dot is the resting state and must
 not compete with the tree, while a blinking one means "this view may already be stale".
+
+### Moving a registry between machines (M7j)
+
+A synced registry is hundreds of rows and, once cards are generated over it, a real amount of
+spent money. Reproducing that on a second machine — a laptop, a reinstall, a colleague — should
+not mean re-running every sync and re-billing every card. The last item of the OmniRoute survey
+is a **bundle**: models, cards and the overrides typed over them, as one JSON file.
+
+**The "no keys" promise is structural, not a filter.** The obvious implementation exports
+`Provider` rows with `apiKeyRef` deleted, and stays correct exactly until someone adds a column.
+`BundleProviderSchema` (`shared/transfer.ts`) is instead its own **`.strict()`** schema of four
+fields — `id`, `name`, `kind`, `baseUrl` — and `buildBundle` constructs each entry field-by-field
+rather than spreading and deleting. A secret added to `Provider` tomorrow cannot ride along,
+because the format has nowhere to put it. (`apiKeyRef` is an env-var *name* and not itself a
+secret; it is still absent, since it describes this machine's environment rather than the models
+being described.) Only providers something references are exported at all: a provider with no
+models in the registry is local setup, not part of the description.
+
+**Cards export raw.** `getCard`/`listCards` return the merged view — generated fields with
+`userOverrides` applied on top — and that is what almost everything should read. The export uses
+`listRawCards`, keeping the two layers separate, because merging is lossy in the one direction
+that matters: the overrides are the half a person typed, and flattening them into the generated
+text means the next `rewter card --regenerate` on the far machine silently discards them.
+Import writes both layers back, which takes two calls (`upsertCard` deliberately never touches
+`userOverrides`; `setCardOverrides` does the reverse — see [The registry editor](#the-registry-editor-m7f)).
+
+**Import inherits sync's two rules and adds a third.** Never overwrite a human: `onConflict`
+defaults to `skip`, and `overwrite` is a thing you ask for. Never delete: a local model the
+bundle does not mention is not in the plan at all, since cost records name model ids forever.
+And, new here, **never create a provider** — a bundle carries no credentials, so a provider
+invented from one would be a row that fails much later and much further away, as a 503 from
+inside a task. Models whose provider is absent come back as `no_provider`, with the bundle's
+own name for it and a count, because "OpenRouter is not configured here — 14 models skipped"
+is a fix and fourteen identical rows is a wall.
+
+**One planner answers both the preview and the write.** `planImport` is pure and lives in
+`shared`; `dryRun` runs the identical call and skips the writes. A preview that re-derived its
+counts could describe a merge other than the one the button performs. Every row is reported by
+name with an outcome (`added | replaced | exists | no_provider | no_model`) and a reason where
+one is needed, so a bulk operation does not summarise to a pair of numbers that cannot
+distinguish a duplicate from a misconfiguration.
+
+**Four surfaces, one merge.** `registry/transfer.ts` (`applyImport`) turns a plan into rows;
+`GET /internal/registry/export`, `POST /internal/registry/import`, the dashboard control and
+the CLI all go through it, so there is one place that knows `updatedAt` is stamped locally
+(the row was written *here*, and "last touched" is the column read when working out why a price
+moved) while `createdAt` stays the bundle's. The HTTP route's own job is the **400**: a
+malformed bundle names the field path, because the caller handed us a file and "which line of
+it" is the whole question.
+
+**The dashboard control is three steps on purpose** (`RegistryTransfer.tsx`). Picking a file
+parses it *client-side* and previews; nothing is written. Changing the conflict mode
+**re-previews** rather than applying, so the counts under the button always describe the button.
+Only an explicit second press writes, with the mode that was previewed. A file the browser
+cannot read never reaches the daemon — the round-trip would have said the same thing, later and
+without the filename.
+
+**The CLI works with the daemon down**, against the database directly:
+`rewter export-registry [<file>] [--note <text>]` (no file → stdout, so
+`rewter export-registry | jq '.models | length'` works) and
+`rewter import-registry <file> [--overwrite] [--dry-run]`. The version is checked **by hand
+before zod**, because "made by a newer rewter (bundle v2, this one reads v1)" is a useful thing
+to say about a file someone believes is an export and `Invalid literal value, expected 1` is
+not. A missing provider exits **1**: not a crash, but not a success either — the models it
+named did not land, and a scripted import needs to go red.
 
 ## Design docs
 

@@ -479,6 +479,21 @@ If we implement from this survey, roughly in value order:
    a 501 is the exception, since nothing was attempted. See ARCHITECTURE.md → "Stopping the
    daemon from its own UI".
 9. **Registry export/import** — models + cards + overrides only, never `apiKeyRef` values.
+   **DONE 2026-08-30** — the "no keys" promise is structural rather than a filter: the bundle's
+   provider entry is its own `.strict()` schema built field-by-field (id/name/kind/baseUrl), so
+   a column added to `Provider` later cannot ride along, and `apiKeyRef` is not a field the
+   format has. Cards export **raw** — generated text and `userOverrides` as two layers, because
+   the merged view loses precisely the half a person typed. Import inherits sync's two rules
+   (never overwrite a human — `skip` by default; never delete — a local model the bundle omits
+   is not in the plan) and adds a third: it never *creates* a provider, since a bundle carries
+   no credentials, so an invented upstream would surface later as a 503 from inside a task.
+   `planImport` is pure and is the *same* call for the preview and the write, so the counts
+   under the button always describe the button; a missing provider is reported by name with its
+   model count, the one failure that has a fix. Four surfaces, one merge (`registry/transfer.ts`):
+   `GET /internal/registry/export`, `POST /internal/registry/import`, the dashboard's
+   pick → preview → apply control, and `rewter export-registry [<file>] [--note]` /
+   `rewter import-registry <file> [--overwrite] [--dry-run]`, which work against the database
+   directly whether or not a daemon is running. See ARCHITECTURE.md → "Moving a registry".
 
 Deliberately excluded: combos, compression, gamification, batch, MCP/A2A, sidebar
 customisation, presets, the command palette, and breadcrumbs — each either duplicates what the

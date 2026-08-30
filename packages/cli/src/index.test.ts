@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./index.js";
 
@@ -573,5 +573,158 @@ describe("run — card", () => {
     const args = ["card", "openai/gpt-5", "--using", "openai/gpt-4o", "--regenerate"];
     expect(await run(args, opts)).toBe(0);
     expect(out.join("")).toContain("best at:    coding");
+  });
+});
+
+/**
+ * Moving a registry between machines, as two files-on-disk commands.
+ *
+ * The bundle format is `shared/transfer.test.ts` and the merge is
+ * `registry/transfer.ts`; what is under test here is what the CLI adds — that
+ * the file written is the file read back, that the promise in the header
+ * ("no keys") holds against the actual bytes, and that the failures a person
+ * hits with a wrong file say which file and why.
+ */
+describe("run — export-registry / import-registry", () => {
+  const CONFIG = {
+    providers: [{ preset: "openai" }],
+    models: [
+      { id: "openai/gpt-5", provider: "openai", contextWindow: 400_000 },
+      { id: "openai/gpt-4o", provider: "openai" },
+    ],
+  };
+
+  /** A second machine: same command, its own config and database. */
+  function elsewhere(config: Record<string, unknown>, env: NodeJS.ProcessEnv = {}) {
+    const path = join(dir, `config-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(path, JSON.stringify(config));
+    return { REWTER_CONFIG: path, REWTER_DB: join(dir, `${basename(path)}.db`), ...env };
+  }
+
+  it("writes a file, and reads it back into an empty registry", async () => {
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const file = join(dir, "bundle.json");
+    expect(await run(["export-registry", file], { env: here })).toBe(0);
+    expect(out.join("")).toContain("2 models");
+
+    // The far machine knows the provider but none of the models.
+    const there = elsewhere({ providers: [{ preset: "openai" }] }, { OPENAI_API_KEY: "sk-test" });
+    out = [];
+    expect(await run(["import-registry", file], { env: there })).toBe(0);
+    expect(out.join("")).toContain("models: 2 added");
+
+    // …and they are really there: a second import finds them already present.
+    out = [];
+    expect(await run(["import-registry", file], { env: there })).toBe(0);
+    expect(out.join("")).toContain("2 already here");
+    expect(out.join("")).toContain("--overwrite");
+  });
+
+  it("writes a bundle with no key material in it, anywhere", async () => {
+    // The claim the whole feature rests on, checked against bytes rather than
+    // against the schema that is supposed to enforce it.
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-secret-do-not-export" });
+    const file = join(dir, "bundle.json");
+    await run(["export-registry", file], { env: here });
+
+    const text = readFileSync(file, "utf8");
+    expect(text).not.toContain("sk-secret-do-not-export");
+    expect(text).not.toContain("apiKeyRef");
+    expect(text).not.toContain("OPENAI_API_KEY");
+    // It does carry the identity needed to match a provider on the far side.
+    expect(JSON.parse(text).providers[0].name).toBe("OpenAI");
+  });
+
+  it("writes to stdout when named no file, so it can be piped", async () => {
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["export-registry"], { env: here })).toBe(0);
+    const bundle = JSON.parse(out.join(""));
+    expect(bundle.models).toHaveLength(2);
+    expect(bundle.version).toBe(1);
+  });
+
+  it("does not mistake a --note for the filename", async () => {
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["export-registry", "--note", "before reinstall"], { env: here })).toBe(0);
+    expect(JSON.parse(out.join("")).note).toBe("before reinstall");
+    expect(existsSync(join(dir, "before reinstall"))).toBe(false);
+  });
+
+  it("writes nothing on --dry-run, and says so", async () => {
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const file = join(dir, "bundle.json");
+    await run(["export-registry", file], { env: here });
+
+    const there = elsewhere({ providers: [{ preset: "openai" }] }, { OPENAI_API_KEY: "sk-test" });
+    out = [];
+    expect(await run(["import-registry", file, "--dry-run"], { env: there })).toBe(0);
+    expect(out.join("")).toContain("2 added");
+    expect(out.join("")).toContain("nothing written");
+
+    // The preview really was a preview: the real run still has both to add.
+    out = [];
+    await run(["import-registry", file], { env: there });
+    expect(out.join("")).toContain("models: 2 added");
+  });
+
+  it("leaves models already here alone unless --overwrite", async () => {
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const file = join(dir, "bundle.json");
+    await run(["export-registry", file], { env: here });
+
+    // Same machine, so both models are already present.
+    out = [];
+    expect(await run(["import-registry", file, "--overwrite"], { env: here })).toBe(0);
+    expect(out.join("")).toContain("2 replaced");
+  });
+
+  it("names the provider the far machine does not have, and exits non-zero", async () => {
+    // The one failure with a fix — and a scripted import needs to go red when
+    // its models did not land.
+    const here = scratch(CONFIG, { OPENAI_API_KEY: "sk-test" });
+    const file = join(dir, "bundle.json");
+    await run(["export-registry", file], { env: here });
+
+    const there = elsewhere(
+      { providers: [{ preset: "anthropic" }] },
+      { ANTHROPIC_API_KEY: "sk-t" },
+    );
+    out = [];
+    expect(await run(["import-registry", file], { env: there })).toBe(1);
+    expect(out.join("")).toContain("OpenAI");
+    expect(out.join("")).toContain("2 models skipped");
+    expect(out.join("")).toContain("an import never creates one");
+  });
+
+  it("refuses a bundle from a rewter that is not this one, by version", async () => {
+    const file = join(dir, "future.json");
+    writeFileSync(file, JSON.stringify({ version: 9, providers: [], models: [], cards: [] }));
+    const there = elsewhere({ providers: [{ preset: "openai" }] }, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["import-registry", file], { env: there })).toBe(1);
+    expect(err.join("")).toContain("made by a newer rewter");
+    expect(err.join("")).toContain("v9");
+  });
+
+  it("says which file is not JSON, rather than throwing", async () => {
+    const file = join(dir, "notes.txt");
+    writeFileSync(file, "these are my notes");
+    const there = elsewhere({ providers: [{ preset: "openai" }] }, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["import-registry", file], { env: there })).toBe(1);
+    expect(err.join("")).toContain("notes.txt: not JSON");
+  });
+
+  it("names the field when a bundle is JSON but not a bundle", async () => {
+    const file = join(dir, "half.json");
+    writeFileSync(file, JSON.stringify({ version: 1, exportedAt: 1, providers: [], models: [{}] }));
+    const there = elsewhere({ providers: [{ preset: "openai" }] }, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["import-registry", file], { env: there })).toBe(1);
+    expect(err.join("")).toContain("not a rewter registry bundle");
+    expect(err.join("")).toContain("models.0");
+  });
+
+  it("asks for a filename rather than guessing one", async () => {
+    const there = elsewhere({ providers: [{ preset: "openai" }] }, { OPENAI_API_KEY: "sk-test" });
+    expect(await run(["import-registry"], { env: there })).toBe(1);
+    expect(err.join("")).toContain("name a bundle file");
   });
 });

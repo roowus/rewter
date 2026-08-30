@@ -415,6 +415,36 @@ started from Claude Code. Leaving the budget blank inherits whatever the daemon 
 with; the word `uncapped` removes the cap. Asking it for a plain model gets you pointed at
 the Test button above, which is the thing that wants one.
 
+Expand "registry" and, beside the editor, two buttons move the whole thing to another machine.
+A synced registry is hundreds of rows, and the capability cards over it cost real money to
+generate; reproducing that on a laptop or after a reinstall should not mean re-running every
+sync and re-billing every card. **Export** downloads models, cards and the corrections typed
+over them as one JSON file — and no keys, structurally rather than by filtering: the file
+format has four fields for a provider (id, name, kind, base URL) and nowhere to put a secret,
+so a column added to the database tomorrow cannot leak into an old export. **Import bundle…**
+goes the other way in three steps: pick the file and you get a preview of exactly what would
+change, per model and per card, before anything is written. Change your mind about overwriting
+and it re-previews rather than applying, so the counts always describe the button under them.
+Nothing already here is ever deleted, and models whose provider this machine has never heard of
+are reported by name with a count — an import never invents a provider, because the file
+carries no credentials and a made-up upstream would only fail later, from inside a task.
+
+The same thing without a browser, and without a running daemon:
+
+```sh
+node packages/cli/dist/index.js export-registry ~/rewter-registry.json --note 'before reinstall'
+# wrote /Users/you/rewter-registry.json — 109 models, 12 cards, no keys
+
+node packages/cli/dist/index.js import-registry ~/rewter-registry.json --dry-run
+# models: 109 added
+# cards: 12 added
+# (dry run — nothing written)
+```
+
+`--overwrite` replaces rows that are already there (the default leaves anything local alone),
+and an import that could not place some models because their provider is not configured here
+exits non-zero, so a scripted one goes red instead of quietly landing half a registry.
+
 At the foot of the page: a standing reminder that this is your machine — tasks, events, costs
 and the registry live in a SQLite file here, and API keys are read from your environment by
 name, never saved — and a **Shut down** button, since the daemon is otherwise stopped from a

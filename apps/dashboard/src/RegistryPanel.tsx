@@ -23,6 +23,7 @@
 import type { CapabilityCard, Model, Provider } from "@rewter/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ModelEditor } from "./ModelEditor.js";
+import { RegistryTransfer } from "./RegistryTransfer.js";
 import { shortModelId, usd } from "./format.js";
 import {
   MODEL_CATEGORIES,
@@ -182,6 +183,10 @@ export function RegistryPanel(): JSX.Element {
             </tbody>
           </table>
         ))}
+
+      {/* Available even on an empty registry — importing a bundle is exactly
+          what you do to a machine that has nothing in it yet. */}
+      {open && <RegistryTransfer onImported={() => void load()} />}
 
       {open && <ModelEditor mode="create" providers={providers} onWrote={afterWrite} />}
     </section>
