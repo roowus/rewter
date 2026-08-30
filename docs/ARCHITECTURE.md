@@ -258,7 +258,15 @@ What each parser may claim follows from the **scope of the claim it is in a posi
 
 - `parseOpenAi` reports `tools/vision/caching` as `null`. One parser serves OpenAI, xAI, Z.AI,
   Ollama and LM Studio from a response that carries an id and nothing else — there is no
-  line-wide fact to lean on.
+  line-wide fact to lean on. **Unless the row volunteers a `capabilities` object**, which is
+  not in the OpenAI spec but is what 9router hangs off each row: `{tools, vision,
+  contextWindow, maxOutput}`. That is a *report*, and the whole point of tri-state is that a
+  report outranks silence, so the parser reads it — `caps?.tools ?? null`, where the `??`
+  keeps an absent object silent rather than promoting it to a denial. Every field is
+  optional, so this is a superset of the spec and a server that sends no such object parses
+  exactly as it always did (a test asserts precisely that). Reading four fields off the
+  object is not licence to invent a fifth: 9router says nothing about caching, so `caching`
+  stays `null`.
 - `parseAnthropic` keeps its `true`s. That endpoint only ever answers for Claude, and every model
   in the line does tools, vision and prompt caching. Unreported, but not a guess.
 - `parseOpenRouter` treats an **empty** `supported_parameters` as a report (`tools: false`) and an
@@ -715,18 +723,29 @@ constructed with `maxRetries: 0`.
 ### Provider presets
 
 `presets.ts` is a **data table**: adding an upstream is a row (slug, kind, baseUrl, env var
-*name*, quirks), not a new class. 27 entries today, spanning four categories:
+*name*, quirks), not a new class. 28 entries today, spanning five categories:
 
 | Category | Presets |
 |---|---|
 | First-party SDK | anthropic, google, openai |
 | Aggregators | openrouter, together, fireworks, groq, deepinfra, hyperbolic, nebius, novita, sambanova, cerebras, perplexity, githubmodels |
 | Direct vendors | xai, zai, moonshot, deepseek, mistral, cohere, qwen, minimax, baseten |
+| Local aggregators | 9router |
 | Local runtimes | ollama, lmstudio, llamacpp, vllm |
 
 The slug is a model-id namespace (`<slug>/<model>`), so it is constrained to `[a-z0-9-]+`.
 `apiKeyEnv` holds an env var **name** only — a test asserts it matches SCREAMING_SNAKE,
 which a real key never would. Local runtimes are the only presets allowed a null key.
+
+**A local aggregator is both, and no other preset is.** 9router runs on the operator's
+machine and authenticates nothing — a bearer header would be rejected as unexpected rather
+than ignored, so `apiKeyEnv` is null like any local runtime — but the models it lists are
+Anthropic's, Google's, OpenAI's and Z.AI's. It holds *their* credentials, which is precisely
+why rewter needs none: one preset row yields a hundred-plus models. It carries
+`usageOptional` for the same reason the local runtimes do, though for 9router this really is
+a safety net rather than an expectation — a live instance was checked and it *does* report
+usage. The quirk exists so that a future build which quietly stops answering degrades to an
+unknown cost instead of a recorded zero ([#14](https://github.com/roowus/rewter/issues/14)).
 
 ### Factory
 

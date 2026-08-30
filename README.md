@@ -35,7 +35,7 @@ your client (Claude Code, curl, any OpenAI or Anthropic client)
 
 ## Providers
 
-Breadth is a design goal — **27 upstreams ship as built-in presets**, and adding another is
+Breadth is a design goal — **28 upstreams ship as built-in presets**, and adding another is
 a table row (slug, base URL, env var name, quirks), not new code:
 
 | | |
@@ -43,7 +43,15 @@ a table row (slug, base URL, env var name, quirks), not new code:
 | **First-party SDKs** | Anthropic, Google Gemini, OpenAI |
 | **Aggregators** | OpenRouter, Together, Fireworks, Groq, DeepInfra, Hyperbolic, Nebius, Novita, SambaNova, Cerebras, Perplexity, GitHub Models |
 | **Direct vendors** | xAI, Z.AI/GLM, Moonshot, DeepSeek, Mistral, Cohere, Qwen, MiniMax, Baseten |
+| **Local aggregators** | 9router |
 | **Local runtimes** | Ollama, LM Studio, llama.cpp, vLLM |
+
+**9router** is its own category because it is the only preset that is both local and an
+aggregator: it runs on your machine and needs no key from rewter, but the models it lists
+belong to Anthropic, Google, OpenAI, Z.AI and the rest — it holds *their* credentials, so
+rewter does not have to. Pointing rewter at a running 9router turns one preset into a
+hundred-plus models, which is the fastest way to get a capable orchestrator initiator
+without configuring a single API key.
 
 Three adapter classes cover all of them (`anthropic`, `openai-compat`, `google`), and one
 shared contract test suite holds every adapter to an identical normalized stream shape. API
@@ -61,7 +69,7 @@ board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
 `POST /v1/messages` for Anthropic ones, streaming and not), `GET /v1/models`, model
-resolution across all 27 upstreams, retry, SSE, and per-request cost metering. **Claude Code
+resolution across all 28 upstreams, retry, SSE, and per-request cost metering. **Claude Code
 runs on it** — verified live end to end, tool calls included, against two upstreams.
 
 Done (M4): the **model registry** the orchestrator chooses from — capability-card storage, where

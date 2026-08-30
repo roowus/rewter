@@ -218,6 +218,58 @@ describe("fetchCatalog — Anthropic and plain OpenAI", () => {
     });
   });
 
+  it("reads a non-standard capabilities object when the server volunteers one", async () => {
+    // 9router's shape. Not in the OpenAI spec, but it is a report, and the
+    // whole point of tri-state is that a report outranks silence.
+    const out = await fetchCatalog(
+      { slug: "9router", kind: "openai-compat" },
+      {
+        apiKey: "",
+        fetch: jsonFetch({
+          data: [
+            {
+              id: "glm/glm-5.3",
+              capabilities: { tools: true, vision: false, contextWindow: 1_000_000 },
+            },
+          ],
+        }),
+      },
+    );
+    expect(out.entries[0]?.supports.tools).toBe(true);
+    expect(out.entries[0]?.supports.vision).toBe(false);
+    expect(out.entries[0]?.contextWindow).toBe(1_000_000);
+    // Still unreported — the object says nothing about caching, and reading
+    // three fields off it is not licence to invent the fourth.
+    expect(out.entries[0]?.supports.caching).toBeNull();
+  });
+
+  it("promotes a vision model's modalities from the same object", async () => {
+    const out = await fetchCatalog(
+      { slug: "9router", kind: "openai-compat" },
+      {
+        apiKey: "",
+        fetch: jsonFetch({ data: [{ id: "glm/glm-4.6v", capabilities: { vision: true } }] }),
+      },
+    );
+    expect(out.entries[0]?.modalities).toEqual(["text", "image"]);
+  });
+
+  it("is unchanged for a server that sends no capabilities at all", async () => {
+    // The regression that would matter: `capabilities` is optional, so every
+    // plain OpenAI-compatible vendor must parse exactly as it did before.
+    const out = await fetchCatalog(
+      { slug: "openai", kind: "openai-compat" },
+      { apiKey: "k", fetch: jsonFetch({ data: [{ id: "gpt-5" }] }) },
+    );
+    expect(out.entries[0]?.supports).toEqual({
+      tools: null,
+      streaming: true,
+      vision: null,
+      caching: null,
+    });
+    expect(out.entries[0]?.contextWindow).toBeNull();
+  });
+
   it("keeps Anthropic's line-wide capabilities, which are a fact and not a guess", async () => {
     const out = await fetchCatalog(
       { slug: "anthropic", kind: "anthropic" },

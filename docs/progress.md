@@ -41,6 +41,45 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — 9router as a local aggregator, and a catalog that reads a volunteered report
+
+Two changes, one preset row and one parser branch, that between them turn a machine with no API
+keys configured into a registry of 108 models.
+
+**The preset.** 9router is the 28th, and it needed a fifth category: it is **both local and an
+aggregator**, which no other preset is. It binds to localhost and authenticates nothing
+(`apiKeyEnv: null`, like a local runtime — a bearer header would be rejected as unexpected
+rather than ignored), but the models it lists belong to Anthropic, Google, OpenAI and Z.AI. It
+holds *their* credentials, which is exactly why rewter needs none.
+
+It also carries `usageOptional`, and the reason is worth recording because the preset test
+caught it first: the existing suite asserts every `local: true` preset sets that quirk, and the
+new row failed. Rather than satisfy the test by reflex, the live instance was checked — 9router
+*does* report usage. The quirk went in anyway, as the safety net rather than the expectation,
+on [#14](https://github.com/roowus/rewter/issues/14)'s reasoning: a future build that quietly
+stops answering must degrade to an unknown cost, never to a recorded zero.
+
+**The parser.** A bare `/models` list is an id and nothing else, which is why `parseOpenAi`
+reports every capability as `null` — one parser serves a dozen unrelated vendors and has no
+line-wide fact to lean on. 9router is the exception that proves the rule: it hangs a
+non-standard `capabilities` object off each row (`{tools, vision, contextWindow, maxOutput}`).
+That is a **report**, not an inference, and the entire point of tri-state is that a report
+outranks silence — so the parser now reads it, with `caps?.tools ?? null` keeping the absent
+case silent instead of promoting it to a denial. Every field is optional, so this is a superset
+of the spec; a third test exists solely to assert that a server sending no such object parses
+exactly as it did before. And reading four fields off the object is not licence to invent a
+fifth: 9router says nothing about caching, so `caching` stays `null`.
+
+Verified live end to end. `sync-models --provider 9router` wrote 108 models with their context
+windows (up to 1M), max-output limits, tools and vision populated — none of which a bare id
+list could have supplied. A pass-through call reached GLM-5.3 and came back with usage
+accounted. With `glm-5.3` as the initiator the orchestrator then spawned **three tier-1 workers
+in a single turn** — visible in the event log as three `work_item.created` /
+`work_item.status_changed pending→running` triples before any of them finished. That fan-out is
+the thing the previous single-4B-model setup structurally could not demonstrate: asked for
+parallel work, a 4B initiator declined to spawn at all, which was defensible cost discipline
+and a useless demo.
+
 ### 2026-08-29 — M8 acceptance, part three: a real reboot
 
 The last open phase-1 criterion, and the one no test could stand in for. The LaunchAgent had

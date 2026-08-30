@@ -12,7 +12,10 @@
  *   and a list of generation methods.
  * - **Everyone else** — plain OpenAI `/models`, Anthropic `/v1/models`, and the
  *   dozen OpenAI-compatible vendors — gives you an id and, if you are lucky, a
- *   display name.
+ *   display name. A local aggregator (9router) is the exception that proves the
+ *   rule: it hangs a non-standard `capabilities` object off each row, and since
+ *   that is a *report* rather than an inference, the OpenAI parser reads it when
+ *   present and stays silent when it is not.
  *
  * So a catalog entry is mostly nulls, and that is the honest result: a null
  * price is "we do not know", never zero. `costs/compute.ts` treats the two
@@ -266,25 +269,51 @@ function parseAnthropic(body: unknown): CatalogResult {
   });
 }
 
-const OpenAiModel = z.object({ id: z.string().min(1) });
+/**
+ * `capabilities` is not in the OpenAI spec, but some servers in front of it —
+ * 9router is the one this was written against — attach exactly the facts a bare
+ * `/models` list is missing. Every field is optional: this is a superset of the
+ * spec, so a server that omits the whole object parses as it always did.
+ */
+const OpenAiCapabilities = z
+  .object({
+    tools: z.boolean().optional(),
+    vision: z.boolean().optional(),
+    contextWindow: z.number().int().positive().optional(),
+    maxOutput: z.number().int().positive().optional(),
+  })
+  .passthrough();
+
+const OpenAiModel = z.object({
+  id: z.string().min(1),
+  capabilities: OpenAiCapabilities.optional(),
+});
 
 function parseOpenAi(body: unknown): CatalogResult {
   return parseList(body, "data", (row) => {
     const m = OpenAiModel.parse(row);
+    const caps = m.capabilities;
     return {
       upstreamId: m.id,
       displayName: m.id,
-      contextWindow: null,
-      maxOutputTokens: null,
+      contextWindow: caps?.contextWindow ?? null,
+      maxOutputTokens: caps?.maxOutput ?? null,
       pricing: nullPricing(),
-      modalities: ["text" as const],
-      // Unknown, and said so. This parser serves a dozen unrelated vendors —
-      // OpenAI, xAI, Z.AI, Ollama, LM Studio — from a response that is an id
-      // list and nothing more, so there is no line-wide fact to lean on the way
-      // the Anthropic parser can. Enrichment fills these where OpenRouter also
-      // lists the model, which for a local Ollama model is never; the registry
-      // editor is the other way in.
-      supports: { tools: null, streaming: true, vision: null, caching: null },
+      modalities: caps?.vision === true ? (["text", "image"] as const) : (["text"] as const),
+      // Unknown unless the row said otherwise. This parser serves a dozen
+      // unrelated vendors — OpenAI, xAI, Z.AI, Ollama, LM Studio — from what is
+      // usually an id list and nothing more, so there is no line-wide fact to
+      // lean on the way the Anthropic parser can. A `capabilities` object is
+      // the exception: it is a report, and `?? null` keeps the absent case
+      // silent rather than promoting it to a denial. Enrichment fills the rest
+      // where OpenRouter also lists the model, which for a local Ollama model
+      // is never; the registry editor is the other way in.
+      supports: {
+        tools: caps?.tools ?? null,
+        streaming: true,
+        vision: caps?.vision ?? null,
+        caching: null,
+      },
     };
   });
 }

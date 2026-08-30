@@ -243,6 +243,29 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     aggregator: true,
   },
 
+  // ── Local aggregators ──────────────────────────────────────────────────────
+  // Both local and an aggregator, which no other preset is: it runs on this
+  // machine and needs no key, but the models it lists belong to Anthropic,
+  // Z.AI, xAI and the rest — it holds *their* credentials so rewter needn't.
+  {
+    slug: "9router",
+    name: "9router",
+    kind: "openai-compat",
+    baseUrl: "http://localhost:20128/v1",
+    // Binds to localhost and authenticates nothing; a bearer token would be
+    // rejected as an unexpected header rather than ignored.
+    apiKeyEnv: null,
+    // It does report usage (verified against a live instance), so this is the
+    // safety net rather than the expectation — same reasoning as the other
+    // local presets, where a build that quietly stops answering must degrade to
+    // an unknown cost rather than a recorded zero (#14).
+    quirks: { usageOptional: true },
+    listModels: true,
+    local: true,
+    aggregator: true,
+    docsUrl: "https://github.com/9cat/9router",
+  },
+
   // ── Local runtimes ─────────────────────────────────────────────────────────
   {
     slug: "ollama",
