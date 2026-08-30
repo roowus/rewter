@@ -35,9 +35,46 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
 | M8c | `~/.rewter/env`, launchd plist, `rewter logs`, `rewter gc` | ✅ 2026-08-29 |
-| M8 | *acceptance: walkthrough verbatim (#13) + `kill -9` mid-task; LaunchAgent live, reboot pending* | 🟡 two of three |
+| M8 | *acceptance: walkthrough verbatim (#13), `kill -9` mid-task, and a real reboot* | ✅ 2026-08-29 |
+
+**Phase 1 is complete — every milestone's acceptance has been run live.**
 
 ## Log
+
+### 2026-08-29 — M8 acceptance, part three: a real reboot
+
+The last open phase-1 criterion, and the one no test could stand in for. The LaunchAgent had
+been installed, bootstrapped and verified serving, but **`bootstrap` is not `login`** — loading
+a plist by hand proves the plist is loadable, not that launchd's session domain will re-load it
+when the user logs in. Only a restart answers that, and the restart is not something a test
+suite can perform.
+
+Restarted the machine. Booted 20:22:25; six minutes later:
+
+```
+$ rewter status
+rewter 0.1.0 running on http://127.0.0.1:20130, pid 1724, up 4m — 1 provider(s), 1 model(s)
+```
+
+**The pid is the whole result.** Before the reboot the daemon was 43683; a `status` that merely
+said *running* would be satisfied by a process that had somehow outlived the restart, which is
+the failure this criterion exists to exclude. 1724, with an uptime shorter than the machine's,
+is launchd having started it fresh at login. `launchctl list` agrees, and reports last-exit 0
+rather than a crash-restart loop:
+
+```
+1724	0	com.roowus.rewter
+```
+
+`GET /` returns 200 `text/html` — the dashboard, served by the daemon itself, which is why
+[#16] had to be fixed before this run could mean anything; a reboot that brought up an API
+with no UI would have satisfied half the criterion while reading as all of it. `/internal/health`
+is `ok`. And `/internal/events?afterSeq=0` still replays from `seq: 1`: the SQLite file outlived
+the restart, so the dashboard shows history from before the reboot rather than an empty tree.
+Durability and startup are separate claims and both needed checking.
+
+Nothing was changed to make this pass. That is the point of the criterion — it is the one
+acceptance whose value is entirely in having actually done it.
 
 ### 2026-08-29 — four bugs off the board (#1, #2, #4, #5)
 

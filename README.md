@@ -52,8 +52,11 @@ database.
 
 ## Status
 
-**Early development — phase 1 (MVP) in progress.** See [docs/progress.md](docs/progress.md)
-for the milestone board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+**Phase 1 (MVP) is complete — M0 through M8, every acceptance run live** (including the ones a
+test suite cannot stand in for: Claude Code driving it as a plain router, a shell command
+approved from the browser mid-stream, `kill -9` mid-task, and a real reboot with the daemon
+brought back by launchd at login). See [docs/progress.md](docs/progress.md) for the milestone
+board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
