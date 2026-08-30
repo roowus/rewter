@@ -451,7 +451,11 @@ If we implement from this survey, roughly in value order:
    default of 256, and reports `usage` plus a `costUsd` that is `null` rather than `$0`
    when the model is unpriced. Upstream refusals come back at the upstream's own status in
    the upstream's own words. See ARCHITECTURE.md → "What the model actually receives".
-6. **Budget UI** — expose `maxSpendUsd`, which exists and is unreachable.
+6. ~~**Budget UI** — expose `maxSpendUsd`, which exists and is unreachable.~~ **Done**
+   (2026-08-30). `POST /internal/tasks/:id/settings` moves the live session *and* the row,
+   and reports `applied` so "a running task changed course" is never claimed for what was
+   only a row write. `null` removes the cap, `0` is refused everywhere, and the control is
+   absent on a terminal task. See ARCHITECTURE.md → "Moving the cap".
 7. **Run-a-task-from-the-dashboard** — the "test run" affordance; today every task must come
    from a client.
 8. **Shutdown button** behind a confirm modal; a header liveness dot; a "Local Mode" footer.

@@ -16,6 +16,7 @@ import {
 } from "@rewter/shared";
 import { useState } from "react";
 import { ApprovalCard } from "./ApprovalCard.js";
+import { setTaskBudget } from "./budget.js";
 import { cancelTask } from "./cancel.js";
 import { clockTime, elapsed, shortModelId, usd } from "./format.js";
 
@@ -93,6 +94,108 @@ function KillButton({ taskId }: { taskId: string }): JSX.Element {
   );
 }
 
+/**
+ * The spending cap, shown and — while the task is live — editable.
+ *
+ * The cap has existed since M5 and been unreachable: a task spawned from Claude
+ * Code takes whatever the config file says, and a user watching it burn through
+ * that number had no way to move it without editing a file and restarting the
+ * daemon. This is the control that closes that.
+ *
+ * Two rules the display turns on. `null` is *uncapped*, not `$0` — `usd(0)` for
+ * a task with no ceiling would read as a task that may not spend, which is the
+ * exact opposite. And the field is seeded from the folded cap but not bound to
+ * it: a fold arriving mid-edit (a worker's cost, say) must not overwrite what
+ * is being typed, so `draft` is committed on submit and reset on cancel.
+ *
+ * No optimistic write. The daemon's `task.settings_changed` event is what moves
+ * the number, so a POST it refused leaves the old cap on screen — true.
+ */
+function Budget({
+  taskId,
+  cap,
+  spent,
+  live,
+}: {
+  taskId: string;
+  cap: number | null;
+  spent: number;
+  live: boolean;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<string | null>(null);
+
+  function open(): void {
+    setDraft(cap === null ? "" : String(cap));
+    setOutcome(null);
+    setEditing(true);
+  }
+
+  async function save(): Promise<void> {
+    const trimmed = draft.trim();
+    // Empty means uncapped. That is the only way to *remove* a cap, so it has
+    // to be a distinct input rather than an amount of zero.
+    const next = trimmed === "" ? null : Number(trimmed);
+    if (next !== null && (!Number.isFinite(next) || next <= 0)) {
+      setOutcome("must be a positive amount");
+      return;
+    }
+    setBusy(true);
+    const result = await setTaskBudget(taskId, next);
+    setOutcome(result.message);
+    setBusy(false);
+    if (result.ok) setEditing(false);
+  }
+
+  const pct = cap === null || cap <= 0 ? null : Math.min(100, Math.round((spent / cap) * 100));
+
+  return (
+    <p className="task-budget">
+      <span className="budget-label">budget</span>{" "}
+      {cap === null ? (
+        <span className="budget-cap" title="no ceiling — the task spends until it finishes">
+          uncapped
+        </span>
+      ) : (
+        <span className="budget-cap">
+          {usd(spent)} of <strong>{usd(cap)}</strong>
+          {pct !== null && <span className="budget-pct"> ({pct}%)</span>}
+        </span>
+      )}
+      {live && !editing && (
+        <button type="button" className="budget-edit" onClick={open}>
+          {cap === null ? "Set budget" : "Change"}
+        </button>
+      )}
+      {editing && (
+        <span className="budget-form">
+          <label htmlFor={`budget-${taskId}`} className="visually-hidden">
+            budget cap in dollars
+          </label>
+          <input
+            id={`budget-${taskId}`}
+            type="text"
+            inputMode="decimal"
+            value={draft}
+            placeholder="uncapped"
+            disabled={busy}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button type="button" onClick={() => void save()} disabled={busy}>
+            Save
+          </button>
+          <button type="button" onClick={() => setEditing(false)} disabled={busy}>
+            Cancel
+          </button>
+        </span>
+      )}
+      {outcome !== null && <span className="budget-outcome">{outcome}</span>}
+    </p>
+  );
+}
+
 export function TaskTree({ task, now }: { task: FoldedTask; now: number }): JSX.Element {
   const pending = pendingApprovals(task);
   // A finished task has nothing to kill, and offering the button anyway would
@@ -115,6 +218,13 @@ export function TaskTree({ task, now }: { task: FoldedTask; now: number }): JSX.
         <strong>{usd(task.costUsd)}</strong> total —{" "}
         <span title="the initiator's own tokens">{usd(task.initiatorCostUsd)} planning</span>
       </p>
+
+      <Budget
+        taskId={task.task.id}
+        cap={task.task.settings.maxSpendUsd}
+        spent={task.costUsd}
+        live={live}
+      />
 
       {pending.length > 0 && (
         <div className="approvals" aria-label="pending approvals">

@@ -22,6 +22,7 @@ import {
   type StreamChunk,
   type TaskId,
   newCostRecordId,
+  newTaskId,
   newWorkerRunId,
 } from "@rewter/shared";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -936,6 +937,90 @@ describe("budget", () => {
     expect(JSON.stringify(h.adapter.requests.at(-1)?.messages ?? [])).toContain(
       "spending cap has been reached",
     );
+  });
+
+  it("lifts the refusal when the cap is raised mid-run", async () => {
+    // The whole point of the dashboard control: a task that has hit its ceiling
+    // is stuck until someone can move the ceiling, and before this the only way
+    // was to edit the config file and restart the daemon.
+    let spawns = 0;
+    let orch: Orchestrator | null = null;
+    const h = makeHarness(
+      [
+        turn({ name: "spawn_worker", args: { title: "a", model: SMALL, instructions: "x" } }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "spawn_worker", args: { title: "b", model: SMALL, instructions: "y" } }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "finish", args: { answer: "both ran" } }),
+      ],
+      {},
+      async (ctx) => {
+        spawns += 1;
+        if (spawns === 1) {
+          chargeTask(ctx.taskId, 1.5);
+          expect(orch?.setMaxSpendUsd(ctx.taskId, 5)).toBe(true);
+        }
+        return outcome();
+      },
+    );
+    orch = h.orchestrator;
+
+    const { feed } = await drive(h, { settings: { maxSpendUsd: 1 } });
+    // Without the raise this is the "refuses new workers outright" case above,
+    // and `spawns` stops at 1.
+    expect(spawns).toBe(2);
+    expect(feed).toContain("both ran");
+    expect(JSON.stringify(h.adapter.requests.at(-1)?.messages ?? [])).not.toContain(
+      "spending cap has been reached",
+    );
+    // The engine moves the *run*, not the row — writing `tasks.settings_json` is
+    // the route's job, and doing it in both places is how the two would drift.
+    expect(only(tasks())?.settings.maxSpendUsd).toBe(1);
+  });
+
+  it("warns again against the new cap, rather than staying latched", async () => {
+    // `budgetWarned` is a one-shot latch. Left set across a raise, the user who
+    // just granted another $1 would spend it without a single note.
+    let spawns = 0;
+    let orch: Orchestrator | null = null;
+    const h = makeHarness(
+      [
+        turn({ name: "spawn_worker", args: { title: "a", model: SMALL, instructions: "x" } }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "spawn_worker", args: { title: "b", model: SMALL, instructions: "y" } }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "finish", args: { answer: "done" } }),
+      ],
+      {},
+      async (ctx) => {
+        spawns += 1;
+        // $1.70 of $2 is past 80% but short of the ceiling, so w1 earns the note
+        // and w2 is still allowed through the hard guard. The raise lands inside
+        // w2, before the turn that would otherwise stay silent.
+        if (spawns === 2) orch?.setMaxSpendUsd(ctx.taskId, 4);
+        chargeTask(ctx.taskId, 1.7);
+        return outcome();
+      },
+    );
+    orch = h.orchestrator;
+
+    const { feed } = await drive(h, { settings: { maxSpendUsd: 2 } });
+    const notes = feed.match(/· budget: [^\n]+/g) ?? [];
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toMatch(/\$1\.7\d of \$2\.00 spent/);
+    // Quoted against the cap now in force, not the one the task started with.
+    expect(notes[1]).toMatch(/\$3\.[45]\d of \$4\.00 spent/);
+  });
+
+  it("reports that no live session took a cap it cannot reach", async () => {
+    // Same honesty as `cancel`: the row is the caller's to write, and false says
+    // which of the two things happened rather than implying a run changed course.
+    const h = makeHarness([turn({ name: "finish", args: { answer: "done" } })]);
+    expect(h.orchestrator.setMaxSpendUsd(newTaskId(), 5)).toBe(false);
+
+    await drive(h);
+    // And once it has finished, the session is gone — a cap set now edits history.
+    expect(h.orchestrator.setMaxSpendUsd(only(tasks())?.id as TaskId, 5)).toBe(false);
   });
 
   it("stays out of the way when no cap is set", async () => {

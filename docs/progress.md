@@ -31,6 +31,7 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M7d | Kill: `POST /internal/tasks/:id/cancel` + the button | ✅ 2026-08-28 |
 | M7e | Costs: `GET /internal/costs` + the spend panel | ✅ 2026-08-28 |
 | M7f | Registry editor: models/card CRUD routes + the panel | ✅ 2026-08-29 |
+| M7g | Budget: `POST /internal/tasks/:id/settings` + the cap control | ✅ 2026-08-30 |
 | M7 | *acceptance: approve from the browser while the stream runs* | ✅ 2026-08-29 |
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
@@ -40,6 +41,44 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 **Phase 1 is complete — every milestone's acceptance has been run live.**
 
 ## Log
+
+### 2026-08-30 — moving the cap (survey item 6: the budget UI)
+
+`Task.settings.maxSpendUsd` has been in the schema since M5 and reachable only by editing the
+config file and restarting the daemon. That is fine for a default and useless for the case it
+exists to serve: a task you started from Claude Code an hour ago, now walking up to its
+ceiling, with nothing you can do about it from the page that is showing you it happen.
+`POST /internal/tasks/:id/settings` and a `Budget` control in the task tree close that.
+
+The interesting part is the same one the kill button had — **who writes what.** The engine's
+`setMaxSpendUsd` moves the live session and touches no tables; `repos.updateTaskSettings`
+patches the row and emits `task.settings_changed`; the route calls both and reports which
+happened. `applied: true` means a running task changed course. `applied: false` means the row
+moved and nothing was executing under it — real, but it is editing history, and reporting both
+the same way would be claiming the first having done only the second. Unlike `cancel` the row
+is written on both paths: no stream is racing to write it.
+
+Three things the tests exist to hold:
+
+- **`null` is not `$0`,** at the schema (`positive().nullable()`), the repo, the route (`0` →
+  400, `{}` → 400 so an absent field is not read as uncapped), the client (empty field sends
+  `null`, not zero), and the display (`uncapped`, not `$0.00`, which would read as the exact
+  opposite). Removing a cap has to be reachable, and only a distinct input makes it so.
+- **The 80% latch resets on a raise.** `budgetWarned` is one-shot; left set across a raise, the
+  user who just granted another dollar spends it without a single note. The engine test asserts
+  two notes quoted against two different caps — nothing else can catch that regression.
+- **No optimistic write.** The number on screen is the daemon's, arriving through the fold. A
+  POST it refused leaves the old cap visible, which is true. The control is absent on a
+  terminal task for the same reason `Kill` is; the cap still shows, because it is history.
+
+One ordering fact fell out of writing it and is worth keeping: the hard `overBudget()` refusal
+in `spawn_worker` fires *before* the worker callback runs, so a test that raises the cap from
+inside a worker must stay under the ceiling or the second worker never starts. Two attempts
+failed identically to that before the third kept spend at $1.70 against a $2 cap.
+
+1552 tests green (dashboard 190 → 208; server gains `app.settings.test.ts` and three budget
+tests in the engine suite). Shortlist: 6 down, 3 to go; next is running a task from the
+dashboard.
 
 ### 2026-08-30 — what the model actually receives (survey item 5: translate + chat test)
 

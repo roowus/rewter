@@ -397,6 +397,14 @@ completion to the model named in the box, because a perfectly-shaped request sti
 you whether the key works. It reports the answer, the tokens, and what it billed — and shows
 up in the spend panel, because it was spend.
 
+Each running task shows what it has spent against its ceiling, and lets you move the ceiling
+while it runs — the whole point being that the moment you want a cap raised is the moment a
+task is walking up to one, which used to mean editing the config file and restarting. Leaving
+the field empty removes the cap; zero is refused, because "may not spend a cent" is not what
+anyone meant. The reply says which of two things happened: a *running* task took the new cap,
+or the row was saved with nothing executing under it. The number on screen doesn't move until
+the daemon says it did.
+
 (If you are working on the dashboard itself, run `pnpm --filter @rewter/dashboard dev`
 instead and use :5273, which proxies back here rather than rebuilding the bundle on every
 keystroke.)
@@ -586,7 +594,8 @@ what a task may spend, and a request that says nothing about settings inherits b
 ```jsonc
 "orchestrator": {
   "initiatorModel": "anthropic/claude-sonnet-5",  // else: priciest tools-capable model
-  "maxSpendUsd": 1,          // per task; the initiator is refused a spawn past it
+  "maxSpendUsd": 1,          // per task; the initiator is refused a spawn past it,
+                             // and the dashboard can move it mid-run
   "concurrency": 4,          // parallel workers per task
   "maxTurns": 24, "maxHandoffs": 2   // runaway guards, not targets
 }

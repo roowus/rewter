@@ -8,6 +8,7 @@ import {
   ApprovalSchema,
   CostRecordSchema,
   TaskSchema,
+  TaskSettingsSchema,
   TimestampSchema,
   WorkItemSchema,
   WorkerRunSchema,
@@ -57,6 +58,22 @@ export const EventPayloadSchema = z.discriminatedUnion("type", [
     note: z.string().nullable(),
   }),
   z.object({ type: z.literal("cost.recorded"), cost: CostRecordSchema }),
+  /**
+   * A task's settings were changed after it was created — today only the
+   * spending cap, from the dashboard.
+   *
+   * Carries the whole `TaskSettings` rather than the one field that moved,
+   * because the fold's job is to hold the current `Task` and a partial would
+   * make it merge two sources of truth. `from` is kept so the log reads as a
+   * change rather than as a restatement: "raised $1 → $5" is the audit line,
+   * and a payload with only the new value cannot produce it.
+   */
+  z.object({
+    type: z.literal("task.settings_changed"),
+    taskId: TaskIdSchema,
+    from: TaskSettingsSchema,
+    to: TaskSettingsSchema,
+  }),
   z.object({ type: z.literal("steering.received"), taskId: TaskIdSchema, text: z.string() }),
   z.object({
     type: z.literal("handoff.initiated"),

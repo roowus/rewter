@@ -79,6 +79,35 @@ describe("Repos round-trips (in-memory SQLite)", () => {
     expect(repos.getTask(task.id)?.status).toBe("running");
   });
 
+  it("task: settings patch merges over the row and emits from → to", () => {
+    const task = makeTask();
+    const updated = repos.updateTaskSettings(task.id, { maxSpendUsd: 5 });
+
+    expect(updated.settings.maxSpendUsd).toBe(5);
+    // A caller that knows only about the cap must not silently reset the rest to
+    // the schema defaults — this is why it takes a patch, not a whole object.
+    expect(updated.settings.concurrency).toBe(task.settings.concurrency);
+    expect(updated.settings.autoApprove).toBe(task.settings.autoApprove);
+    expect(repos.getTask(task.id)).toEqual(updated);
+
+    const events = bus.eventsAfter(0).map((e: EventEnvelope) => e.payload);
+    const change = events.find((p) => p.type === "task.settings_changed");
+    if (change?.type !== "task.settings_changed") throw new Error("no settings event");
+    // `from` is what makes the log read as a change rather than a restatement.
+    expect(change.from.maxSpendUsd).toBeNull();
+    expect(change.to.maxSpendUsd).toBe(5);
+  });
+
+  it("task: settings can remove a cap, which is not a cap of zero", () => {
+    const task = makeTask();
+    repos.updateTaskSettings(task.id, { maxSpendUsd: 2 });
+    const cleared = repos.updateTaskSettings(task.id, { maxSpendUsd: null });
+    expect(cleared.settings.maxSpendUsd).toBeNull();
+    // Zero is not a legal cap; the schema is the one contract, not a second
+    // check at the route.
+    expect(() => repos.updateTaskSettings(task.id, { maxSpendUsd: 0 })).toThrow();
+  });
+
   it("work item + worker run: full ladder with handoff chain columns", () => {
     const task = makeTask();
     const wi = repos.createWorkItem({

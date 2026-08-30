@@ -226,6 +226,13 @@ function applyToTask(task: FoldedTask, event: EventEnvelope): FoldedTask {
     case "task.plan_note":
       return { ...task, planNotes: [...task.planNotes, note(event, p.note)] };
 
+    // Unlike a status change, this replaces the field wholesale rather than
+    // patching it: `to` is the settings object the daemon is running with, so
+    // adopting it keeps the fold's `Task` identical to the row rather than
+    // merging toward it.
+    case "task.settings_changed":
+      return { ...task, task: { ...task.task, settings: p.to, updatedAt: event.ts } };
+
     case "steering.received":
       return { ...task, steering: [...task.steering, note(event, p.text)] };
 

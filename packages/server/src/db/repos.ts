@@ -21,6 +21,8 @@ import {
   TASK_TRANSITIONS,
   type Task,
   TaskSchema,
+  type TaskSettings,
+  TaskSettingsSchema,
   type TaskStatus,
   WORKER_RUN_TRANSITIONS,
   WORK_ITEM_TRANSITIONS,
@@ -278,6 +280,40 @@ export class Repos {
       .all()
       .map(rowToTask)
       .filter((t) => !isTerminal(TASK_TRANSITIONS, t.status));
+  }
+
+  /**
+   * Change a task's settings after creation.
+   *
+   * Takes a partial and merges it over what is stored, so a caller that only
+   * knows about the spending cap cannot silently reset auto-approve to the
+   * schema default. Re-parsed through `TaskSettingsSchema` on the way in, since
+   * the merged object is the thing the engine will read.
+   *
+   * No lifecycle guard, because settings are not a state machine — but a
+   * terminal task is refused by the caller, not here: writing a cap onto a
+   * finished task is a write nothing will ever read.
+   */
+  updateTaskSettings(id: string, patch: Partial<TaskSettings>): Task {
+    const current = this.getTask(id);
+    if (current === undefined) throw new Error(`task not found: ${id}`);
+    const settings = TaskSettingsSchema.parse({ ...current.settings, ...patch });
+    const now = this.clock();
+    this.db
+      .update(tasks)
+      .set({ settingsJson: JSON.stringify(settings), updatedAt: now })
+      .where(eq(tasks.id, id))
+      .run();
+    this.bus.append({
+      taskId: current.id,
+      payload: {
+        type: "task.settings_changed",
+        taskId: current.id,
+        from: current.settings,
+        to: settings,
+      },
+    });
+    return this.getTask(id) as Task;
   }
 
   transitionTask(

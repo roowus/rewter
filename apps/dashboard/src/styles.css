@@ -1031,7 +1031,67 @@ button.kill:disabled {
 .task-cost {
   color: var(--dim);
   font-size: 0.85rem;
-  margin: 0.4rem 0 0.8rem;
+  margin: 0.4rem 0 0.2rem;
+}
+
+/* ── budget ── */
+
+.task-budget {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  color: var(--dim);
+  font-size: 0.85rem;
+  margin: 0 0 0.8rem;
+}
+
+.budget-label {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+.budget-pct {
+  color: var(--dim);
+}
+
+.budget-form {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.budget-form input {
+  width: 6rem;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.1rem 0.4rem;
+  background: #1a1e26;
+  color: var(--fg);
+  border: 1px solid #333a47;
+  border-radius: 4px;
+}
+
+.task-budget button {
+  background: none;
+  border: 1px solid #333a47;
+  color: var(--dim);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+
+.task-budget button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.budget-outcome {
+  font-size: 0.8rem;
+  color: var(--dim);
 }
 
 .status {

@@ -39,6 +39,7 @@ import {
   type StreamChunk,
   TASK_TRANSITIONS,
   type TaskId,
+  TaskSettingsSchema,
   TranslateRequestSchema,
   type TranslateResponse,
   applyModelPatch,
@@ -942,6 +943,58 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       aborted: false,
       alreadyFinished: false,
     };
+  });
+
+  // ── Budget ────────────────────────────────────────────────────────────────
+  /**
+   * Change a task's spending cap. `{"maxSpendUsd": 5}` raises it, `null` removes
+   * it entirely.
+   *
+   * Only the cap. The other three settings are read once and cannot honestly
+   * move mid-flight — `concurrency` built the limiter, `workspaceDir` opened a
+   * directory — and `autoApprove` is a safety switch that deserves its own
+   * control rather than riding along in a budget call.
+   *
+   * A terminal task is a 409 for the same reason the kill route uses one: the
+   * write would succeed and mean nothing, and a 200 would read in a log as a
+   * budget that is in force. The row is written either way; `applied` says
+   * whether a live session also took it, which is the difference between
+   * changing what a running task will spend and editing history.
+   */
+  app.post("/internal/tasks/:id/settings", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const task = repos.getTask(id);
+    if (task === undefined) {
+      return reply.code(404).send({ error: { message: `no such task: ${id}` } });
+    }
+    if (isTerminal(TASK_TRANSITIONS, task.status)) {
+      return reply.code(409).send({
+        error: { message: `task is already ${task.status}` },
+        task,
+        applied: false,
+      });
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!("maxSpendUsd" in body)) {
+      return reply.code(400).send({ error: { message: "maxSpendUsd is required" } });
+    }
+    // The settings schema's own field, not a restatement of it: a second
+    // "positive or null" here is a contract that can drift from the one the
+    // engine enforces.
+    const cap = TaskSettingsSchema.shape.maxSpendUsd.safeParse(body.maxSpendUsd);
+    if (!cap.success) {
+      return reply
+        .code(400)
+        .send({ error: { message: "maxSpendUsd must be a positive number or null" } });
+    }
+
+    const updated = repos.updateTaskSettings(id, { maxSpendUsd: cap.data });
+    // False means the row moved but nothing is running under it — a task
+    // between a restart and its reconciliation, say. Not an error, and saying so
+    // beats implying a running task changed course.
+    const applied = orchestrator?.setMaxSpendUsd(id as TaskId, cap.data) ?? false;
+    return { task: updated, applied };
   });
 
   // ── Costs ─────────────────────────────────────────────────────────────────

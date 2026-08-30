@@ -323,6 +323,47 @@ describe("foldEvents", () => {
     expect(folded?.handoffs[0]?.reason).toBe("this needs deeper reasoning");
   });
 
+  it("adopts a settings change wholesale, so the folded task equals the row", () => {
+    // The dashboard reads the cap out of the folded `Task`, and the daemon reads
+    // it out of the row. A fold that merged toward `to` instead of taking it
+    // would let those two answers drift.
+    const s = new Stream();
+    const t = task({ settings: TaskSettingsSchema.parse({ maxSpendUsd: 1 }) });
+    s.push(t.id, { type: "task.created", task: t });
+    expect(foldTask(s.events, t.id)?.task.settings.maxSpendUsd).toBe(1);
+
+    const raised = TaskSettingsSchema.parse({ ...t.settings, maxSpendUsd: 5 });
+    const ev = s.push(t.id, {
+      type: "task.settings_changed",
+      taskId: t.id,
+      from: t.settings,
+      to: raised,
+    });
+
+    const folded = foldTask(s.events, t.id);
+    expect(folded?.task.settings).toEqual(raised);
+    // The whole object, not just the field that moved — the other three are
+    // still what the task was created with.
+    expect(folded?.task.settings.concurrency).toBe(t.settings.concurrency);
+    expect(folded?.task.updatedAt).toBe(ev.ts);
+    // A settings change is not a status change; nothing about the lifecycle moved.
+    expect(folded?.task.status).toBe("pending");
+  });
+
+  it("carries a cap removal, which is not the same as a cap of zero", () => {
+    const s = new Stream();
+    const t = task({ settings: TaskSettingsSchema.parse({ maxSpendUsd: 2 }) });
+    s.push(t.id, { type: "task.created", task: t });
+    s.push(t.id, {
+      type: "task.settings_changed",
+      taskId: t.id,
+      from: t.settings,
+      to: TaskSettingsSchema.parse({ ...t.settings, maxSpendUsd: null }),
+    });
+
+    expect(foldTask(s.events, t.id)?.task.settings.maxSpendUsd).toBeNull();
+  });
+
   it("keeps two concurrent tasks apart", () => {
     const s = new Stream();
     const a = task({ title: "task a" });

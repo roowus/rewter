@@ -9,8 +9,38 @@
  * is the transition itself (`running → succeeded`) — the table already has a
  * type column, so repeating the type in the detail adds nothing.
  */
-import type { EventPayload } from "@rewter/shared";
+import type { EventPayload, TaskSettings } from "@rewter/shared";
 import { shortModelId, usd } from "./format.js";
+
+/**
+ * The fields that moved, not the whole object.
+ *
+ * The payload carries both settings wholesale (the fold needs the complete
+ * object), but a row that restated all four every time would bury the one that
+ * changed. An empty diff is still worth a line: the event happened, and saying
+ * "no change" is more honest than an empty cell that reads as a render bug.
+ */
+function describeSettingsChange(from: TaskSettings, to: TaskSettings): string {
+  const parts: string[] = [];
+  if (from.maxSpendUsd !== to.maxSpendUsd) {
+    parts.push(`budget ${capLabel(from.maxSpendUsd)} → ${capLabel(to.maxSpendUsd)}`);
+  }
+  if (from.autoApprove !== to.autoApprove) {
+    parts.push(`auto-approve ${from.autoApprove} → ${to.autoApprove}`);
+  }
+  if (from.concurrency !== to.concurrency) {
+    parts.push(`concurrency ${from.concurrency} → ${to.concurrency}`);
+  }
+  if (from.workspaceDir !== to.workspaceDir) {
+    parts.push(`workspace ${from.workspaceDir ?? "default"} → ${to.workspaceDir ?? "default"}`);
+  }
+  return parts.length === 0 ? "no change" : parts.join(", ");
+}
+
+/** `null` is an uncapped task, which `usd(0)`-style formatting would hide. */
+export function capLabel(cap: number | null): string {
+  return cap === null ? "uncapped" : usd(cap);
+}
 
 export function describeEvent(payload: EventPayload): string {
   switch (payload.type) {
@@ -39,6 +69,8 @@ export function describeEvent(payload: EventPayload): string {
       }`;
     case "cost.recorded":
       return `${usd(payload.cost.costUsd)} · ${shortModelId(payload.cost.modelId)}`;
+    case "task.settings_changed":
+      return describeSettingsChange(payload.from, payload.to);
     case "steering.received":
       return payload.text;
     case "handoff.initiated":

@@ -590,7 +590,8 @@ so a task's total always exceeds the sum of its workers' spend.
 
 Where that cap comes from is its own small problem. The OpenAI wire format has nowhere to put
 a spending cap, so a request that specifies task settings is the exception, not the rule — which
-means a cap that only ever arrives per-request is a cap that never arrives. The config file's
+means a cap that only ever arrives per-request is a cap that never arrives. A cap that can only
+be set *before* the task is nearly as bad — see [Moving the cap](#moving-the-cap-m7g). The config file's
 `orchestrator.maxSpendUsd` and `orchestrator.concurrency` are passed to the engine as
 `defaultSettings` and merged under the request's own: request beats config beats schema default.
 The merge drops `undefined` values rather than spreading them, because `{...{cap: 1}, ...{cap:
@@ -1567,7 +1568,10 @@ done-pattern) so any CLI harness is addable by config.
   the log table — see [The event log, as a table](#the-event-log-as-a-table)), approvals — `GET
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
   `POST /internal/tasks/:id/cancel` (`{task, aborted, alreadyFinished}`; 404 unknown, 409
-  already terminal — see [Kill](#kill-who-writes-the-row-m7d)), `GET /internal/costs`
+  already terminal — see [Kill](#kill-who-writes-the-row-m7d)),
+  `POST /internal/tasks/:id/settings` (`{maxSpendUsd: number|null}` → `{task, applied}`;
+  404 unknown, 409 terminal, 400 for a zero/absent/non-numeric cap — see
+  [Moving the cap](#moving-the-cap-m7g)), `GET /internal/costs`
   (see below), the registry-editor writes — `POST /internal/models`,
   `PATCH|DELETE /internal/models/*`, `PUT /internal/card-overrides/*` (see
   [The registry editor](#the-registry-editor-m7f)) — `POST /internal/providers/:id/test`
@@ -2267,6 +2271,55 @@ and completely different situations, and only one of them means the next task fa
 One fetch feeds two readers: `HealthPanel` takes an optional `onHealth` callback and `App`
 holds the payload. A second poller would double the request rate to say the same thing twice,
 and occasionally disagree with itself mid-flight.
+
+### Moving the cap (M7g)
+
+`Task.settings.maxSpendUsd` has existed since M5 and, until now, was reachable only by editing
+the config file and restarting the daemon — which is no help at all to the person watching a
+task they started from Claude Code walk up to its ceiling. `POST /internal/tasks/:id/settings`
+is the control that closes that, and everything interesting about it is the same question the
+kill button asked: **who writes what.**
+
+Three layers each own exactly one thing, and the tests are written so that none of them can
+pass on another's behaviour:
+
+| | writes | reports |
+|---|---|---|
+| `Orchestrator.setMaxSpendUsd` | the **live session's** settings; nothing on disk | `false` when there is no session |
+| `repos.updateTaskSettings` | the **row**, as a patch, emitting `task.settings_changed` | the updated `Task` |
+| the route | calls both, in that order | `applied` |
+
+`applied: true` means a live session took the cap, so what the task *will* spend changed.
+`applied: false` means the row moved and nothing is executing under it — real, but it is
+editing history, and a route that reported both the same way would be claiming the first when
+it had only done the second. The row is written on **both** paths, unlike `cancel`: no stream
+is racing to write it, and the log should read the same whether or not the daemon happened to
+be running the task. 409 on a terminal task, because a cap in force over nothing is not a
+thing that happened, and a 200 there would read in the log as a budget that held.
+
+**`null` is not `0`, at every layer.** `TaskSettingsSchema` says `positive().nullable()`, so
+zero is rejected by the one contract rather than by a second check at the route; `null` is the
+only way to *remove* a cap, and a client that collapsed the two would make removal unreachable.
+An absent field is refused too — `{}` and `{maxSpendUsd: null}` are different requests, and
+reading the first as the second removes a cap nobody asked to remove. The dashboard's input
+carries the same rule: empty means uncapped, `0` is refused client-side without troubling the
+daemon.
+
+**The 80% latch resets on a raise.** `budgetWarned` is a one-shot, so `Session.setMaxSpendUsd`
+clears it: a user who granted another dollar after seeing the note is owed that note again at
+80% of the *new* cap, and a latch left set would spend the difference in silence. The engine
+test pins this by asserting two notes quoted against two different caps.
+
+One ordering fact shapes how any of this can be tested: the hard `overBudget()` refusal in
+`spawn_worker` fires **before** the worker's callback runs, so a test that raises the cap from
+inside a worker must keep spend under the ceiling or the second worker never starts at all.
+
+`Budget` in `TaskTree.tsx` follows the kill button's rule — **no optimistic write.** The
+number on screen is the daemon's, arriving as `task.settings_changed` through the fold, so a
+POST the daemon refused leaves the old cap visible, which is true. `FoldedTask` already
+carries the whole `Task`, so *displaying* the cap needed no new plumbing; only setting it did.
+The control is absent on a terminal task for the same reason `Kill` is: offering it would be
+offering the 409. The cap itself still shows, because it is history worth reading.
 
 ## Design docs
 

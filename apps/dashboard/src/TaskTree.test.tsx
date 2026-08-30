@@ -314,3 +314,120 @@ describe("TaskTree — the kill button", () => {
     expect(kill.disabled).toBe(true);
   });
 });
+
+describe("TaskTree — the budget", () => {
+  /** The scenario with a cap, folded through a real `task.settings_changed`. */
+  const capped = (maxSpendUsd: number | null): EventEnvelope[] => [
+    ...scenario(),
+    envelope({
+      type: "task.settings_changed",
+      taskId,
+      from: TaskSettingsSchema.parse({}),
+      to: TaskSettingsSchema.parse({ maxSpendUsd }),
+    }),
+  ];
+
+  const finished = (): EventEnvelope[] => [
+    ...capped(1),
+    envelope({ type: "task.status_changed", taskId, from: "running", to: "succeeded" }),
+  ];
+
+  it("says uncapped rather than $0.00 when there is no ceiling", () => {
+    // `usd(0)` here would read as a task that may not spend — the exact
+    // opposite of what a null cap means.
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    expect(screen.getByText("uncapped")).toBeDefined();
+    expect(screen.getByText("Set budget")).toBeDefined();
+  });
+
+  it("shows spend against the cap, with how far through it is", () => {
+    render(<TaskTree task={foldOne(capped(0.01))} now={now} />);
+    // $0.0070 of $0.0100 — the same total the cost line shows, so the two
+    // cannot disagree about what has been spent.
+    expect(screen.getByText(/of/)).toBeDefined();
+    expect(screen.getByText("(70%)")).toBeDefined();
+  });
+
+  it("posts the typed cap to the task's settings route", async () => {
+    const fetchImpl = vi.fn(async () => okResponse({ applied: true }));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Set budget"));
+    fireEvent.change(screen.getByLabelText("budget cap in dollars"), {
+      target: { value: "2.50" },
+    });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`/internal/tasks/${taskId}/settings`);
+    expect(JSON.parse(init.body as string)).toEqual({ maxSpendUsd: 2.5 });
+  });
+
+  it("treats an empty field as removing the cap, not as zero", async () => {
+    const fetchImpl = vi.fn(async () => okResponse({ applied: true }));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    render(<TaskTree task={foldOne(capped(5))} now={now} />);
+    fireEvent.click(screen.getByText("Change"));
+    fireEvent.change(screen.getByLabelText("budget cap in dollars"), { target: { value: "" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ maxSpendUsd: null });
+  });
+
+  it("refuses a non-positive amount without troubling the daemon", async () => {
+    const fetchImpl = vi.fn(async () => okResponse({ applied: true }));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Set budget"));
+    fireEvent.change(screen.getByLabelText("budget cap in dollars"), { target: { value: "0" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await screen.findByText("must be a positive amount");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("leaves the shown cap alone until the fold changes it", async () => {
+    // Same rule as the kill button: no optimistic write. The number on screen
+    // is the daemon's, arriving as `task.settings_changed`.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => okResponse({ applied: true })),
+    );
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Set budget"));
+    fireEvent.change(screen.getByLabelText("budget cap in dollars"), { target: { value: "9" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await screen.findByText("budget updated");
+    expect(screen.getByText("uncapped")).toBeDefined();
+  });
+
+  it("distinguishes a saved row from a running task taking the cap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => okResponse({ applied: false })),
+    );
+
+    render(<TaskTree task={foldOne(scenario())} now={now} />);
+    fireEvent.click(screen.getByText("Set budget"));
+    fireEvent.change(screen.getByLabelText("budget cap in dollars"), { target: { value: "9" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await screen.findByText("saved — nothing was running");
+  });
+
+  it("still shows the cap on a finished task, but offers no way to move it", () => {
+    // The number is history worth reading; the control would be the 409.
+    render(<TaskTree task={foldOne(finished())} now={now} />);
+    expect(screen.getByText("$1.00")).toBeDefined();
+    expect(screen.queryByText("Change")).toBeNull();
+    expect(screen.queryByText("Set budget")).toBeNull();
+  });
+});

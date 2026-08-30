@@ -224,6 +224,30 @@ export class Orchestrator {
   }
 
   /**
+   * Change a running task's spending cap.
+   *
+   * Only the cap, and deliberately so. The other three settings are read once
+   * and cannot honestly be changed mid-flight: `concurrency` built the limiter,
+   * `workspaceDir` opened a directory, and `autoApprove` *is* read through but
+   * belongs to a separate control with its own confirmation. The cap is the one
+   * that is consulted fresh at every spawn, so moving it here moves it for real.
+   *
+   * Returns false when no live session holds the task — the row is the caller's
+   * to write, and it says which happened rather than implying a running task
+   * changed course. Same honesty as `cancel`.
+   *
+   * Resets the soft-warning latch: a user who raised the cap after seeing the
+   * 80% note is owed the note again at 80% of the new one, and a latch left set
+   * would spend the difference in silence.
+   */
+  setMaxSpendUsd(taskId: TaskId, maxSpendUsd: number | null): boolean {
+    const session = this.sessions.get(taskId);
+    if (session === undefined) return false;
+    session.setMaxSpendUsd(maxSpendUsd);
+    return true;
+  }
+
+  /**
    * Tell the engine where it is reachable.
    *
    * Separate from the constructor because of a boot ordering fact: the daemon
@@ -428,6 +452,12 @@ class Session {
   private nudged = false;
   private budgetWarned = false;
   /**
+   * The settings this run is executing under — a field rather than a read
+   * through `this.o`, because the spending cap can move mid-task and the
+   * options object is what the constructor was handed, not what is in force.
+   */
+  private settings: TaskSettings;
+  /**
    * Built on the first tier-2 spawn, not in the constructor: opening a workspace
    * mkdirs a directory, and the overwhelming majority of tasks are pure tier-1
    * fan-outs that would leave an empty directory behind for every one.
@@ -438,8 +468,21 @@ class Session {
   constructor(opts: SessionOptions) {
     this.o = opts;
     this.initiatorModel = opts.initiatorModel;
+    this.settings = opts.settings;
     this.limiter = createLimiter(opts.settings.concurrency);
     this.messages = this.buildMessages(opts.conversation);
+  }
+
+  /**
+   * Move the spending cap of a run already in flight.
+   *
+   * Clears the soft-warning latch, because a user who raised the cap after
+   * seeing the 80% note is owed that note again at 80% of the new one — a latch
+   * left set would spend the difference in silence.
+   */
+  setMaxSpendUsd(maxSpendUsd: number | null): void {
+    this.settings = { ...this.settings, maxSpendUsd };
+    this.budgetWarned = false;
   }
 
   /** The approval gate, if this task has ever needed one. */
@@ -482,14 +525,14 @@ class Session {
     const workspace = openWorkspace({
       taskId: this.o.task.id,
       baseDir: this.o.workspacesDir,
-      workspaceDir: this.o.settings.workspaceDir,
+      workspaceDir: this.settings.workspaceDir,
     });
     const approvals = new Approvals({
       repos: this.o.repos,
       taskId: this.o.task.id,
       // Read through rather than captured: the user may flip auto-approve in the
       // dashboard while a task is running, and the next gate check should see it.
-      autoApprove: () => this.o.settings.autoApprove,
+      autoApprove: () => this.settings.autoApprove,
       clock: this.o.clock,
       announce: (approval) => {
         this.lines.push(approvalLine({ approvalId: approval.id, summary: approval.summary }));
@@ -1142,7 +1185,7 @@ class Session {
    * refuses outright — a note the model can ignore is not a cap.
    */
   private *budgetCheck(): Generator<StreamChunk, void> {
-    const cap = this.o.settings.maxSpendUsd;
+    const cap = this.settings.maxSpendUsd;
     if (cap === null || this.budgetWarned) return;
     const spent = this.totals().costUsd ?? 0;
     if (spent < cap * 0.8) return;
@@ -1161,7 +1204,7 @@ class Session {
   }
 
   private overBudget(): boolean {
-    const cap = this.o.settings.maxSpendUsd;
+    const cap = this.settings.maxSpendUsd;
     return cap !== null && (this.totals().costUsd ?? 0) >= cap;
   }
 
