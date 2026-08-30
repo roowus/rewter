@@ -1925,6 +1925,18 @@ dropdown appears only when more than one provider exists, since a dropdown whose
 option shows the same table is furniture. Nothing is debounced: filtering is an array
 pass over rows already in memory, so the only cost of a keystroke is a re-render.
 
+## Design docs
+
+Larger decisions and investigations live under [`docs/design/`](design/):
+
+- [**OmniRoute UI/UX survey**](design/omniroute-ui-survey.md) — a written record of
+  [OmniRoute](https://github.com/diegosouzapw/OmniRoute)'s dashboard (10 sidebar sections,
+  118 routes), read to decide what rewter's one-page ops UI is actually missing. Documented,
+  not copied: no OmniRoute source was taken for any of it. Ends in a shortlist — a health
+  panel, a filterable event-log table, a time range on costs, provider readiness — and an
+  explicit account of what is deliberately *not* adopted (tabs, a router, a command palette,
+  combos) and why, argued against [the dashboard app](#the-dashboard-app-one-store-one-clock-m7c).
+
 ## Phases
 
 - **Phase 1 (MVP)**: routing + provider adapters, registry + capability cards, orchestrator

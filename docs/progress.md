@@ -41,6 +41,51 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — reading someone else's dashboard on purpose
+
+"The dashboard is really lacking" is true and not actionable. So rather than guess at
+additions, we surveyed a router dashboard built at the opposite extreme —
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute) (MIT, v3.8.51, read at `38e2baa`):
+ten sidebar sections, 118 routes under one App Router tree, a command palette, and a settings
+page whose job is hiding the other settings pages. Written up in
+[docs/design/omniroute-ui-survey.md](design/omniroute-ui-survey.md).
+
+**Documented, not copied.** No OmniRoute source was taken for any part of this — that was the
+explicit scope of the request, and it is also why the survey records *labels and subtitles*
+rather than component structure. A route list tells you nothing about what a page is for;
+"Combo Studio — Live routing cascade" does.
+
+What came out of it:
+
+- The nav is one exported constant, and the sidebar, palette, breadcrumbs, header title,
+  presets and hide-list are all *derived* from it. That is the one structural idea worth
+  keeping in reserve — not to build now (a declarative nav over four panels is ceremony), but
+  because the moment rewter's page splits into views, the alternative is a hand-written list
+  that the palette and breadcrumbs then duplicate, and the duplication is what rots.
+- Most of the 118 routes are scale rewter does not have (compression engines, combos,
+  gamification, batch) or features it deliberately replaces: **a "combo" is a static routing
+  cascade the user configures, which is precisely the decision rewter's initiator makes per
+  subtask from capability cards.** Building combos would be building the thing rewter exists
+  to avoid.
+- The genuine gaps are smaller and duller than the route count suggests. A **health panel** —
+  uptime, version, port, DB path and size, provider and enabled-model counts — is all data the
+  daemon already has and shows nowhere. A **filterable event-log table** is missing entirely:
+  `/internal/events` is rewter's best asset and the dashboard only folds it into a tree, never
+  lets you look at it. **Costs has no time range**, so it answers "since the beginning of
+  time", which stops being interesting on day three. `Task.settings.maxSpendUsd` is built and
+  unreachable from the UI.
+- Two collisions with our own rules are flagged in the survey so they cannot be adopted by
+  accident: OmniRoute's provider-import format carries raw `apiKey` values (rewter stores
+  `apiKeyRef`, an env-var *name*, and an export must never contain a key), and its
+  whole-database export is a bigger promise than rewter should make about an event log.
+- Its import feature is also the answer to the shape of the user's asked-for "import
+  credentials and data": **the user hands it a file.** It does not read another tool's
+  credential store off disk. That is the design to copy.
+
+No behaviour changed; this is a design doc plus its link from ARCHITECTURE.md. The
+model-support port from the same repo — permitted separately, MIT with attribution — is the
+next piece of work.
+
 ### 2026-08-29 — a registry you can find a row in
 
 The 9router preset landed earlier today and took the registry from a dozen rows to 109. That
