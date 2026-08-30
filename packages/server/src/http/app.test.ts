@@ -7,7 +7,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DaemonHealthSchema, REWTER_VERSION, newTaskId } from "@rewter/shared";
+import {
+  DaemonHealthSchema,
+  ProviderTestResultSchema,
+  REWTER_VERSION,
+  newTaskId,
+} from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db, openDb } from "../db/connection.js";
@@ -43,7 +48,7 @@ afterEach(async () => {
 /** Builds the app around a scripted adapter. Returns both for assertions. */
 function setup(
   scripts: ConstructorParameters<typeof FakeAdapter>[0],
-  opts: { apiKey?: string } = {},
+  opts: { apiKey?: string; env?: NodeJS.ProcessEnv } = {},
 ) {
   const adapter = new FakeAdapter(scripts);
   const router = new Router({
@@ -59,6 +64,8 @@ function setup(
     // Heartbeats would inject `: ping` lines into byte-exact assertions.
     sse: { heartbeatMs: 0 },
     ...(opts.apiKey !== undefined && { apiKey: opts.apiKey }),
+    // Empty by default, so nothing here can read the developer's real keys.
+    env: opts.env ?? {},
   });
   return { adapter, router };
 }
@@ -554,6 +561,54 @@ describe("/internal", () => {
     }>();
     expect(body.providers[0]?.apiKeyRef).toBe("TEST_API_KEY");
     expect(JSON.stringify(body)).not.toContain("sk-");
+  });
+
+  it("tests a provider and answers with a verdict, not an HTTP failure", async () => {
+    // A rejected key is a successful test. 200 is about this request; the
+    // verdict is about the upstream, and conflating them would make the
+    // dashboard show "daemon said 502" for a working daemon.
+    setup([[]], { env: { TEST_API_KEY: "sk-live-abcdefghij" } });
+    const res = await app.inject({
+      method: "POST",
+      url: `/internal/providers/${PRV_A}/test`,
+    });
+    expect(res.statusCode).toBe(200);
+    const result = ProviderTestResultSchema.parse(res.json());
+    expect(result.providerId).toBe(PRV_A);
+    // The fixture provider's slug matches no preset, so it publishes no
+    // catalog — reached without a single outbound request.
+    expect(result.verdict).toBe("untestable");
+  });
+
+  it("reports an unset env var without reaching the network", async () => {
+    setup([[]]);
+    const result = ProviderTestResultSchema.parse(
+      (await app.inject({ method: "POST", url: `/internal/providers/${PRV_A}/test` })).json(),
+    );
+    expect(result.verdict).toBe("no_key");
+    expect(result.message).toContain("TEST_API_KEY");
+  });
+
+  it("never echoes the key back in a test result", async () => {
+    // The standing guard, applied to the one route that holds a real key.
+    setup([[]], { env: { TEST_API_KEY: "sk-live-abcdefghij" } });
+    const res = await app.inject({
+      method: "POST",
+      url: `/internal/providers/${PRV_A}/test`,
+      // A probe that leaked would most likely do it through an upstream's own
+      // error text, so run one that fails.
+    });
+    expect(res.body).not.toContain("sk-live");
+  });
+
+  it("404s for a provider it does not have", async () => {
+    setup([[]]);
+    const res = await app.inject({
+      method: "POST",
+      url: "/internal/providers/prv_zzzzzzzzzzzz/test",
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json<{ error: { message: string } }>().error.message).toContain("unknown provider");
   });
 
   it("lists models including disabled ones, unlike /v1/models", async () => {

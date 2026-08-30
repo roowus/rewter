@@ -6,11 +6,13 @@
  * dashboard showing a task tree from a socket that died ten minutes ago looks
  * exactly like one that is up to date, and the difference matters.
  */
-import { tasksInOrder } from "@rewter/shared";
+import { type DaemonHealth, tasksInOrder } from "@rewter/shared";
 import { useEffect, useState } from "react";
 import { CostsPanel } from "./CostsPanel.js";
 import { EventsPanel } from "./EventsPanel.js";
 import { HealthPanel } from "./HealthPanel.js";
+import { ProvidersPanel } from "./ProvidersPanel.js";
+import { ReadinessCard } from "./ReadinessCard.js";
 import { RegistryPanel } from "./RegistryPanel.js";
 import { TaskTree } from "./TaskTree.js";
 import { useDashboard } from "./store.js";
@@ -41,6 +43,9 @@ function useNow(): number {
 export function App(): JSX.Element {
   const { status, fold, replayed, error, connect, disconnect } = useDashboard();
   const now = useNow();
+  // Fetched once by the health panel, read twice. `setState` is stable, so the
+  // panel's effect can hold onto it without refetching every render.
+  const [health, setHealth] = useState<DaemonHealth | null>(null);
 
   useEffect(() => {
     connect();
@@ -75,11 +80,15 @@ export function App(): JSX.Element {
 
       {/* Above the tree: the daemon's own facts — uptime, registry reachability,
           database footprint, approvals parked. Facts it already knew. */}
-      <HealthPanel now={now} />
+      <HealthPanel now={now} onHealth={setHealth} />
 
       {/* Above the tree: it is the daemon's whole spend, including the
           pass-through traffic no task in the tree accounts for. */}
       <CostsPanel />
+
+      {/* Above the registry, because it is the prior question: a model's price
+          is irrelevant if the provider under it is holding an unset key. */}
+      <ProvidersPanel />
 
       {/* Collapsed by default and below the spend: what a model costs is the
           question that sends you looking for the editor in the first place. */}
@@ -89,10 +98,11 @@ export function App(): JSX.Element {
           someone wants to know exactly what the daemon did, in order. */}
       <EventsPanel />
 
+      {/* The empty state earns its space by saying whether a task *could* run,
+          not just that none has. Once one has, the question is answered by
+          demonstration and the card goes away. */}
       {tasks.length === 0 ? (
-        <p className="empty">
-          No tasks yet. Point a client at <code>auto/orchestrator</code> and one will appear here.
-        </p>
+        <ReadinessCard health={health} />
       ) : (
         tasks.map((task) => <TaskTree task={task} now={now} key={task.task.id} />)
       )}

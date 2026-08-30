@@ -41,6 +41,53 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-30 — would it answer? (survey item 4: readiness, at three reaches)
+
+The registry panel is about models — prices, context windows, what the orchestrator may pick
+from. None of it matters if the provider underneath is holding an unset env var or a stale
+base URL, and until now the only way to find that out was to run a real task and read the
+failure, which arrives attributed to a *model* rather than to the provider that could never
+have served it. Item 4 was three separate pieces, and what makes them three rather than one is
+how far each has to reach for its answer.
+
+**A real request** — `POST /internal/providers/:id/test`. The probe is the **catalog** read
+(`GET /models` and its per-vendor equivalents), which is the same request `sync.ts` makes:
+sharing the path is the point, since a test taking a different route could pass while the
+route that matters fails. It carries the same key down the same base URL and it bills nothing
+— a Test button that quietly spends money each time it is pressed is a button people stop
+pressing. Two consequences worth naming:
+
+- **Five verdicts, split by *where* the failure is**, because that decides what to go and do:
+  `no_key` (nothing left the machine), `unreachable` (nothing came back), `refused` (the
+  upstream answered, with a refusal — this is "your key is wrong"), `untestable`, `ok`. Six of
+  the seventy-five presets publish no catalog, and `untestable` is the price of not spending
+  money to find out: an honest "cannot be checked" beats a fabricated verdict.
+- **Every upstream failure is a 200.** The status belongs to *this* request — 404 means rewter
+  has no such provider. A 502 for a provider that refused would report someone else's problem
+  as rewter's, and the dashboard's `Result.ok: false` would then mean two unrelated things.
+  Redaction is deliberate, not incidental: Google authenticates its catalog by *query
+  parameter*, so a thrown `fetch` error can print the key inside the URL it failed on.
+
+**A count over memory** — category chips: `local / free / paid / unpriced`. `local` derives
+from `apiKeyRef === null`, never from a model-id prefix; `unpriced` stays separate from `free`
+because they are opposite facts wearing the same `$0`, and the costs panel bills the second as
+zero — counting them is how you learn your spend figure is fiction. A half-priced row counts
+as `paid`: calling it free on the strength of the half we know is how a surprise arrives.
+
+**A judgement over facts already fetched** — the landing card. The health strip already prints
+`2/8 providers · 3/180 models · 41 cards`; repeating those on the empty state would add
+nothing. What it adds is *blocked vs degraded*: no enabled model means the orchestrator cannot
+start, no capability cards means it starts and picks on price alone. `ready` is "no blocked
+check", so a warn is still ready — collapsing the two would either cry wolf about a working
+daemon or stay quiet about a broken one. The same `0` gets opposite advice depending on
+`modelsTotal` (an empty registry needs a sync; a full one switched off needs the editor). It
+probes nothing — seventy-five outbound requests to render a landing view is a page you learn
+not to open — and it vanishes the moment a task exists, since a daemon with history has
+answered the question by demonstration.
+
+1469 tests green (dashboard 138 → 169; server gains the probe suite). Shortlist: 4 down, 5 to
+go; next is the dialect/translation debug panel.
+
 ### 2026-08-30 — spend, in a window (survey item 3: costs time range + stat cards)
 
 The costs panel aggregated correctly and answered the wrong question: *what has this cost

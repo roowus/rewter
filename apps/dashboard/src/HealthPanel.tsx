@@ -42,7 +42,18 @@ function Fact({
   );
 }
 
-export function HealthPanel({ now }: { now: number }): JSX.Element {
+export function HealthPanel({
+  now,
+  onHealth,
+}: {
+  now: number;
+  /**
+   * Lifts each good payload to the page. The readiness card needs the same
+   * facts, and a second poller for them would double the request rate to say
+   * the same thing twice — occasionally disagreeing with itself mid-flight.
+   */
+  onHealth?: (health: DaemonHealth) => void;
+}): JSX.Element {
   const [health, setHealth] = useState<DaemonHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastSeq = useDashboard((s) => s.fold.lastSeq);
@@ -60,6 +71,9 @@ export function HealthPanel({ now }: { now: number }): JSX.Element {
         if (controller.signal.aborted) return;
         if (result.ok) {
           setHealth(result.health);
+          // Captured from the render that started this effect, so the callback
+          // must be stable across renders — a `useState` setter, in practice.
+          onHealth?.(result.health);
           setError(null);
         } else {
           // Keep the last good facts up, same as the costs panel: a health

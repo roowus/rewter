@@ -1570,7 +1570,11 @@ done-pattern) so any CLI harness is addable by config.
   already terminal — see [Kill](#kill-who-writes-the-row-m7d)), `GET /internal/costs`
   (see below), the registry-editor writes — `POST /internal/models`,
   `PATCH|DELETE /internal/models/*`, `PUT /internal/card-overrides/*` (see
-  [The registry editor](#the-registry-editor-m7f)) — and `WS /internal/ws` (see below).
+  [The registry editor](#the-registry-editor-m7f)) — `POST /internal/providers/:id/test`
+  (a catalog read against the real upstream; every upstream failure is a **200 carrying a
+  verdict**, 404 only for a provider rewter does not have — see
+  [Readiness](#readiness-would-this-thing-actually-answer)) — and `WS /internal/ws`
+  (see below).
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -2094,6 +2098,106 @@ dropdown appears only when more than one provider exists, since a dropdown whose
 option shows the same table is furniture. Nothing is debounced: filtering is an array
 pass over rows already in memory, so the only cost of a keystroke is a re-render.
 
+### Readiness: would this thing actually answer?
+
+Fourth item off the [OmniRoute UI survey](design/omniroute-ui-survey.md) shortlist, and the
+one that spans three layers, because the question it asks — *is this daemon in a state where a
+task would work* — has three different answers depending on how far you want to reach. In
+increasing cost: a judgement over facts already fetched (the landing card), a count over the
+registry in memory (the category chips), and a real request to a third party (the Test
+button). Each is a separate piece and they are deliberately not merged.
+
+**`POST /internal/providers/:id/test` — the probe** (`registry/probe.ts`,
+`ProviderTestResult` in `shared`). Before this, the only way to find out that a key was
+unset, a base URL stale, or a local runtime not running was to route a real request and read
+the failure — which arrives mid-task, attributed to a *model* rather than to the provider that
+could never have served it.
+
+- **A catalog read, not a completion.** The probe is `GET /models` and its per-vendor
+  equivalents — the same request `sync.ts` makes, sharing the path deliberately, since a test
+  that took a different route could pass while the route that matters fails. It carries the
+  same key down the same base URL, so it answers the same question, and it bills nothing. A
+  Test button that quietly spends money each time it is pressed is a button people stop
+  pressing. The cost of that choice is `untestable`: six of the seventy-five presets publish
+  no catalog endpoint, and for those the honest answer is "this cannot be checked without
+  spending" rather than a fabricated verdict.
+- **Five verdicts, separated by where the failure is**, because that is what decides what the
+  user does next: `no_key` (the named env var is unset — nothing left the machine),
+  `unreachable` (the request went out, nothing came back), `refused` (the upstream answered,
+  with a refusal — 401 "your key is wrong", 403 "your key is not entitled"), `untestable`, and
+  `ok` (with `models` counting the catalog, because "reachable but lists nothing" is a real
+  state for a local runtime with nothing pulled).
+- **Every upstream failure is a 200 carrying a verdict.** The status code belongs to *this*
+  request: 404 means rewter has no such provider. A 502 for a provider that refused would be
+  rewter reporting someone else's problem as its own, and the dashboard client's
+  `Result.ok: false` would then mean two unrelated things.
+- **Redaction is not incidental.** Google authenticates its catalog by *query parameter*, so a
+  thrown `fetch` error can print the key inside the URL; an upstream is free to quote your key
+  back in its own error body. Every message is passed through `redact()` before it leaves. The
+  key is known at that point, so this is a substring replacement, not a guess at what a secret
+  looks like.
+- **The app takes the env by injection** (`AppOptions.env`), the same object the daemon seeded
+  the registry against — so a test answers for the process that would serve the request, not
+  for whatever `process.env` holds.
+
+**The providers panel** counts *verdicts*, not rows. "4 providers" is already on the health
+strip; `2 ok · 1 no key · 1 untestable` is the fact that is nowhere else — and it only exists
+once someone has pressed something. Before that the summary is "none tested yet", never a
+green light inferred from `enabled`, which only says a human has not switched the provider
+off. Results are triaged `refused, no_key, unreachable, untestable, ok`: the top of that list
+is where the work is. "Test enabled" fans out at concurrency 4. Collapsed by default — with
+seventy-five presets this is a thing you open when something is wrong.
+
+**Category chips** (`modelFilter.ts`) count the registry along one more axis: `local`, `free`,
+`paid`, `unpriced`. Not a copy of anyone's taxonomy — a hosted catalog sorts by vendor and
+modality because those are the axes *its* users choose along; rewter's user has already
+chosen, and what a hundred-row table hides from them is how much of it costs money and how
+much is running on their own machine. Three decisions:
+
+- **`local` derives from `apiKeyRef === null`**, never from a model-id prefix. Every local
+  preset is keyless because a runtime you started yourself has nobody to authenticate you to,
+  and a hand-added keyless provider lands in the same bucket — correctly, since that is also
+  something the operator is running.
+- **`unpriced` is not folded into `free`.** They are opposite facts wearing the same `$0`: one
+  costs nothing, the other costs an amount nobody has told us. The costs panel bills the
+  second as zero, so counting them is how you discover your spend figure is fiction.
+- **A half-priced row counts as `paid`.** Something about it bills, and calling it free on the
+  strength of the half we happen to know is how a surprise arrives.
+
+The chips are a filter *and* a count, and the axes are independent of `enabled` and provider,
+so the four never sum to the registry size — which is why each chip shows its own number
+rather than a share of a whole.
+
+**The landing readiness card** (`readiness.ts`, `ReadinessCard.tsx`) turns the health strip's
+`2/8 providers · 3/180 models · 41 cards` into the two things worth knowing: whether anything
+is blocking, and the command that unblocks it. `0/8` and `2/8` are the same *shape* of fact
+and completely different situations, and only one of them means the next task fails.
+
+- **Blocked vs degraded is the whole design.** No enabled model: nothing to route to, the
+  orchestrator cannot start — `blocked`. No capability cards: it starts fine and picks badly,
+  since the digest is then a list of names and prices with nothing to prefer a vision model
+  *for* — `warn`. `ready` is defined as *no blocked check*, so a warn is still ready.
+  Collapsing the two would either cry wolf about a working daemon or stay quiet about a broken
+  one.
+- **The same `0` from two situations gets opposite advice.** An empty registry needs `rewter
+  sync-models`; a full one entirely switched off needs the editor. Telling someone to sync 180
+  models they already have is advice that does nothing. Same split for providers.
+- **No card-coverage ratio.** `cards` counts across the whole registry, `modelsEnabled` counts
+  enabled models — different populations, so "how many enabled models have a card" is not a
+  number this payload can answer, and a ratio between two populations would read as one that
+  is. Only the zero case is flagged.
+- **It probes nothing.** A card on the landing view that fired seventy-five outbound requests
+  to render is a page you learn not to open; the Test button already answers "is this key
+  good" on demand.
+- **It disappears the moment a task exists**, and falls back to the original one-line
+  invitation before the first health payload lands. A daemon with history has answered the
+  question by demonstration, and a permanent "ready ✓" banner is chrome that teaches people to
+  stop reading the top of the page.
+
+One fetch feeds two readers: `HealthPanel` takes an optional `onHealth` callback and `App`
+holds the payload. A second poller would double the request rate to say the same thing twice,
+and occasionally disagree with itself mid-flight.
+
 ## Design docs
 
 Larger decisions and investigations live under [`docs/design/`](design/):
@@ -2102,7 +2206,8 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   [OmniRoute](https://github.com/diegosouzapw/OmniRoute)'s dashboard (10 sidebar sections,
   118 routes), read to decide what rewter's one-page ops UI is actually missing. Documented,
   not copied: no OmniRoute source was taken for any of it. Ends in a shortlist — a health
-  panel, a filterable event-log table, a time range on costs, provider readiness — and an
+  panel, a filterable event-log table, a time range on costs,
+  [provider readiness](#readiness-would-this-thing-actually-answer) — and an
   explicit account of what is deliberately *not* adopted (tabs, a router, a command palette,
   combos) and why, argued against [the dashboard app](#the-dashboard-app-one-store-one-clock-m7c).
 

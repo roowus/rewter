@@ -430,7 +430,14 @@ If we implement from this survey, roughly in value order:
    tokens, cache, top bucket) — no card the data cannot fill, same rule that kept latency off
    the health strip. See ARCHITECTURE.md → Costs.
 4. **Provider/registry readiness** — category count chips, a per-provider Test button, a
-   landing "readiness" card.
+   landing "readiness" card. **DONE 2026-08-30** — all three, at three different reaches:
+   `POST /internal/providers/:id/test` probes the real upstream with a *catalog* read (bills
+   nothing) and returns one of five verdicts separated by where the failure is, always as a
+   200 — an upstream refusing is a successful test. Chips count `local/free/paid/unpriced`,
+   with `local` derived from a null `apiKeyRef` and `unpriced` kept distinct from `free`
+   (opposite facts, same `$0`). The landing card is a judgement, not more counts: it splits
+   *blocked* (nothing to route to) from *degraded* (no cards — starts fine, picks on price
+   alone), and vanishes once any task exists. See ARCHITECTURE.md → Readiness.
 5. **Dialect/translation debug panel** — request in either dialect → normalized form →
    upstream form; plus a one-model chat tester.
 6. **Budget UI** — expose `maxSpendUsd`, which exists and is unreachable.

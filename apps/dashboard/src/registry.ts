@@ -24,6 +24,8 @@ import {
   ModelSchema,
   type Provider,
   ProviderSchema,
+  type ProviderTestResult,
+  ProviderTestResultSchema,
   type RegistryList,
   RegistryListSchema,
 } from "@rewter/shared";
@@ -97,6 +99,27 @@ export function fetchProviders(
     "/internal/providers",
     signal === undefined ? {} : { signal },
     z.object({ providers: z.array(ProviderSchema) }).transform((b) => b.providers),
+    fetchImpl,
+  );
+}
+
+/**
+ * Ask the daemon whether a provider would answer.
+ *
+ * A refused key comes back as a 200 with `verdict: "refused"`, not as an error
+ * — so `ok: false` here means *rewter* failed, and the panel can say which of
+ * the two happened. Provider ids carry no slash, so unlike the model routes
+ * this one takes a named param.
+ */
+export function testProvider(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<Result<ProviderTestResult>> {
+  return request(
+    `/internal/providers/${id}/test`,
+    { method: "POST", ...(signal !== undefined && { signal }) },
+    ProviderTestResultSchema,
     fetchImpl,
   );
 }

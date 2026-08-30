@@ -28,6 +28,8 @@ import {
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  type Provider,
+  type ProviderTestResult,
   REWTER_VERSION,
   SocketClientMessageSchema,
   type SocketServerMessage,
@@ -54,6 +56,7 @@ import { type Orchestrator, OrchestratorError } from "../orchestrator/engine.js"
 import { type LiveTask, LiveTaskIndex, conversationKey } from "../orchestrator/live.js";
 import { type ApprovalCommand, parseSteering } from "../orchestrator/steering.js";
 import { collectStream } from "../providers/collect.js";
+import { type ProbeOptions, probeProvider as realProbeProvider } from "../registry/probe.js";
 import {
   AmbiguousModelError,
   ModelNotFoundError,
@@ -104,6 +107,21 @@ export interface AppOptions {
     /** Set after `listen()`, once port 0 has resolved to a real number. */
     url?: string | null;
   };
+  /**
+   * Where `POST /internal/providers/:id/test` resolves keys from. The app has
+   * no other reason to see the environment, and the daemon already holds the
+   * one it seeded the registry against — passing that same object is what makes
+   * a test answer for the process that would serve the request, rather than for
+   * whatever `process.env` happens to hold.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Override the probe itself — the seam tests plug a scripted verdict into,
+   * matching `RouterOptions.createAdapter`. Absent, the real one runs, which in
+   * a test means a provider with no key set answers `no_key` without touching
+   * the network.
+   */
+  probeProvider?: (provider: Provider, opts: ProbeOptions) => Promise<ProviderTestResult>;
 }
 
 /**
@@ -512,6 +530,35 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     // Only the env var *name* is ever stored, so this is safe to serve as-is.
     ({ providers: repos.listProviders() }),
   );
+
+  /**
+   * Does this provider answer?
+   *
+   * A named `:id` param is safe here where the registry routes needed a
+   * wildcard: a provider id is `prv_` plus twelve characters of `[0-9a-z]`, so
+   * it never contains the separator a model id does.
+   *
+   * POST rather than GET because it reaches out to a third party. It is not a
+   * read of rewter's own state, it is not cacheable, and a browser prefetching
+   * a link should not be firing requests at seven vendors.
+   *
+   * Every upstream failure is a 200 carrying a verdict. The status code belongs
+   * to *this* request — 404 means rewter has no such provider, and a 502 for a
+   * refused key would say the daemon is broken when the answer "your key is
+   * wrong" arrived exactly as designed.
+   */
+  app.post<{ Params: { id: string } }>("/internal/providers/:id/test", async (req, reply) => {
+    const provider = repos.getProvider(req.params.id);
+    if (provider === undefined) {
+      return reply.code(404).send({ error: { message: `unknown provider: ${req.params.id}` } });
+    }
+    const probe = opts.probeProvider ?? realProbeProvider;
+    const result = await probe(provider, {
+      ...(opts.env !== undefined && { env: opts.env }),
+      clock,
+    });
+    return reply.send(result);
+  });
 
   // ── Registry ──────────────────────────────────────────────────────────────
   //

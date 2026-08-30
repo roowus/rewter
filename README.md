@@ -368,7 +368,22 @@ uptime, version, how much of the registry is actually enabled, the database's fo
 disk, and whether anything is parked on an approval gate — facts the process already had and
 previously displayed nowhere. Below the task tree's controls sits the event log (expand
 "events"): every event the daemon has written, newest first, filterable by type and task,
-page back through history with "load older". (If you are working on the dashboard itself, run
+page back through history with "load older".
+
+Expand "providers" and each one gets a **Test** button. It reads that provider's catalog with
+the key it names — the same request `sync-models` makes, so it answers for the path that
+matters, and it costs nothing to press. The answer says *where* the problem is, which is what
+decides what you do about it: `no key` (the env var is unset, nothing left your machine),
+`unreachable` (nothing came back), `refused` (the upstream answered and said no — your key is
+wrong or not entitled), or `ok` with the number of models it listed. A few upstreams publish
+no catalog and honestly report `untestable` rather than a guess. Nothing is ever echoed back
+that could contain your key.
+
+Before any task has run, the empty state says whether one *would* run: enabled providers,
+enabled models, capability cards, and — if something is missing — the command that fixes it.
+It distinguishes "a task would fail right now" (nothing to route to) from "this works but
+picks badly" (no capability cards, so the orchestrator chooses on price alone). It disappears
+once you have run anything. (If you are working on the dashboard itself, run
 `pnpm --filter @rewter/dashboard dev` instead and use :5273, which proxies back here rather
 than rebuilding the bundle on every keystroke.)
 

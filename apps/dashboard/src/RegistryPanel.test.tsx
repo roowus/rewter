@@ -382,6 +382,57 @@ describe("RegistryPanel", () => {
     expect(screen.getByText("claude-sonnet-5")).toBeTruthy();
   });
 
+  it("counts the registry by category, over the whole table", async () => {
+    // The shape-of-the-registry read: how much of this bills, and how much is
+    // running on this machine.
+    stubFetch({
+      providers: [
+        provider(),
+        provider({ id: "prv_cccccccccccc", name: "Ollama", apiKeyRef: null }),
+      ],
+      models: [
+        model(),
+        model({ id: "ollama/qwen3-4b", providerId: "prv_cccccccccccc" }),
+        model({
+          id: "x/unknown",
+          pricing: {
+            inputPerMTok: null,
+            outputPerMTok: null,
+            cacheReadPerMTok: null,
+            cacheWritePerMTok: null,
+          },
+        }),
+      ],
+    });
+    await open();
+    expect(screen.getByRole("button", { name: "1 local" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "2 paid" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 unpriced" })).toBeTruthy();
+    // Shown at zero rather than hidden: the row must not jump when a sync lands.
+    expect(screen.getByRole("button", { name: "0 free" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("narrows to a category on click and clears on a second one", async () => {
+    // A filter you cannot see how to leave is a trap, so the active chip is the
+    // control that clears it.
+    stubFetch({
+      providers: [
+        provider(),
+        provider({ id: "prv_cccccccccccc", name: "Ollama", apiKeyRef: null }),
+      ],
+      models: [model(), model({ id: "ollama/qwen3-4b", providerId: "prv_cccccccccccc" })],
+    });
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "1 local" }));
+    expect(screen.getByText("qwen3-4b")).toBeTruthy();
+    expect(screen.queryByText("claude-sonnet-5")).toBeNull();
+    // Counted over the registry, not over what is shown — so it still says 1 of 2.
+    expect(screen.getByText("1 of 2 models")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "1 local" }));
+    expect(screen.getByText("claude-sonnet-5")).toBeTruthy();
+  });
+
   it("keeps the rows on screen when a reload fails", async () => {
     // A registry that empties on a transient failure reads as "no models
     // configured", which is a very different problem.

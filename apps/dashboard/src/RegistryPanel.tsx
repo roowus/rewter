@@ -24,7 +24,16 @@ import type { CapabilityCard, Model, Provider } from "@rewter/shared";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ModelEditor } from "./ModelEditor.js";
 import { shortModelId, usd } from "./format.js";
-import { type ModelFilter, emptyFilter, filterModels, isUnfiltered } from "./modelFilter.js";
+import {
+  MODEL_CATEGORIES,
+  type ModelCategory,
+  type ModelFilter,
+  countCategories,
+  emptyFilter,
+  filterModels,
+  isUnfiltered,
+  localProviderIds,
+} from "./modelFilter.js";
 import { type Result, fetchProviders, fetchRegistry } from "./registry.js";
 
 /** `$3/$15 per MTok`, or an honest gap. Unpriced is a real state: a local */
@@ -86,11 +95,19 @@ export function RegistryPanel(): JSX.Element {
     [load],
   );
 
+  const local = useMemo(() => localProviderIds(providers), [providers]);
   const shown = useMemo(
-    () => (models === null ? null : filterModels(models, cards, filter)),
-    [models, cards, filter],
+    () => (models === null ? null : filterModels(models, cards, filter, local)),
+    [models, cards, filter, local],
   );
   const narrowed = !isUnfiltered(filter);
+  // Counted over the whole registry, not over `shown`: a chip that recounted
+  // itself as you filtered could only ever read "N of N", and the question the
+  // chips answer — how much of this table bills — is about the whole table.
+  const counts = useMemo(
+    () => (models === null ? null : countCategories(models, local)),
+    [models, local],
+  );
 
   return (
     <section className="registry" aria-label="model registry">
@@ -112,7 +129,12 @@ export function RegistryPanel(): JSX.Element {
       </header>
 
       {open && models !== null && models.length > 0 && (
-        <FilterRow filter={filter} providers={providers} onChange={setFilter} />
+        <>
+          <FilterRow filter={filter} providers={providers} onChange={setFilter} />
+          {counts !== null && (
+            <CategoryChips counts={counts} active={filter.category} onChange={setFilter} />
+          )}
+        </>
       )}
 
       {open &&
@@ -163,6 +185,51 @@ export function RegistryPanel(): JSX.Element {
 
       {open && <ModelEditor mode="create" providers={providers} onWrote={afterWrite} />}
     </section>
+  );
+}
+
+/**
+ * Four counts, each one a filter.
+ *
+ * They are chips rather than a fifth dropdown because their value is mostly in
+ * being *read*: "63 paid · 40 local · 2 unpriced" is the shape of the registry,
+ * and a select box hides its options until clicked. Clicking is the secondary
+ * use, and a second click on the active chip clears it — a filter you cannot
+ * see how to leave is a trap.
+ *
+ * An empty category is drawn greyed and unclickable rather than hidden, because
+ * "0 unpriced" is a reassuring fact and a chip that vanishes when it hits zero
+ * makes the row jump every time a sync lands.
+ */
+function CategoryChips({
+  counts,
+  active,
+  onChange,
+}: {
+  counts: Record<ModelCategory, number>;
+  active: ModelCategory | "all";
+  onChange: (update: (current: ModelFilter) => ModelFilter) => void;
+}): JSX.Element {
+  return (
+    <div className="chips" aria-label="filter by category">
+      {MODEL_CATEGORIES.map((category) => {
+        const count = counts[category];
+        const on = active === category;
+        return (
+          <button
+            key={category}
+            type="button"
+            className="chip"
+            data-on={on}
+            disabled={count === 0}
+            aria-pressed={on}
+            onClick={() => onChange((current) => ({ ...current, category: on ? "all" : category }))}
+          >
+            {count} {category}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

@@ -377,6 +377,102 @@ pre,
   cursor: pointer;
 }
 
+/* ── readiness ──────────────────────────────────────────── */
+
+/* The first-run card. Bordered rather than filled: it replaces a line of grey
+   text, and a solid block on an otherwise quiet page would read as an alarm
+   even when it says everything is fine. */
+.readiness {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+}
+
+/* Only the blocked state takes a colour on the frame — "ready" is the ordinary
+   case and does not need announcing twice. */
+.readiness[data-ready="false"] {
+  border-color: var(--bad);
+}
+
+.readiness h2 {
+  font-size: 0.9rem;
+  margin: 0 0 0.6rem;
+  font-weight: normal;
+}
+
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.check {
+  font-size: 0.82rem;
+  color: var(--dim);
+}
+
+/* A dot per line, coloured by level: the row reads as a status list without a
+   glyph font or an icon set. */
+.check::before {
+  content: "\00b7 ";
+  color: var(--ok);
+}
+
+.check[data-level="warn"]::before {
+  color: var(--warn);
+}
+
+.check[data-level="blocked"]::before {
+  color: var(--bad);
+}
+
+.check[data-level="blocked"] .check-label {
+  color: var(--bad);
+}
+
+.check[data-level="warn"] .check-label {
+  color: var(--warn);
+}
+
+/* ── providers ──────────────────────────────────────────────────────── */
+
+/* Same box as the registry, and deliberately so: they are the two halves of
+   "what can this router reach", read one after the other. */
+.providers {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+/* Colour by *what the reader has to do next*, which is why `refused` and
+   `no_key` share the alarm colour and `untestable` gets none: it is not a
+   failure, it is a provider that publishes no catalog to read. */
+.verdict {
+  font-size: 0.8rem;
+}
+
+.verdict[data-verdict="ok"] {
+  color: var(--ok);
+}
+
+.verdict[data-verdict="no_key"],
+.verdict[data-verdict="refused"] {
+  color: var(--bad);
+}
+
+.verdict[data-verdict="unreachable"] {
+  color: var(--warn);
+}
+
+.verdict[data-verdict="untestable"] {
+  color: var(--dim);
+}
+
 /* ── registry ───────────────────────────────────────────────────────── */
 
 .registry {
@@ -449,6 +545,37 @@ pre,
   text-decoration: underline;
   cursor: pointer;
   padding: 0;
+}
+
+/* Counts first, so the row reads as a fact before it reads as a control. */
+.chips {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.55rem;
+  cursor: pointer;
+}
+
+.chip[data-on="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* An empty category still says "0 x" — that is information — but nothing
+   happens if you press it, and it should not look like it would. */
+.chip:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .registry-table {
