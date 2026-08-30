@@ -9,6 +9,7 @@
 import { tasksInOrder } from "@rewter/shared";
 import { useEffect, useState } from "react";
 import { CostsPanel } from "./CostsPanel.js";
+import { EventsPanel } from "./EventsPanel.js";
 import { HealthPanel } from "./HealthPanel.js";
 import { RegistryPanel } from "./RegistryPanel.js";
 import { TaskTree } from "./TaskTree.js";
@@ -83,6 +84,10 @@ export function App(): JSX.Element {
       {/* Collapsed by default and below the spend: what a model costs is the
           question that sends you looking for the editor in the first place. */}
       <RegistryPanel />
+
+      {/* Also collapsed: the raw log is the inspection view — expanded when
+          someone wants to know exactly what the daemon did, in order. */}
+      <EventsPanel />
 
       {tasks.length === 0 ? (
         <p className="empty">

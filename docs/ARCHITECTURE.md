@@ -1563,7 +1563,8 @@ done-pattern) so any CLI harness is addable by config.
   Live today: `health` (the full ops summary, not just counts — see
   [Health](#health-what-the-daemon-knows-about-itself)), `providers`, `models` (**including**
   disabled ones, unlike `/v1/models`), `events?afterSeq=[&taskId=]` (a non-numeric
-  `afterSeq` reads as 0 rather than erroring), approvals — `GET
+  `afterSeq` reads as 0 rather than erroring; `?latest=&before=&type=` windows it for
+  the log table — see [The event log, as a table](#the-event-log-as-a-table)), approvals — `GET
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
   `POST /internal/tasks/:id/cancel` (`{task, aborted, alreadyFinished}`; 404 unknown, 409
   already terminal — see [Kill](#kill-who-writes-the-row-m7d)), `GET /internal/costs`
@@ -1918,6 +1919,60 @@ refetching every second — the fetch is for facts only the daemon can count, no
 the passage of time. The new rule: when `events.lastSeq` is ahead of the fold's own
 `lastSeq`, the panel says so — "catching up, N events behind" — because a task that is
 not on screen yet is not finished either, and replay lag is otherwise invisible.
+
+### The event log, as a table
+
+Second item off the [OmniRoute UI survey](design/omniroute-ui-survey.md) shortlist. rewter's
+log is its best asset — the append-only source of truth everything else folds — and until
+this it was readable only *as* that fold: aggregated into a task tree, which by design drops
+the rows the tree cannot hold (pass-through `cost.recorded` events with no task, resolved
+approvals, finished runs' transitions). The table is the raw log, newest first, filtered and
+paged against the daemon.
+
+**Two questions, one route.** `GET /internal/events` answers replay and inspection, and the
+params pick the mode:
+
+- `?afterSeq=N` — replay, unchanged since M1: everything after the cursor, oldest first,
+  unbounded. A socket resuming wants the oldest unseen first and will read them all; a
+  non-numeric value reads as 0 (machine-to-machine contract, tolerant by design).
+- `?latest=N[&before=M[&type=a,b][&taskId=]]` — the inspection window: the newest N that
+  match (or the newest N older than `before`), returned **ascending** like every envelope
+  list, with `hasMore` saying whether matching history continues past the window.
+
+Every window knob is validated rather than defaulted, for the same reason the costs
+endpoint's are: `latest=0` silently meaning "everything" would turn a table refresh into a
+full-log transfer (`MAX_EVENT_PAGE` = 500 caps it either way), and a typo'd `?type=` that
+matched nothing would read as "this never happens" — a 400 naming the value is cheaper. The
+type list validates against `EVENT_TYPES`, which is *derived from the payload union's own
+members* (`EventPayloadSchema.options.map(...)`) — a hand-maintained list is a second
+opinion about what the union contains, and it goes stale the day a type is added. The
+dashboard's filter dropdown builds from the same constant.
+
+**Why the window scans backwards.** `EventBus.latestEvents` orders by `seq` descending,
+takes `limit + 1`, drops the extra, and re-sorts ascending — one indexed scan answers both
+"which rows" and "is there more", where a separate `COUNT(*)` would walk the same rows
+twice. The `before` bound is exclusive, so paging backwards (`before = oldest seq on
+screen`) can never show a row twice.
+
+**The panel** (`src/EventsPanel.tsx`, collapsed by default — the reason to open the
+dashboard is the running task; the raw log is the inspection view you expand when you want
+to know exactly what the daemon did, in order):
+
+- **Filters go to the server.** The log can be thousands of rows; "fetch everything, filter
+  in the browser" is the anti-pattern the window exists to avoid. Task titles in the filter
+  dropdown come from the fold the socket maintains — the log has ids, the fold knows what
+  they were called.
+- **"Load older" pauses the live tail, and says so.** The newest window refreshes on every
+  socket tick plus a slow interval; an operator who has paged into history is *reading* a
+  moment, and prepending rows under their eyes would yank the view. The header offers
+  "live tail paused — jump to latest" rather than silently going stale or silently moving.
+- **One line per event** (`src/eventSummary.ts`), under the rule that the record renders,
+  not a paraphrase of it: approval requests show `approval.summary` verbatim (the line a
+  decision is made from), progress and steering show their text as written, transitions
+  render as transitions (`running → succeeded`) — the type column already says the type.
+  Long text truncates on a word boundary; the full line stays on the row's `title`.
+- **A failed refetch keeps the loaded rows**, same as every fetching panel: a table that
+  empties reads as "the log is gone".
 
 ### The registry editor (M7f)
 

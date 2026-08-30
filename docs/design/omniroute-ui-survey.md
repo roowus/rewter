@@ -419,6 +419,10 @@ If we implement from this survey, roughly in value order:
    ARCHITECTURE.md → Health).
 2. **Event-log table** — filter by task / payload type / time, toggleable columns, count
    summary. rewter's log is its best asset and is currently only readable as a tree.
+   **DONE 2026-08-29** — server-side `?latest=&before=&type=` window on `/internal/events`
+   + `EventsPanel` (type/task filters, load-older paging; column toggles dropped as
+   chrome — four columns fit; time filter is the paging itself). See ARCHITECTURE.md →
+   "The event log, as a table".
 3. **Time-range control on costs** (1D/7D/30D/All) + three or four honest stat cards.
 4. **Provider/registry readiness** — category count chips, a per-provider Test button, a
    landing "readiness" card.

@@ -41,6 +41,45 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — the log, readable as a log (survey item 2: event table)
+
+The follow-up to the health strip, and the survey's own rationale: the event log is rewter's
+best asset — the append-only source of truth the dashboard folds — and it was only readable
+*as* that fold. The tree drops what it cannot hold (pass-through costs, resolved approvals,
+finished runs' transitions), so "what exactly did the daemon do" had no answer anywhere.
+
+The shape: `/internal/events` answers two questions, picked by params. `?afterSeq=` is
+replay, unchanged since M1 (oldest-unseen-first, unbounded — what a resuming socket wants).
+`?latest=N[&before=&type=&taskId=]` is the inspection window: newest N that match, ascending
+on the wire, with `hasMore`. One indexed descending scan fetching `limit + 1` answers "which
+rows" and "is there more" together; `before` is exclusive so backwards paging can't repeat a
+row.
+
+Decisions worth recording:
+
+- **Type validation derives from the union.** `EVENT_TYPES = EventPayloadSchema.options.map(...)`
+  — a hand-written list is a second opinion about what the union contains and goes stale on
+  the next `type:` added. The server validates `?type=` against it (a typo'd filter that
+  matched nothing would read as "never happens"; a 400 names the value), and the dashboard's
+  dropdown builds from the same constant.
+- **Window knobs are validated, not defaulted** — same rule as the costs endpoint. `latest=0`
+  would mean "everything" and turn a table refresh into a full-log transfer; capped at 500
+  regardless.
+- **"Load older" pauses the live tail, and says so.** The newest page refreshes on the
+  socket tick; an operator who paged into history is reading a moment, and prepending rows
+  under their eyes would yank the view. The header offers "live tail paused — jump to
+  latest" instead of silently going stale or silently moving.
+- **One line per event, the record not a paraphrase**: approvals render `approval.summary`
+  verbatim (the line a decision gets made from), transitions render as transitions, money
+  keeps sub-cent digits. Survey's "toggleable columns" was dropped as chrome — four columns
+  fit without toggles.
+
+A first attempt at the route tests taught the fixture lesson twice in one day: a
+pass-through completion writes exactly *one* event, which is too thin to window or page, so
+the tests seed deterministic history through the bus; and the wire order is ascending, so a
+helper that "reversed for newest-last" had it backwards and the panel under test was right.
+1412 tests green. Shortlist: 2 down, 7 to go.
+
 ### 2026-08-29 — the daemon tells you about itself (survey item 1: health)
 
 First dashboard item off the [OmniRoute UI survey](design/omniroute-ui-survey.md) shortlist,

@@ -7,7 +7,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DaemonHealthSchema, REWTER_VERSION } from "@rewter/shared";
+import { DaemonHealthSchema, REWTER_VERSION, newTaskId } from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db, openDb } from "../db/connection.js";
@@ -68,6 +68,26 @@ const chatBody = (over: Record<string, unknown> = {}) => ({
   messages: [{ role: "user", content: "hi" }],
   ...over,
 });
+
+/**
+ * Deterministic history for the event-window tests. A pass-through completion
+ * writes exactly one event (`cost.recorded`), which is real but too thin to
+ * window or page — a page test needs to know there are older rows, and one
+ * event cannot prove that.
+ */
+function seedEvents(n: number): void {
+  for (let i = 1; i <= n; i++) {
+    const taskId = newTaskId();
+    bus.append({ taskId, payload: { type: "task.plan_note", taskId, note: `n${i}` } });
+  }
+}
+
+function seedSteering(n: number): void {
+  for (let i = 1; i <= n; i++) {
+    const taskId = newTaskId();
+    bus.append({ taskId, payload: { type: "steering.received", taskId, text: `s${i}` } });
+  }
+}
 
 /** Parse an SSE body into its `data:` payloads, `[DONE]` included as a marker. */
 function sseFrames(body: string): unknown[] {
@@ -557,6 +577,72 @@ describe("/internal", () => {
       await app.inject({ method: "GET", url: `/internal/events?afterSeq=${all.events[0]?.seq}` })
     ).json<{ events: unknown[] }>();
     expect(after.events).toHaveLength(all.events.length - 1);
+  });
+
+  it("windows the newest events when `latest` is asked for, with hasMore", async () => {
+    setup([[text("x"), end()]]);
+    await app.inject({ method: "POST", url: "/v1/chat/completions", payload: chatBody() });
+    seedEvents(5);
+    const all = (await app.inject({ method: "GET", url: "/internal/events" })).json<{
+      events: Array<{ seq: number }>;
+    }>();
+    expect(all.events.length).toBeGreaterThanOrEqual(6);
+    // One fewer than the whole log: the window must be the newest rows, in
+    // ascending order, and must say history continues past it.
+    const page = (
+      await app.inject({ method: "GET", url: `/internal/events?latest=${all.events.length - 1}` })
+    ).json<{ events: Array<{ seq: number }>; hasMore: boolean }>();
+    expect(page.events.map((e) => e.seq)).toEqual(all.events.slice(1).map((e) => e.seq));
+    expect(page.hasMore).toBe(true);
+
+    const whole = (
+      await app.inject({ method: "GET", url: `/internal/events?latest=${all.events.length}` })
+    ).json<{ hasMore: boolean }>();
+    expect(whole.hasMore).toBe(false);
+  });
+
+  it("pages a `latest` window backwards from `before`", async () => {
+    setup([[text("x"), end()]]);
+    seedEvents(3);
+    const page = (await app.inject({ method: "GET", url: "/internal/events?latest=1" })).json<{
+      events: Array<{ seq: number }>;
+    }>();
+    const newest = page.events[0];
+    expect(newest).toBeDefined();
+    if (newest === undefined) return;
+    const older = (
+      await app.inject({ method: "GET", url: `/internal/events?latest=1&before=${newest.seq}` })
+    ).json<{ events: Array<{ seq: number }> }>();
+    expect(older.events[0]?.seq).toBe(newest.seq - 1);
+  });
+
+  it("filters a `latest` window by type", async () => {
+    setup([[]]);
+    seedEvents(3);
+    seedSteering(1);
+    const page = (
+      await app.inject({ method: "GET", url: "/internal/events?latest=100&type=task.plan_note" })
+    ).json<{ events: Array<{ payload: { type: string } }> }>();
+    expect(page.events).toHaveLength(3);
+    expect(page.events.every((e) => e.payload.type === "task.plan_note")).toBe(true);
+  });
+
+  it("rejects a window with a bogus page size or an unknown event type, by name", async () => {
+    setup([[]]);
+    // Validated, not defaulted: `latest=0` silently meaning "everything", or a
+    // typo'd type matching nothing, both read as working.
+    expect((await app.inject({ method: "GET", url: "/internal/events?latest=0" })).statusCode).toBe(
+      400,
+    );
+    expect(
+      (await app.inject({ method: "GET", url: "/internal/events?latest=9999" })).statusCode,
+    ).toBe(400);
+    const bad = await app.inject({
+      method: "GET",
+      url: "/internal/events?latest=10&type=task.created,task.exploded",
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json<{ error: { message: string } }>().error.message).toContain("task.exploded");
   });
 
   it("treats a non-numeric afterSeq as 0 rather than erroring", async () => {

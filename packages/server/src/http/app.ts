@@ -19,6 +19,8 @@ import {
   type ChatResponse,
   CostGroupBySchema,
   type DaemonHealth,
+  EVENT_TYPES,
+  type EventType,
   ModelCreateSchema,
   ModelPatchSchema,
   type OpenAIChatChunk,
@@ -103,6 +105,14 @@ export interface AppOptions {
     url?: string | null;
   };
 }
+
+/**
+ * Ceiling for `?latest=` on `/internal/events`. A window that could name the
+ * whole log would let one careless client turn "refresh the table" into a
+ * full-log transfer; a local daemon's page of a few hundred rows is already
+ * more than a person reads at once.
+ */
+const MAX_EVENT_PAGE = 500;
 
 /** The header carrying the task id back to the client, and back to us. */
 export const TASK_ID_HEADER = "x-rewter-task-id";
@@ -737,10 +747,60 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     return summarizeCosts(repos.allCosts(window), { groupBy: groupBy.data, timeZone, ...window });
   });
 
-  app.get("/internal/events", async (req) => {
-    const q = req.query as { afterSeq?: string; taskId?: string };
-    const afterSeq = q.afterSeq === undefined ? 0 : Number.parseInt(q.afterSeq, 10);
-    return { events: opts.bus.eventsAfter(Number.isNaN(afterSeq) ? 0 : afterSeq, q.taskId) };
+  // Two questions, one resource. `afterSeq` is the replay cursor: everything
+  // after this point, oldest first, unbounded — what a socket resuming wants.
+  // `latest` is the inspection window: the newest N events (or the newest N
+  // older than `before`), newest-first in effect, with `hasMore` saying whether
+  // history continues past the window. Mixing them on one route is deliberate:
+  // they are the same log, and two endpoints for one table is how they drift.
+  app.get("/internal/events", async (req, reply) => {
+    const q = req.query as {
+      afterSeq?: string;
+      taskId?: string;
+      latest?: string;
+      before?: string;
+      type?: string;
+    };
+    const taskId = q.taskId === "" ? undefined : q.taskId;
+
+    if (q.latest === undefined) {
+      // Replay mode: unchanged since M1. A non-numeric afterSeq reads as 0 —
+      // replay is a machine-to-machine contract and tolerant by design.
+      const afterSeq = q.afterSeq === undefined ? 0 : Number.parseInt(q.afterSeq, 10);
+      return { events: opts.bus.eventsAfter(Number.isNaN(afterSeq) ? 0 : afterSeq, taskId) };
+    }
+
+    // Window mode. Every knob is validated rather than defaulted: `latest`
+    // names a page size, and a page size that silently became "everything"
+    // would turn a table refresh into a full-log transfer.
+    const limit = Number.parseInt(q.latest, 10);
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_EVENT_PAGE) {
+      return reply.code(400).send({
+        error: { message: `latest must be an integer between 1 and ${MAX_EVENT_PAGE}` },
+      });
+    }
+    const before = q.before === undefined ? undefined : Number.parseInt(q.before, 10);
+    if (before !== undefined && (!Number.isInteger(before) || before < 1)) {
+      return reply.code(400).send({ error: { message: "before must be a positive integer" } });
+    }
+    // Types validate against the union's own members (EVENT_TYPES is derived,
+    // not hand-maintained) — a typo'd filter that matched nothing would read
+    // as "this never happens", which is worse than a 400 naming the value.
+    const types: EventType[] = [];
+    for (const raw of (q.type ?? "").split(",")) {
+      const t = raw.trim();
+      if (t === "") continue;
+      if (!EVENT_TYPES.includes(t as EventType)) {
+        return reply.code(400).send({ error: { message: `unknown event type: ${t}` } });
+      }
+      types.push(t as EventType);
+    }
+    return opts.bus.latestEvents({
+      limit,
+      ...(before !== undefined && { beforeSeq: before }),
+      ...(taskId !== undefined && { taskId }),
+      ...(types.length > 0 && { types }),
+    });
   });
 
   // ── WS /internal/ws ───────────────────────────────────────────────────────

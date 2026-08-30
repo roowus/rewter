@@ -69,6 +69,18 @@ export const EventPayloadSchema = z.discriminatedUnion("type", [
 export type EventPayload = z.infer<typeof EventPayloadSchema>;
 export type EventType = EventPayload["type"];
 
+/**
+ * Every event type the union admits, derived from the schema rather than
+ * hand-maintained — a list written out by hand is a second opinion about what
+ * the union contains, and it goes stale the day a type is added. The server
+ * validates `?type=` filters against this; the dashboard builds its filter
+ * dropdown from it. A discriminated union knows its own members: `.options` is
+ * the member list and each member's `type` field is the literal.
+ */
+export const EVENT_TYPES: readonly EventType[] = EventPayloadSchema.options.map(
+  (member) => member.shape.type.value,
+);
+
 export const EventEnvelopeSchema = z.object({
   /** Global monotonic order, assigned by the DB. */
   seq: z.number().int().positive(),
