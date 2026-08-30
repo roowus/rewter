@@ -35,9 +35,43 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 | M8a | Boot reconciliation: `running` → `interrupted`, before the socket opens | ✅ 2026-08-29 |
 | M8b | Pidfile + `rewter status` / `rewter stop` (liveness by health probe) | ✅ 2026-08-29 |
 | M8c | `~/.rewter/env`, launchd plist, `rewter logs`, `rewter gc` | ✅ 2026-08-29 |
-| M8 | *acceptance: walkthrough verbatim (#13) + `kill -9` mid-task; reboot not yet run* | 🟡 two of three |
+| M8 | *acceptance: walkthrough verbatim (#13) + `kill -9` mid-task; LaunchAgent live, reboot pending* | 🟡 two of three |
 
 ## Log
+
+### 2026-08-29 — the LaunchAgent is loaded and serving
+
+Installed for real, ahead of the reboot criterion. `install-service` writes the plist and stops
+there, printing the two `launchctl` lines rather than running them — the right call, since
+`bootstrap` needs the correct domain target and fails in ways worth reading.
+
+Three things checked on the plist before it was loaded, because a file that outlives every
+session deserves a read:
+
+- **No key material.** Zero matches for `api_key|apikey|sk-|token`. Keys live in `~/.rewter/env`
+  (absent here — the active config is keyless Ollama), never the plist, because `launchctl print`
+  reads a plist back to anyone who asks.
+- **`start` stays in the foreground.** `runUntilSignal` never resolves; a fork-and-exit would
+  look like a crash to launchd and trip `KeepAlive` into a restart loop.
+- **The node binary will still exist after a reboot.** `install-service` bakes in
+  `process.execPath`, whichever node ran the install — and on this machine the first node on
+  `PATH` belongs to another project. The plist points at `/opt/homebrew/Cellar/node/25.2.1/bin/node`.
+
+Loaded with `launchctl bootstrap gui/$(id -u)`, and the daemon it started is a real one, not
+just a `state = running` line:
+
+```
+GET /v1/models  200
+GET /            200 text/html      ← the dashboard bundle
+task_r8uivsoxadw8 succeeded
+task_qj4w4i84d6i5 succeeded
+task_ynvchnma8plm interrupted       ← 39 events, folded by a process that never ran them
+```
+
+The error log is empty and `rewter status` finds it by health probe, not by trusting the pidfile.
+That is the whole of the reboot criterion except the reboot: what launchd does at login is what
+it just did at `bootstrap`. The remaining question is only whether the session domain re-loads
+it, which needs the machine to actually restart.
 
 ### 2026-08-29 — M8 acceptance, part two: `kill -9` mid-task
 

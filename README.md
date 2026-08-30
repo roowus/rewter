@@ -277,6 +277,13 @@ second later. Then it stops and prints the two `launchctl` lines rather than run
 tool holding your API keys shouldn't shell out on your behalf, and `bootstrap` is the part
 that fails in ways worth reading.
 
+Loaded here on 2026-08-29, and the daemon it starts is a real one: `/v1/models` answers, `/`
+serves the dashboard, and folding the event log gives all three tasks of the previous session —
+including the `interrupted` one — under a process that never ran any of them. One trap worth
+naming: the plist records `process.execPath`, whichever node ran the install, so check it before
+loading. The first node on this machine's `PATH` belongs to an unrelated project, and a
+LaunchAgent that outlives reboots should not depend on one.
+
 `rewter logs` reads the files rather than the daemon, because the case it exists for is a
 daemon that is *not* running. Both streams are merged by timestamp with a stable sort, so a
 stack trace stays under the error it followed — "it warned and then died" is only legible
