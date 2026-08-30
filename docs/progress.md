@@ -41,6 +41,37 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-30 — spend, in a window (survey item 3: costs time range + stat cards)
+
+The costs panel aggregated correctly and answered the wrong question: *what has this cost
+since the beginning of time*. That number is interesting on day one and furniture by day
+three, and it is monotonically increasing, so it can never say "this got more expensive
+lately" — the only cost question an operator actually asks. `1D / 7D / 30D / All` sits in
+the header, defaulting to **7D**.
+
+Almost all of the work was already done: `GET /internal/costs` has validated `since`/`until`
+since M7e, `summarizeCosts` filters half-open (`since <= t < until`, so adjacent windows
+tile), and `FetchCostsOptions.since` was already on the client. What was missing was the
+control and three decisions:
+
+- **"All" omits `since` rather than sending `0`.** A zero is a real window starting at the
+  epoch; the endpoint echoes it into `summary.since`, and from there nothing can distinguish
+  a bounded query from an unbounded one. That distinction is visible: the empty state under a
+  window says "Nothing spent in this range.", under All it says "Nothing spent yet." A quiet
+  weekend on a month-old daemon must not read as an unused daemon.
+- **The window re-anchors per fetch**, from `Date.now()` inside the effect — not the page's
+  shared `now` clock (which would refetch every second, since it is a dependency) and not a
+  value captured at mount (which would turn a rolling window into a growing one). There is a
+  test that moves a fake clock a minute and asserts the new `since` moved with it.
+- **Four stat cards, every figure straight out of the summary**: cost/request, input→output
+  tokens, cache reads/writes, and the top bucket of the current grouping. This is the survey's
+  own rule about OmniRoute's fourteen tiles — never add a card the data cannot fill — and the
+  same rule that kept latency percentiles off the health strip. Zero calls renders `—`, not
+  `$0`: a zero average claims a measurement nobody took.
+
+1421 tests green (dashboard 129 → 138). Shortlist: 3 down, 6 to go; next is provider/registry
+readiness.
+
 ### 2026-08-29 — the log, readable as a log (survey item 2: event table)
 
 The follow-up to the health strip, and the survey's own rationale: the event log is rewter's

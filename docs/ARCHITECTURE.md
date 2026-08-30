@@ -1861,6 +1861,26 @@ event, so a transient failure is routine, and a panel that blanked would read as
 "spent nothing". The fetched body is schema-parsed — `undefined` formatted as a dash is
 the one wrong answer that looks like good news.
 
+**The time range (shortlist item 3).** The panel opens on **7D**, not on everything: a
+lifetime total answers "what has this cost since the beginning of time", which stops
+being a question anyone has by about day three. `1D / 7D / 30D / All` are rolling
+windows — `rangeStart()` in `src/costs.ts` subtracts whole days from the moment of the
+fetch — and the filtering happens in the daemon via the `since` the endpoint already
+accepted, so the cards and the table always describe the same rows.
+
+Three details are deliberate. **"All" sends no `since` at all** rather than `since=0`: a
+zero is a real window starting at the epoch, the endpoint echoes it back as `since: 0`,
+and nothing downstream could then tell a bounded query from an unbounded one — which
+matters because the empty state says different things about the two ("Nothing spent yet."
+vs "Nothing spent in this range."). **The window re-anchors on every fetch**, from
+`Date.now()` inside the effect rather than the page's ticking `now` clock: a `now`
+dependency would refetch once a second, and a start fixed at mount would turn a rolling
+window into a growing one. And **the four stat cards only show figures the summary
+carries** — cost per request, input→output tokens, cache reads/writes, and the top bucket
+of the current grouping. That is the rule the survey drew from OmniRoute's fourteen
+tiles, and the same rule that kept latency off the health strip: zero calls renders `—`,
+not `$0`, because a zero average claims a measurement that was never taken.
+
 ### Health: what the daemon knows about itself
 
 First item off the [OmniRoute UI survey](design/omniroute-ui-survey.md)'s shortlist, and

@@ -424,6 +424,11 @@ If we implement from this survey, roughly in value order:
    chrome — four columns fit; time filter is the paging itself). See ARCHITECTURE.md →
    "The event log, as a table".
 3. **Time-range control on costs** (1D/7D/30D/All) + three or four honest stat cards.
+   **DONE 2026-08-30** — rolling windows through the endpoint's existing `since`, defaulting
+   to 7D; "All" omits the param rather than sending `0`, so the empty state can tell a quiet
+   window from an unused daemon. Four cards, each a field of the summary (cost/request,
+   tokens, cache, top bucket) — no card the data cannot fill, same rule that kept latency off
+   the health strip. See ARCHITECTURE.md → Costs.
 4. **Provider/registry readiness** — category count chips, a per-provider Test button, a
    landing "readiness" card.
 5. **Dialect/translation debug panel** — request in either dialect → normalized form →

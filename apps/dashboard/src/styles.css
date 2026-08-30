@@ -134,11 +134,16 @@ pre,
   color: var(--dim);
 }
 
-/* Pushed right so the tabs do not read as part of the number beside them. */
+/* Pushed right so the tabs do not read as part of the number beside them.
+   Only the leading group takes the gap: two `margin-left: auto` siblings would
+   each claim half the free space and drift apart. */
 .costs-tabs {
-  margin-left: auto;
   display: flex;
   gap: 0.3rem;
+}
+
+.costs-tabs.leading {
+  margin-left: auto;
 }
 
 .costs-tabs button {
@@ -155,6 +160,29 @@ pre,
 .costs-tabs button[aria-selected="true"] {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Four figures about the window, above the breakdown of it. Same grid idea as
+   the health strip: they wrap rather than scroll on a narrow window. */
+.cost-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.4rem 1.2rem;
+  margin: 0.8rem 0 0;
+}
+
+.cost-card dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+.cost-card dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
 }
 
 .costs-table {

@@ -16,10 +16,15 @@
  * locally, because the fold structurally cannot hold this: a pass-through
  * request has no task, so its cost event is orphaned, and a client that
  * connected an hour ago has only an hour of history. See `costs.ts`.
+ *
+ * The time range exists because a lifetime total stops being interesting on
+ * day three — "what has this cost since the beginning of time" answers no
+ * question an operator has. The windowing happens in the daemon (`?since=`),
+ * not here, so the cards below describe the same rows as the table.
  */
 import type { CostBucket, CostGroupBy, CostSummary } from "@rewter/shared";
 import { useEffect, useState } from "react";
-import { fetchCosts, localTimeZone } from "./costs.js";
+import { COST_RANGES, type CostRange, fetchCosts, localTimeZone, rangeStart } from "./costs.js";
 import { shortModelId, usd } from "./format.js";
 import { useDashboard } from "./store.js";
 
@@ -33,8 +38,50 @@ const TABS: ReadonlyArray<{ value: CostGroupBy; label: string }> = [
 const bucketLabel = (bucket: CostBucket, groupBy: CostGroupBy): string =>
   groupBy === "model" ? shortModelId(bucket.key) : bucket.key;
 
+/**
+ * The stat cards, derived from the summary and nothing else.
+ *
+ * The rule the survey drew from OmniRoute's fourteen tiles: never show a card
+ * the data cannot fill. Every figure here is either a field of `totals` or the
+ * first row of `buckets` — the biggest bucket of the grouping currently on
+ * screen, which is what "top" honestly means. Nothing is estimated, averaged
+ * over a window we did not measure, or padded to make the row look full.
+ */
+function Cards({ summary, groupBy }: { summary: CostSummary; groupBy: CostGroupBy }): JSX.Element {
+  const { totals } = summary;
+  const top = summary.buckets[0];
+  return (
+    <dl className="cost-cards">
+      <div className="cost-card">
+        <dt>cost / request</dt>
+        {/* Zero calls is not a zero average, it is no average. */}
+        <dd>{totals.calls === 0 ? "—" : usd(totals.costUsd / totals.calls)}</dd>
+      </div>
+      <div className="cost-card">
+        <dt>tokens</dt>
+        <dd title="input · output">
+          {totals.inputTokens.toLocaleString()} → {totals.outputTokens.toLocaleString()}
+        </dd>
+      </div>
+      <div className="cost-card">
+        <dt>cache</dt>
+        <dd title="cache reads · cache writes">
+          {totals.cacheReadTokens.toLocaleString()} r · {totals.cacheWriteTokens.toLocaleString()} w
+        </dd>
+      </div>
+      <div className="cost-card">
+        <dt>top {groupBy}</dt>
+        <dd title={top?.key}>
+          {top === undefined ? "—" : `${bucketLabel(top, groupBy)} · ${usd(top.costUsd)}`}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
 export function CostsPanel(): JSX.Element {
   const [groupBy, setGroupBy] = useState<CostGroupBy>("model");
+  const [range, setRange] = useState<CostRange>("7d");
   const [summary, setSummary] = useState<CostSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The socket's position, used only as a "something happened" tick. Any event
@@ -46,8 +93,19 @@ export function CostsPanel(): JSX.Element {
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
+      // The window is anchored at fetch time, not at render time and not from
+      // the page's ticking clock: a `now` in the dependency list would refetch
+      // once a second, and a `now` in the render would make every re-render a
+      // slightly different query. Each refetch re-anchors, which is what a
+      // rolling window means.
+      const since = rangeStart(range, Date.now());
       const result = await fetchCosts(
-        { groupBy, timeZone: localTimeZone(), signal: controller.signal },
+        {
+          groupBy,
+          timeZone: localTimeZone(),
+          ...(since !== undefined && { since }),
+          signal: controller.signal,
+        },
         fetch,
       );
       if (controller.signal.aborted) return;
@@ -61,7 +119,7 @@ export function CostsPanel(): JSX.Element {
       }
     })();
     return () => controller.abort();
-  }, [groupBy, lastSeq]);
+  }, [groupBy, range, lastSeq]);
 
   return (
     <section className="costs" aria-label="costs">
@@ -74,6 +132,21 @@ export function CostsPanel(): JSX.Element {
             work · {summary.totals.calls} calls
           </span>
         )}
+        {/* Range first, then grouping: the window decides which rows exist, the
+            grouping only decides how they are piled up. */}
+        <div className="costs-tabs leading" role="tablist" aria-label="time range">
+          {COST_RANGES.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="tab"
+              aria-selected={range === option.value}
+              onClick={() => setRange(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         <div className="costs-tabs" role="tablist" aria-label="group costs by">
           {TABS.map((tab) => (
             <button
@@ -90,12 +163,18 @@ export function CostsPanel(): JSX.Element {
         {error !== null && <span className="error">{error}</span>}
       </header>
 
+      {summary !== null && <Cards summary={summary} groupBy={groupBy} />}
+
       {summary === null ? (
         error === null ? (
           <p className="empty">loading…</p>
         ) : null
       ) : summary.buckets.length === 0 ? (
-        <p className="empty">Nothing spent yet.</p>
+        // Naming the window matters: "nothing spent" under a 1D range and
+        // "nothing spent" under All are very different claims about the daemon.
+        <p className="empty">
+          {summary.since === null ? "Nothing spent yet." : "Nothing spent in this range."}
+        </p>
       ) : (
         <table className="costs-table">
           <thead>

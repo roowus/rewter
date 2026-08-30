@@ -222,8 +222,12 @@ this morning's. What stays shared is the aggregation: `summarizeCosts` lives in
 code so they cannot disagree. Every number in it carries the split the router exists to
 expose — what the initiator spent *planning* versus what its workers spent *working* —
 because an orchestrator that out-thinks its own budget reads as a perfectly healthy
-total. Group it by model, by day (in the zone the response names), or by task, with
-`since`/`until` windows that tile.
+total. Group it by model, by day (in the zone the response names), or by task, over a
+rolling `1D / 7D / 30D / All` window — defaulting to 7D, because a lifetime total only ever
+goes up and so can never tell you that something got more expensive lately. Four cards sit
+above the breakdown (cost per request, tokens in→out, cache reads and writes, the top bucket
+of whatever grouping is showing), and every one of them is a field the summary actually
+carries: zero calls prints `—`, not a `$0` average nobody measured.
 
 The fifth piece closes M7: the **registry editor**, which fetches for the same reason — a
 registry is not a stream of things that happened, it is a table of what is true now. It

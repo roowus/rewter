@@ -7,7 +7,7 @@
  * one someone will quote as what their week cost.
  */
 import { describe, expect, it, vi } from "vitest";
-import { fetchCosts } from "./costs.js";
+import { COST_RANGES, fetchCosts, rangeStart } from "./costs.js";
 
 const SUMMARY = {
   groupBy: "model",
@@ -84,6 +84,12 @@ describe("fetchCosts", () => {
     });
   });
 
+  it("sends the window it was given", async () => {
+    const spy = vi.fn(respond(SUMMARY));
+    await fetchCosts({ groupBy: "model", since: 1_700_000_000_000 }, spy as typeof fetch);
+    expect(String(spy.mock.calls[0]?.[0])).toContain("since=1700000000000");
+  });
+
   it("distinguishes an abort from a failure", async () => {
     // The panel refetches on every event; an in-flight request being replaced
     // is routine, and must not flash an error between two good renders.
@@ -94,5 +100,26 @@ describe("fetchCosts", () => {
       ok: false,
       message: "aborted",
     });
+  });
+});
+
+describe("rangeStart", () => {
+  const now = 1_700_000_000_000;
+
+  it("subtracts whole days from the moment it is asked", () => {
+    expect(rangeStart("1d", now)).toBe(now - 86_400_000);
+    expect(rangeStart("7d", now)).toBe(now - 7 * 86_400_000);
+    expect(rangeStart("30d", now)).toBe(now - 30 * 86_400_000);
+  });
+
+  it("has no start for all, rather than a start at the epoch", () => {
+    // `0` would be a real window the endpoint echoes back as `since: 0`, which
+    // the panel cannot tell from an unbounded query — and the empty state says
+    // different things about the two.
+    expect(rangeStart("all", now)).toBeUndefined();
+  });
+
+  it("offers exactly the four windows the panel renders", () => {
+    expect(COST_RANGES.map((r) => r.value)).toEqual(["1d", "7d", "30d", "all"]);
   });
 });

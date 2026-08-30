@@ -56,6 +56,17 @@ const summary = (over: Partial<CostSummary> = {}): CostSummary => ({
   ...over,
 });
 
+const zero = (): CostSummary["totals"] => ({
+  costUsd: 0,
+  initiatorCostUsd: 0,
+  workerCostUsd: 0,
+  calls: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+});
+
 const ok = (body: unknown): Response =>
   new Response(JSON.stringify(body), {
     status: 200,
@@ -157,25 +168,94 @@ describe("CostsPanel", () => {
   it("says nothing was spent rather than showing an empty table", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        ok(
-          summary({
-            buckets: [],
-            totals: {
-              costUsd: 0,
-              initiatorCostUsd: 0,
-              workerCostUsd: 0,
-              calls: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-            },
-          }),
-        ),
-      ),
+      vi.fn(async () => ok(summary({ buckets: [], totals: zero() }))),
+    );
+    render(<CostsPanel />);
+    // `since: null` — an unbounded query really did find nothing.
+    await screen.findByText("Nothing spent yet.");
+  });
+
+  it("distinguishes an empty window from an empty daemon", async () => {
+    // The default range is 7D, so the first thing anyone sees is a window. If
+    // both said "Nothing spent yet." a busy month-old daemon would look unused
+    // for the first week after a quiet weekend.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ok(summary({ buckets: [], totals: zero(), since: 1_700_000_000_000 }))),
+    );
+    render(<CostsPanel />);
+    await screen.findByText("Nothing spent in this range.");
+  });
+
+  it("windows the query on the selected range, and drops it for all", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) => {
+        urls.push(String(url));
+        return ok(summary());
+      }),
+    );
+    render(<CostsPanel />);
+    await screen.findByText("$0.55");
+    // 7D is the default: a lifetime total stops being interesting on day three.
+    expect(urls[0]).toContain("since=");
+    expect(screen.getByRole("tab", { name: "7D" }).getAttribute("aria-selected")).toBe("true");
+
+    screen.getByRole("tab", { name: "All" }).click();
+    await waitFor(() => expect(urls.length).toBeGreaterThan(1));
+    expect(urls[urls.length - 1]).not.toContain("since=");
+  });
+
+  it("re-anchors the window on each fetch instead of freezing it at mount", async () => {
+    // A rolling window that keeps its original start is a growing window.
+    const sinces: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) => {
+        const value = new URL(String(url), "http://x").searchParams.get("since");
+        if (value !== null) sinces.push(Number(value));
+        return ok(summary());
+      }),
+    );
+    const clock = vi.spyOn(Date, "now");
+    clock.mockReturnValue(1_000_000_000_000);
+    render(<CostsPanel />);
+    await screen.findByText("$0.55");
+
+    clock.mockReturnValue(1_000_000_060_000);
+    useDashboard.setState({ fold: { ...useDashboard.getState().fold, lastSeq: 4 } });
+    await waitFor(() => expect(sinces.length).toBeGreaterThan(1));
+    const [first] = sinces;
+    const latest = sinces[sinces.length - 1];
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+    expect(latest).toBe(first + 60_000);
+    clock.mockRestore();
+  });
+
+  it("fills the stat cards only from figures the summary carries", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ok(summary())),
+    );
+    render(<CostsPanel />);
+    // $0.55 over 3 calls, through the same `usd` as every other figure here.
+    await screen.findByText("$0.18");
+    expect(screen.getByText("100 → 20")).toBeTruthy();
+    // Top bucket of the current grouping — the first row, which is cost-sorted.
+    expect(screen.getByText("claude-opus-5 · $0.40")).toBeTruthy();
+  });
+
+  it("shows a dash rather than a fabricated average when nothing was called", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ok(summary({ buckets: [], totals: zero() }))),
     );
     render(<CostsPanel />);
     await screen.findByText("Nothing spent yet.");
+    // Zero calls is not a zero cost-per-request; `$0` would claim a measurement.
+    const card = screen.getByText("cost / request").closest(".cost-card");
+    expect(card?.textContent).toContain("—");
   });
 });

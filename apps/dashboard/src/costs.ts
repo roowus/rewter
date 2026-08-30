@@ -58,6 +58,42 @@ export async function fetchCosts(
   return { ok: true, summary: parsed.data };
 }
 
+export type CostRange = "1d" | "7d" | "30d" | "all";
+
+/**
+ * The windows the panel offers. Rolling, not calendar-aligned: "the last 24
+ * hours" needs no zone and no month arithmetic, and the question being asked —
+ * is this thing costing me more than it was — is a rolling one anyway.
+ *
+ * `days: null` is "all", which is the absence of a window rather than a very
+ * large one. See `rangeStart`.
+ */
+export const COST_RANGES: ReadonlyArray<{
+  value: CostRange;
+  label: string;
+  days: number | null;
+}> = [
+  { value: "1d", label: "1D", days: 1 },
+  { value: "7d", label: "7D", days: 7 },
+  { value: "30d", label: "30D", days: 30 },
+  { value: "all", label: "All", days: null },
+];
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Where a window starts, or `undefined` for "all".
+ *
+ * Deliberately not `0` for "all": the endpoint echoes `since` back into the
+ * summary, and a zero would be a real window that happens to start at the epoch
+ * — indistinguishable, on screen and in a test, from an unbounded query. Absent
+ * means absent.
+ */
+export function rangeStart(range: CostRange, now: number): number | undefined {
+  const days = COST_RANGES.find((r) => r.value === range)?.days ?? null;
+  return days === null ? undefined : now - days * DAY_MS;
+}
+
 /** The browser's zone, so `day` buckets line up with the user's calendar. */
 export function localTimeZone(): string {
   try {
