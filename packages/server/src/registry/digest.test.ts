@@ -169,6 +169,22 @@ describe("renderDigest", () => {
     expect(out).toContain("vision, no tools, caching");
   });
 
+  it("says nothing at all about a capability nobody reported", () => {
+    const out = renderDigest([
+      {
+        model: model("ollama/mystery", {
+          supports: { tools: null, streaming: true, vision: null, caching: null },
+        }),
+      },
+    ]);
+    // Unknown is not a denial. "no tools" here would rule a local model out of
+    // every tier-2 subtask on the strength of its catalog being an id list, and
+    // "vision" would promise a capability on the same non-evidence.
+    expect(out).not.toContain("no tools");
+    expect(out).not.toContain("vision");
+    expect(out).not.toContain("caching");
+  });
+
   it("says so when it drops models for space instead of silently truncating", () => {
     const many = Array.from({ length: 50 }, (_, i) =>
       // Zero-padded so sort order is the obvious one.

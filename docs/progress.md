@@ -39,6 +39,67 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — four bugs off the board (#1, #2, #4, #5)
+
+The backlog's four *fixable-now* issues — the other five are parked on data or a design call.
+All four turn out to be the same species of bug: **something was asserted that nobody had
+actually said.**
+
+**#1 `steering.received` and #2 `worker_run.progress` were folded and rendered, but never
+emitted.** `fold.ts` handled both, the dashboard drew both, and no code path ever appended
+either. The feed line was the only record, and the feed line dies with the SSE stream — which
+is exactly when the record is wanted: after a reconnect, after the `kill -9` M8 acceptance
+covers, or in the dashboard beside a task nobody watched live. `injectSteering` and the tier-2
+`onProgress` hook now append as well as print. `onProgress` had to widen to carry the
+`workerRunId`, since the event names a run and the callback only knew the work item.
+
+**#5 the Anthropic adapter silently demoted a mid-conversation system message to a user turn.**
+It has to become a user turn — the API has one `system` slot and it is positionally first — but
+it does not have to become *indistinguishable* from one. It now rides in prefixed `[SYSTEM] `,
+matching how `[USER STEERING]` marks the other message this router splices into a transcript.
+"Respond only in JSON from here on" is an instruction about the conversation; delivered bare it
+reads as the user asking for something, which is weaker and can be argued with.
+
+**#4 `parseOpenAi` asserted capability facts the catalog never reported** — and this one was a
+schema change, because there was no way to say "unknown". `supports.{tools,streaming,vision,
+caching}` is now tri-state, `null` meaning nobody said. That is the *common* case: most catalogs
+are an id list, and a boolean there is a guess wearing a fact's clothes. The guess costs in both
+directions — a `tools: true` gets a tool-less model spawned for tier-2 work, where it fails on
+its first tool call; a `vision: false` takes the only model that could have read the scan out of
+the running for the subtask that needs it.
+
+What separates a defensible hardcoded value from an indefensible one is **the scope of the claim**.
+`parseAnthropic` keeps its `true`s: that endpoint only ever answers for Claude, and every model in
+the line does tools, vision and caching. `parseOpenAi` cannot, because the same parser serves
+OpenAI, xAI, Z.AI, Ollama and LM Studio from a response carrying an id and nothing else. Two
+contrasting tests now pin that difference rather than letting it live in a comment.
+
+Four consumers had to learn the third state, two of them non-obvious:
+
+- **Enrichment inverted.** `entry.supports.x || match.supports.x` was *correct* while a bare
+  catalog's `false` was an assumption a third party's `true` deserved to override. Under
+  tri-state it is actively wrong — `null || false` reads as a denial — so the merge is now `??`:
+  fill an unknown, never contradict a report. Same rule pricing has always had.
+- **The card generator's facts list** used a truthiness filter, which rendered unknown and
+  denied identically. Since the prompt forbids stating a spec it was not given, an omitted
+  `vision` *is* `vision: false` as far as the generator can tell. Unknowns are now named out
+  loud, which is what lets a card admit the gap.
+- **The digest** says `no tools` only on `=== false` and nothing at all on `null`. Silence is the
+  honest rendering of silence; "no tools" would rule a local model out of every tier-2 subtask on
+  the strength of its catalog being an id list.
+- **`pickInitiator`** filters on `!== false` — excluding unknowns would leave a local-only
+  registry unable to orchestrate at all. But a new primary sort key puts *reported* tool support
+  ahead of price, because an initiator that turns out not to call tools is not a cheaper
+  orchestration, it is a failed one.
+
+OpenRouter gets one further distinction it was flattening: an **empty** `supported_parameters` is
+a report (`tools: false`), an **absent** one is silence (`null`). Collapsing the second would have
+let enrichment's fill-unknowns-only rule read it as a denial and decline to correct it from
+OpenRouter's own listing.
+
+No migration: `supports_json` is a text column and `rowToModel` re-parses through `ModelSchema`,
+so rows written with booleans still validate. 1357 tests green (server 900 → 903).
+
 ### 2026-08-29 — the LaunchAgent is loaded and serving
 
 Installed for real, ahead of the reboot criterion. `install-service` writes the plist and stops

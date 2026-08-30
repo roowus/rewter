@@ -106,6 +106,23 @@ describe("fetchCatalog — OpenRouter", () => {
     expect(out.entries[0]?.supports.caching).toBe(true);
     expect(out.entries[1]?.supports.caching).toBe(false);
   });
+
+  it("distinguishes a model that lists no tool support from one that lists nothing", async () => {
+    const out = await fetchCatalog(
+      { slug: "openrouter", kind: "openai-compat" },
+      {
+        apiKey: "k",
+        fetch: jsonFetch({
+          data: [{ id: "a/reports-none", supported_parameters: [] }, { id: "b/reports-nothing" }],
+        }),
+      },
+    );
+    // An empty array is an answer; an absent field is silence. Collapsing the
+    // second into `false` would let enrichment's "fill unknowns only" rule read
+    // it as a denial and decline to correct it from OpenRouter's own listing.
+    expect(out.entries[0]?.supports.tools).toBe(false);
+    expect(out.entries[1]?.supports.tools).toBeNull();
+  });
 });
 
 describe("fetchCatalog — Google", () => {
@@ -187,6 +204,34 @@ describe("fetchCatalog — Anthropic and plain OpenAI", () => {
       contextWindow: null,
       maxOutputTokens: null,
     });
+    // Capabilities included. This parser serves a dozen unrelated vendors from
+    // a response carrying one field, so a boolean here is a guess about
+    // whichever of them is on the other end — and it is a guess that costs
+    // either way: `tools: true` gets a tool-less local model spawned for
+    // tier-2 work, `vision: false` takes the only model that can read a scan
+    // out of the running for the subtask that needs it.
+    expect(out.entries[0]?.supports).toEqual({
+      tools: null,
+      streaming: true,
+      vision: null,
+      caching: null,
+    });
+  });
+
+  it("keeps Anthropic's line-wide capabilities, which are a fact and not a guess", async () => {
+    const out = await fetchCatalog(
+      { slug: "anthropic", kind: "anthropic" },
+      { apiKey: "k", fetch: jsonFetch({ data: [{ id: "claude-sonnet-5" }] }) },
+    );
+    // Unreported too, but the difference from the case above is the scope of
+    // the claim: this endpoint only ever answers for Claude, and every model in
+    // the line does tools, vision and caching.
+    expect(out.entries[0]?.supports).toEqual({
+      tools: true,
+      streaming: true,
+      vision: true,
+      caching: true,
+    });
   });
 });
 
@@ -235,7 +280,9 @@ describe("enrichFromOpenRouter", () => {
       cacheWritePerMTok: null,
     },
     modalities: ["text" as const],
-    supports: { tools: true, streaming: true, vision: false, caching: false },
+    // What a bare `/models` list yields: streaming is the format, everything
+    // else is unreported.
+    supports: { tools: null, streaming: true, vision: null, caching: null },
   };
 
   const rich = {
@@ -267,10 +314,21 @@ describe("enrichFromOpenRouter", () => {
     expect(out?.pricing.outputPerMTok).toBe(15);
   });
 
-  it("takes capability as a disjunction — our default was an assumption", () => {
+  it("fills an unreported capability from OpenRouter's view of the model", () => {
     const [out] = enrichFromOpenRouter([bare], [rich]);
     expect(out?.supports.vision).toBe(true);
     expect(out?.modalities).toEqual(["text", "image"]);
+  });
+
+  it("does not overwrite a capability the upstream itself denied", () => {
+    // Same rule as pricing: a report beats a third party's view of it. The old
+    // `a || b` merge could not express this — it read every false as an
+    // assumption to be overridden, because before tri-state, it was one.
+    const denied = { ...bare, supports: { ...bare.supports, vision: false } };
+    const [out] = enrichFromOpenRouter([denied], [rich]);
+    expect(out?.supports.vision).toBe(false);
+    // …while still filling the ones it left unknown.
+    expect(out?.supports.caching).toBe(true);
   });
 
   it("leaves a model OpenRouter has never heard of alone", () => {

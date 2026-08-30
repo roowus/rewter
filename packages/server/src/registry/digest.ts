@@ -119,11 +119,17 @@ function compactCount(n: number): string {
  * Only *notable* capabilities are listed. Streaming is universal and tools are
  * the norm, so their presence carries no information — but their **absence**
  * does, because it rules a model out of a whole tier of work.
+ *
+ * Each test is against the literal, because these are tri-state: `null` means
+ * no upstream reported it. Unknown renders as nothing at all — the initiator
+ * reading this line should not be told "no tools" about a model whose catalog
+ * was simply an id list, and it should not be promised vision on that basis
+ * either. Silence is the honest rendering of silence.
  */
 function capabilityFacts(model: Model): (string | undefined)[] {
   return [
-    model.supports.vision ? "vision" : undefined,
-    model.supports.tools ? undefined : "no tools",
-    model.supports.caching ? "caching" : undefined,
+    model.supports.vision === true ? "vision" : undefined,
+    model.supports.tools === false ? "no tools" : undefined,
+    model.supports.caching === true ? "caching" : undefined,
   ];
 }

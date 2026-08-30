@@ -58,6 +58,38 @@ describe("anthropic specifics", () => {
     expect(body?.messages).toEqual([{ role: "user", content: "hi" }]);
   });
 
+  it("tags a mid-conversation system message rather than demoting it silently", async () => {
+    const rec = recordingFetch(ANTHROPIC_TEXT);
+    await collectStream(
+      new AnthropicAdapter({
+        apiKey: "k",
+        baseUrl: "https://upstream.test",
+        fetch: rec.fetch,
+      }).stream({
+        model: "claude",
+        messages: [
+          { role: "system", content: "static core" },
+          { role: "user", content: "hi" },
+          // Legal in the OpenAI dialect this router accepts, and Claude Code is
+          // one of the clients that injects one.
+          { role: "system", content: "respond only in JSON from here on" },
+          { role: "user", content: "go" },
+        ],
+      }),
+    );
+    const body = rec.seen[0]?.body;
+    // Only the leading one is hoistable — the API's `system` slot is positional.
+    expect(body?.system).toEqual([{ type: "text", text: "static core" }]);
+    // The later one rides as a user turn because there is no other slot, but it
+    // says what it is: an instruction the model should follow, not a request it
+    // can negotiate with.
+    expect(body?.messages).toEqual([
+      { role: "user", content: "hi" },
+      { role: "user", content: "[SYSTEM] respond only in JSON from here on" },
+      { role: "user", content: "go" },
+    ]);
+  });
+
   it("cacheUpToMessage puts a cache_control breakpoint on the last system block", async () => {
     const rec = recordingFetch(ANTHROPIC_TEXT);
     await collectStream(

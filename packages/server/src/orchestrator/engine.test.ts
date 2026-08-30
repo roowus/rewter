@@ -223,7 +223,30 @@ describe("pickInitiator", () => {
         supports: { tools: false, streaming: true, vision: false, caching: false },
       }),
     );
-    expect(() => makeHarness([]).orchestrator.pickInitiator("auto")).toThrow(/supports tools/);
+    expect(() => makeHarness([]).orchestrator.pickInitiator("auto")).toThrow(
+      /known not to support/,
+    );
+  });
+
+  it("will lead with a model nobody has vouched for, but prefers one that was", () => {
+    // The Ollama case: a catalog that is an id list reports no capabilities, so
+    // `tools` is null — unknown, not denied. Excluding those would leave a
+    // local-only registry unable to orchestrate at all.
+    const unknown = { tools: null, streaming: true, vision: null, caching: null };
+    repos.upsertModel(model(BIG, PRV_A, { supports: unknown }));
+    repos.upsertModel(model(SMALL, PRV_A, { supports: unknown }));
+    expect(makeHarness([]).orchestrator.pickInitiator("auto")).toBe(BIG);
+
+    // But evidence outranks price: SMALL is cheaper and would lose on the
+    // price tiebreak alone, and wins here only because it is the one model
+    // something actually reported can call a tool. The initiator that cannot
+    // is not a cheaper orchestration, it is a failed one.
+    repos.upsertModel(
+      model(SMALL, PRV_A, {
+        supports: { tools: true, streaming: true, vision: false, caching: false },
+      }),
+    );
+    expect(makeHarness([]).orchestrator.pickInitiator("auto")).toBe(SMALL);
   });
 });
 

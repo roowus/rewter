@@ -63,12 +63,18 @@ export const ModelConfigSchema = z.object({
   /** Per-million-token prices. Omitted components are unknown, not free. */
   pricing: ModelPricingSchema.partial().default({}),
   modalities: z.array(z.enum(["text", "image", "audio", "video"])).default(["text"]),
+  /**
+   * Omitted fields are unknown, not denied — same rule as `pricing` above. A
+   * hand-written model block is usually someone naming a local model in a
+   * hurry, and reading that as "declared to have no vision" would take the only
+   * model that can read a scan out of the running for the subtask that needs it.
+   */
   supports: z
     .object({
-      tools: z.boolean().default(true),
-      streaming: z.boolean().default(true),
-      vision: z.boolean().default(false),
-      caching: z.boolean().default(false),
+      tools: z.boolean().nullable().default(null),
+      streaming: z.boolean().nullable().default(true),
+      vision: z.boolean().nullable().default(null),
+      caching: z.boolean().nullable().default(null),
     })
     .default({}),
   enabled: z.boolean().default(true),

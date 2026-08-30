@@ -258,17 +258,24 @@ export class Orchestrator {
       return this.opts.router.resolve(configured).model.id;
     }
 
+    // `=== false` is a reported denial and disqualifying; `null` is only silence
+    // from a catalog that was an id list, and excluding it would leave a
+    // local-Ollama registry with nothing able to lead. Evidence still wins:
+    // models known to do tools sort ahead of models nobody has vouched for.
     const best = this.opts.repos
       .listModels({ enabledOnly: true })
-      .filter((m) => m.supports.tools)
+      .filter((m) => m.supports.tools !== false)
       .sort((a, b) => {
+        const ka = a.supports.tools === true ? 0 : 1;
+        const kb = b.supports.tools === true ? 0 : 1;
         const pa = a.pricing.outputPerMTok ?? -1;
         const pb = b.pricing.outputPerMTok ?? -1;
-        return pb - pa || a.id.localeCompare(b.id);
+        return ka - kb || pb - pa || a.id.localeCompare(b.id);
       })[0];
     if (best === undefined) {
       throw new OrchestratorError(
-        "no enabled model supports tools, so nothing can lead an orchestration — " +
+        "every enabled model is known not to support tools, so nothing can lead " +
+          "an orchestration — " +
           "enable one, or pin an initiator with auto/orchestrator:<model-id>",
       );
     }
@@ -491,8 +498,15 @@ class Session {
     const runner = createTier2Runner({
       workspace,
       approvals,
-      onProgress: (note, workItem) => {
+      onProgress: (note, workItem, workerRunId) => {
         this.lines.push(workerNoteLine({ label: this.labelOf(workItem.id), note }));
+        // Also durable: the feed line dies with the stream, and a worker's notes
+        // are most wanted precisely when the stream is gone — after a reconnect,
+        // or after the restart that interrupted it.
+        this.o.bus.append({
+          taskId: this.o.task.id,
+          payload: { type: "worker_run.progress", workerRunId, text: note },
+        });
       },
     });
 
@@ -1109,6 +1123,13 @@ class Session {
       const text = message.trim();
       if (text === "") continue;
       this.messages.push({ role: "user", content: `[USER STEERING] ${text}` });
+      // The feed line clamps for display; the log keeps the whole thing. "Did my
+      // instruction reach the initiator" needs a durable answer, and the SSE
+      // stream is not one — it is gone on reconnect and on restart.
+      this.o.bus.append({
+        taskId: this.o.task.id,
+        payload: { type: "steering.received", taskId: this.o.task.id, text },
+      });
       yield chunk(noteLine(`steering: ${clampLine(text, 160)}`));
     }
   }

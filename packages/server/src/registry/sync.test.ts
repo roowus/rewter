@@ -45,7 +45,9 @@ function model(id: string, over: Partial<Model> = {}): Model {
       cacheWritePerMTok: null,
     },
     modalities: ["text"],
-    supports: { tools: true, streaming: true, vision: false, caching: false },
+    // Matches what the thin OpenAI-compatible catalog reports, so a re-sync of
+    // an unchanged model produces no diff.
+    supports: { tools: null, streaming: true, vision: null, caching: null },
     source: "synced",
     enabled: true,
     createdAt: 1,

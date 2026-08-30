@@ -512,7 +512,8 @@ curl -N localhost:20130/v1/chat/completions -H 'content-type: application/json' 
 
 Progress arrives as ordinary assistant text, so a client needs no rewter awareness to show it.
 `auto/orchestrator:<model-id>` pins the initiator; otherwise the configured default is used,
-falling back to the most expensive enabled model that supports tools.
+falling back to the most expensive enabled model not *known* to lack tools — a model a catalog
+reported tool-capable outranks one nobody vouched for, and only a reported denial disqualifies.
 
 That output is real, not illustrative: an `orchestrator` block in the config sets who leads and
 what a task may spend, and a request that says nothing about settings inherits both.

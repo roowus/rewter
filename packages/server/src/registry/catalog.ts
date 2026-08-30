@@ -33,7 +33,13 @@ export interface CatalogEntry {
   maxOutputTokens: number | null;
   pricing: ModelPricing;
   modalities: ("text" | "image" | "audio" | "video")[];
-  supports: { tools: boolean; streaming: boolean; vision: boolean; caching: boolean };
+  /** `null` = the upstream did not say. See `ModelSchema.supports`. */
+  supports: {
+    tools: boolean | null;
+    streaming: boolean | null;
+    vision: boolean | null;
+    caching: boolean | null;
+  };
 }
 
 export interface CatalogResult {
@@ -177,7 +183,9 @@ function parseOpenRouter(body: unknown): CatalogResult {
       },
       modalities,
       supports: {
-        tools: params.has("tools"),
+        // An absent `supported_parameters` is silence, not a denial — the one
+        // field here that is a report rather than an inference.
+        tools: m.supported_parameters === undefined ? null : params.has("tools"),
         streaming: true,
         vision: modalities.includes("image"),
         // A non-null cache price is the only honest evidence of caching here.
@@ -224,13 +232,15 @@ function parseGoogle(body: unknown): CatalogResult {
       supports: {
         tools: methods.includes("generateContent"),
         streaming: methods.includes("streamGenerateContent"),
-        vision: false,
-        caching: false,
+        // Gemini is multimodal across the line, but the catalog does not say so
+        // per model, and this file only records what an upstream reported.
+        vision: null,
+        caching: null,
       },
     };
   });
   // Embedding-only endpoints are in the same list and are not chat models.
-  return { ...result, entries: result.entries.filter((e) => e.supports.tools) };
+  return { ...result, entries: result.entries.filter((e) => e.supports.tools === true) };
 }
 
 const AnthropicModel = z.object({
@@ -248,7 +258,9 @@ function parseAnthropic(body: unknown): CatalogResult {
       maxOutputTokens: null,
       pricing: nullPricing(),
       modalities: ["text" as const],
-      // Uniform across the line, and the catalog says nothing either way.
+      // Not reported either, but unlike the bare OpenAI catalog this is a fact
+      // about a single vendor's whole line rather than about "any of a dozen
+      // upstreams" — every Claude model does tools, vision and prompt caching.
       supports: { tools: true, streaming: true, vision: true, caching: true },
     };
   });
@@ -266,9 +278,13 @@ function parseOpenAi(body: unknown): CatalogResult {
       maxOutputTokens: null,
       pricing: nullPricing(),
       modalities: ["text" as const],
-      // Assumed, not reported. Enrichment corrects this where it can; the plain
-      // OpenAI-compatible catalog is an id list and nothing more.
-      supports: { tools: true, streaming: true, vision: false, caching: false },
+      // Unknown, and said so. This parser serves a dozen unrelated vendors —
+      // OpenAI, xAI, Z.AI, Ollama, LM Studio — from a response that is an id
+      // list and nothing more, so there is no line-wide fact to lean on the way
+      // the Anthropic parser can. Enrichment fills these where OpenRouter also
+      // lists the model, which for a local Ollama model is never; the registry
+      // editor is the other way in.
+      supports: { tools: null, streaming: true, vision: null, caching: null },
     };
   });
 }
@@ -358,13 +374,17 @@ export function enrichFromOpenRouter(
         cacheReadPerMTok: entry.pricing.cacheReadPerMTok ?? match.pricing.cacheReadPerMTok,
         cacheWritePerMTok: entry.pricing.cacheWritePerMTok ?? match.pricing.cacheWritePerMTok,
       },
-      // Capability is a disjunction: OpenRouter knowing a model does vision is
-      // evidence, and our defaults for a bare catalog were assumptions.
+      // Same rule as pricing: fill an unknown, never contradict a report. It
+      // used to be a disjunction (`a || b`) because a bare catalog's entries
+      // were assumed `false`, and a third party's `true` deserved to win over
+      // an assumption. Now that an unreported capability is `null`, `??` says
+      // that directly — and `||` would be actively wrong, quietly reading
+      // `null || false` as a denial.
       supports: {
-        tools: entry.supports.tools || match.supports.tools,
-        streaming: entry.supports.streaming || match.supports.streaming,
-        vision: entry.supports.vision || match.supports.vision,
-        caching: entry.supports.caching || match.supports.caching,
+        tools: entry.supports.tools ?? match.supports.tools,
+        streaming: entry.supports.streaming ?? match.supports.streaming,
+        vision: entry.supports.vision ?? match.supports.vision,
+        caching: entry.supports.caching ?? match.supports.caching,
       },
       modalities: entry.modalities.length > 1 ? entry.modalities : match.modalities,
     };

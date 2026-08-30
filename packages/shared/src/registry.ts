@@ -31,11 +31,12 @@ import {
 import { ModelIdSchema, ProviderIdSchema } from "./ids.js";
 
 const ModalitiesSchema = z.array(z.enum(["text", "image", "audio", "video"]));
+/** Tri-state, matching `ModelSchema.supports`: `null` is "nobody reported it". */
 const SupportsSchema = z.object({
-  tools: z.boolean(),
-  streaming: z.boolean(),
-  vision: z.boolean(),
-  caching: z.boolean(),
+  tools: z.boolean().nullable(),
+  streaming: z.boolean().nullable(),
+  vision: z.boolean().nullable(),
+  caching: z.boolean().nullable(),
 });
 
 /**
@@ -78,11 +79,15 @@ export const ModelCreateSchema = z
       cacheWritePerMTok: null,
     }),
     modalities: ModalitiesSchema.default(["text"]),
+    // Unknown by default rather than assumed. A create body that omits this is
+    // someone adding a model in a hurry, not someone asserting it cannot see
+    // images — and `vision: false` on the local vision model is how an OCR
+    // subtask gets handed to a model that cannot do it.
     supports: SupportsSchema.default({
-      tools: true,
+      tools: null,
       streaming: true,
-      vision: false,
-      caching: false,
+      vision: null,
+      caching: null,
     }),
     enabled: z.boolean().default(true),
   })

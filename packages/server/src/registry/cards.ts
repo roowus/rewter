@@ -112,10 +112,7 @@ export function buildCardMessages(model: Model): ChatMessage[] {
     `context window: ${model.contextWindow === null ? "unknown" : `${model.contextWindow} tokens`}`,
     `price per Mtok: in ${price(model.pricing.inputPerMTok)}, out ${price(model.pricing.outputPerMTok)}`,
     `modalities: ${model.modalities.join(", ")}`,
-    `supports: ${Object.entries(model.supports)
-      .filter(([, v]) => v)
-      .map(([k]) => k)
-      .join(", ")}`,
+    `supports: ${supportsFact(model)}`,
   ];
   return [
     { role: "system", content: CARD_SYSTEM_PROMPT },
@@ -124,6 +121,26 @@ export function buildCardMessages(model: Model): ChatMessage[] {
       content: `Write the capability card for this model.\n\n${facts.join("\n")}`,
     },
   ];
+}
+
+/**
+ * Reported capabilities, with the unreported ones named as unknown rather than
+ * dropped. The prompt above forbids stating a specification it was not given —
+ * so an omitted `vision` reads as "not in the facts", which is the same silence
+ * as `vision: false`, and the generator has no way to tell them apart. Saying
+ * "unknown" out loud is what lets it write a card that admits the gap.
+ */
+function supportsFact(model: Model): string {
+  const yes = Object.entries(model.supports)
+    .filter(([, v]) => v === true)
+    .map(([k]) => k);
+  const unknown = Object.entries(model.supports)
+    .filter(([, v]) => v === null)
+    .map(([k]) => k);
+  return [
+    yes.length === 0 ? "none reported" : yes.join(", "),
+    ...(unknown.length === 0 ? [] : [`(unknown: ${unknown.join(", ")})`]),
+  ].join(" ");
 }
 
 function price(n: number | null): string {

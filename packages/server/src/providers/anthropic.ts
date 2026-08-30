@@ -183,7 +183,20 @@ function toAnthropicMessages(messages: ChatMessage[]): MessageParam[] {
       continue;
     }
 
-    // A system message after the first user turn has nowhere else to go.
+    // A system message after the first user turn has nowhere else to go: the
+    // Anthropic API has one `system` slot and it is positionally first, so a
+    // mid-conversation one can only ride in as a user turn.
+    //
+    // Tagged rather than demoted silently. The two roles do not mean the same
+    // thing — "respond only in JSON from here on" is an instruction *about* the
+    // conversation, and delivered bare it reads as the user asking for
+    // something, which is weaker and can be argued with. The tag costs nothing
+    // and preserves the distinction; it matches how `[USER STEERING]` marks the
+    // other message this router splices into a transcript.
+    if (m.role === "system") {
+      out.push({ role: "user", content: `[SYSTEM] ${m.content ?? ""}` });
+      continue;
+    }
     out.push({ role: "user", content: m.content ?? "" });
   }
   return out;

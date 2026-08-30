@@ -329,6 +329,34 @@ describe("POST /internal/approvals/:id", () => {
     // Settled rows leave the pending list.
     expect(await listApprovals(base, taskId)).toHaveLength(0);
   });
+
+  it("writes a worker's progress note to the event log, not only to the feed", async () => {
+    setup(initiatorScript("all done"), [
+      turn({ name: "report_progress", args: { note: "cloning the repo" } }),
+      turn({ name: "shell", args: { command: SHELL_COMMAND } }),
+      turn({ name: "finish_report", args: { status: "success", summary: "ran it" } }),
+    ]);
+    const base = await listen();
+
+    const res = await postChat(base, chat());
+    const taskId = res.headers.get(TASK_ID_HEADER) as string;
+    const card = await waitForApproval(base, taskId);
+    await resolveOverHttp(base, card.id, { approved: true });
+    const feed = feedOf(await res.text());
+
+    expect(feed).toContain("cloning the repo");
+    // The durable half. A note that lives only on the SSE feed is lost to a
+    // reconnect and to a restart — which is exactly when "what was this worker
+    // doing" gets asked. The dashboard reads the log, so an unemitted note makes
+    // a busy worker look identical to a stalled one.
+    const notes = bus
+      .eventsAfter(0)
+      .filter((e) => e.payload.type === "worker_run.progress")
+      .map((e) => e.payload as { workerRunId: string; text: string });
+    expect(notes.map((n) => n.text)).toEqual(["cloning the repo"]);
+    // Keyed by run, so a retried work item's notes do not merge into one list.
+    expect(notes[0]?.workerRunId).toBe(card.workerRunId);
+  });
 });
 
 describe("POST /internal/approvals/:id — refusals", () => {

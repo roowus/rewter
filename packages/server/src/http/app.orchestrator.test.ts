@@ -437,6 +437,15 @@ describe("steering by re-POST", () => {
     // Both streams end cleanly, and the steering reached the initiator.
     expect(feedOf(aBody)).toContain("actually, focus on the third one");
     expect(feedOf(bBody)).toContain("done");
+
+    // And it is on the log, not only in the feed. The feed is gone on reconnect
+    // and on restart; "did my instruction land" needs an answer that outlives
+    // the stream, and the dashboard reads the log rather than the SSE body.
+    const steered = bus
+      .eventsAfter(0)
+      .filter((e) => e.payload.type === "steering.received")
+      .map((e) => (e.payload as { text: string }).text);
+    expect(steered).toEqual(["actually, focus on the third one"]);
   });
 
   it("matches on the task id header when the client can echo it", async () => {

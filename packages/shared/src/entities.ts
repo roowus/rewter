@@ -56,11 +56,21 @@ export const ModelSchema = z.object({
   maxOutputTokens: z.number().int().positive().nullable(),
   pricing: ModelPricingSchema,
   modalities: z.array(z.enum(["text", "image", "audio", "video"])),
+  /**
+   * Tri-state on purpose: `null` is "no upstream ever said", which is the
+   * common case. Most catalogs are an id list, so a boolean here would be a
+   * guess wearing a fact's clothes — and both guesses cost something. A false
+   * `vision` hides the one model that could have read the scan; a true `tools`
+   * gets a tool-less model spawned for tier-2 work, where it fails on its
+   * first tool call. Enrichment and the registry editor promote nulls to
+   * booleans as evidence arrives; consumers must read `=== false`, not
+   * falsiness, before ruling a model out.
+   */
   supports: z.object({
-    tools: z.boolean(),
-    streaming: z.boolean(),
-    vision: z.boolean(),
-    caching: z.boolean(),
+    tools: z.boolean().nullable(),
+    streaming: z.boolean().nullable(),
+    vision: z.boolean().nullable(),
+    caching: z.boolean().nullable(),
   }),
   source: z.enum(["synced", "manual"]),
   enabled: z.boolean(),

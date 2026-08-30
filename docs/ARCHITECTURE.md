@@ -171,7 +171,9 @@ schemas so the event/API contract cannot drift. Server module dirs are the futur
 Entities (zod-typed in `shared`):
 
 - **Provider** — kind, baseUrl?, `apiKeyRef` (env var *name* — raw keys never in DB), enabled, priority.
-- **Model** — `<provider>/<model>` id, pricing, contextWindow, modalities, supports{tools,vision,json}, source (synced|manual).
+- **Model** — `<provider>/<model>` id, pricing, contextWindow, modalities,
+  `supports{tools,streaming,vision,caching}`, source (synced|manual). Each `supports` flag is
+  **tri-state** — see [Capabilities are tri-state](#capabilities-are-tri-state).
 - **CapabilityCard** (1:1 Model) — summary, strengths[], weaknesses[], bestAt[]/avoidFor[]
   (tags from a **fixed vocabulary** that doubles as the phase-2 stats key), tierHint, speed,
   `userOverrides` (JSON patch that survives regeneration). Stored in two halves — see
@@ -243,12 +245,45 @@ is `null` — *unknown*, never zero; `costs/compute.ts` distinguishes them, and 
 silently under-reports spend. A catalog row we cannot parse is **counted, not thrown**: one
 malformed entry must not cost you the other four hundred.
 
+#### Capabilities are tri-state
+
+`supports.{tools,streaming,vision,caching}` is `true | false | null`, and **`null` — nobody
+reported it — is the common case.** Most catalogs are an id list, so a boolean there would be a
+guess wearing a fact's clothes, and the guess costs something in either direction: a `tools: true`
+gets a tool-less model spawned for tier-2 work, where it fails on its first tool call; a
+`vision: false` takes the only model that could have read the scan out of the running for the
+subtask that needs it.
+
+What each parser may claim follows from the **scope of the claim it is in a position to make**:
+
+- `parseOpenAi` reports `tools/vision/caching` as `null`. One parser serves OpenAI, xAI, Z.AI,
+  Ollama and LM Studio from a response that carries an id and nothing else — there is no
+  line-wide fact to lean on.
+- `parseAnthropic` keeps its `true`s. That endpoint only ever answers for Claude, and every model
+  in the line does tools, vision and prompt caching. Unreported, but not a guess.
+- `parseOpenRouter` treats an **empty** `supported_parameters` as a report (`tools: false`) and an
+  **absent** one as silence (`null`). An empty array is an answer; a missing field is not.
+- `parseGoogle` reports `tools`/`streaming` from `supportedGenerationMethods` and leaves
+  `vision`/`caching` null — Gemini is multimodal across the line, but the catalog does not say so
+  per model.
+
+Config blocks and the registry editor default the same way: an omitted field is unknown, not
+denied. Consumers must therefore test the literal, never falsiness. The digest renders `no tools`
+only on `=== false` and says nothing at all about a `null`, because silence is the honest
+rendering of silence; `pickInitiator` filters on `!== false` for the same reason — excluding
+unknowns would leave a local-only registry with nothing able to lead.
+
 **Enrichment.** Most catalogs are an id list and nothing else, which would leave the registry
 priceless and the orchestrator with no basis for preferring a cheap model. So OpenRouter's
 catalog — which prices essentially the same models — fills the gaps in everyone else's, matching
 on the id tail with any variant suffix dropped, first writer wins. It is **on by default** in the
 CLI (`--no-enrich` opts out) and it is strictly a bonus: if OpenRouter itself fails, the sync
 still runs unenriched and the report's `enrichedFromOpenRouter` flag says so.
+
+Capabilities merge by the same rule as pricing — **fill an unknown, never contradict a report**
+(`entry.supports.x ?? match.supports.x`). This was a disjunction while a bare catalog's entries
+were assumed `false` and a third party's `true` deserved to win over an assumption; under
+tri-state `||` would be actively wrong, quietly reading `null || false` as a denial.
 
 **Two governing rules for what sync may do to an existing row:**
 
@@ -294,7 +329,10 @@ the facts we already hold** (id, upstream id, context window, price, modalities,
 instead of asking for them: the generator's job is judgement, and it should not be guessing at a
 price sitting in the database. The card carries no pricing, so it cannot overwrite one either.
 Generation runs at `temperature: 0` — two runs should differ because the registry changed, not
-because sampling did.
+because sampling did. Unreported capabilities are **named as unknown** in that facts list rather
+than dropped from it: the prompt forbids stating a specification it was not given, so an omitted
+`vision` reads as the same silence as `vision: false`, and the generator has no way to tell them
+apart. Saying "unknown" out loud is what lets it write a card that admits the gap.
 
 The prompt also **forbids stating any specification it was not given**. Parameter counts,
 training-data cutoffs, architectures and benchmark numbers are exactly the details a generator
@@ -390,11 +428,18 @@ place arguments are validated and the one place a refusal is worded.
 ### Choosing the initiator
 
 Explicit beats implicit: a `:pin` on the request, then the configured default, then a
-heuristic — *the most expensive enabled model that supports tools*. Price is a crude proxy
+heuristic — *the most expensive enabled model not known to lack tools*. Price is a crude proxy
 for capability, but it is the only one available before any card is read, and the initiator
 is exactly where being wrong is most expensive. Ties break on id, so the choice is
 deterministic across restarts. The task row records the **canonical** id, not the alias the
 caller typed.
+
+The filter is `supports.tools !== false`: a reported denial disqualifies, silence does not, or a
+registry of local models — whose catalogs report nothing — could never orchestrate at all. But
+evidence outranks price, so a model *reported* to do tools sorts ahead of an unvouched one before
+price is consulted. An initiator that turns out not to call tools is not a cheaper orchestration,
+it is a failed one. The error when nothing qualifies says *known not to support tools*, because
+that is the only case it can now mean.
 
 ### System prompt (cache-friendly order)
 
@@ -501,6 +546,16 @@ four loops running for minutes make an unlabelled "wrote the fixture" meaningles
 prints the **full approval id**, not the label: the REST route and the in-band reply both
 address it by id, and someone about to authorize a shell command should be reading the same
 identifier the audit row carries.
+
+**The feed is not the record.** Both of those lines are also appended to the event log —
+`worker_run.progress` for a worker's note, `steering.received` for an instruction arriving
+in-band. The SSE stream dies with the connection, and a worker's notes are wanted precisely
+when it is gone: after a reconnect, after the restart that interrupted the task, or in the
+dashboard beside a task nobody was watching live. The fold and the dashboard already rendered
+both event types; for a while nothing emitted them
+([#1](https://github.com/roowus/rewter/issues/1),
+[#2](https://github.com/roowus/rewter/issues/2)). The feed line clamps for display; the logged
+event keeps the whole text.
 
 ### Handoff
 
@@ -619,7 +674,13 @@ Two semantics are load-bearing and easy to get wrong, so they are spelled out he
 - **anthropic** — native `@anthropic-ai/sdk`: `cache_control` breakpoints, typed
   tool_use/tool_result blocks, real cache-token accounting. Leading `system` messages are
   hoisted to the top-level `system` param (and removed from `messages`); consecutive tool
-  results merge into a single user turn.
+  results merge into a single user turn. A system message *after* the first user turn has
+  nowhere else to go — the API has one `system` slot and it is positionally first — so it rides
+  in as a user turn prefixed **`[SYSTEM] `**. Tagged rather than demoted silently: "respond only
+  in JSON from here on" is an instruction *about* the conversation, and delivered bare it reads
+  as the user asking for something, which is weaker and can be argued with
+  ([#5](https://github.com/roowus/rewter/issues/5)). It matches how `[USER STEERING]` marks the
+  other message this router splices into a transcript.
 - **openai-compat** — one class parameterized by `{baseUrl, apiKey, quirks}`; covers ~25 of
   the 27 presets.
 - **google** — `@google/genai`. Roles are `user`/`model`, messages are `contents`/`parts`,

@@ -36,6 +36,7 @@ import {
   type ToolCall,
   type WorkItem,
   type WorkerRun,
+  type WorkerRunId,
   newWorkerRunId,
 } from "@rewter/shared";
 import { ORCHESTRATOR_MESSAGE_PREFIX, buildTier2Messages } from "../orchestrator/prompt.js";
@@ -77,9 +78,11 @@ export interface Tier2Options {
   /**
    * A `report_progress` note, for the user's live feed. The `workItem` comes
    * along because the engine labels lines by worker (`▶ [w2] …`) and only it
-   * knows the labels.
+   * knows the labels; the run id because the note is also an event, and
+   * `worker_run.progress` is keyed by run — the work item is one attempt too
+   * coarse when a failed worker was retried.
    */
-  onProgress?: ((note: string, workItem: WorkItem) => void) | undefined;
+  onProgress?: ((note: string, workItem: WorkItem, workerRunId: WorkerRunId) => void) | undefined;
   maxTurns?: number | undefined;
   maxTokens?: number | undefined;
 }
@@ -131,7 +134,7 @@ export async function runTier2Worker(
     ...(opts.fetchImpl === undefined ? {} : { fetchImpl: opts.fetchImpl }),
     ...(opts.onProgress === undefined
       ? {}
-      : { onProgress: (note: string) => opts.onProgress?.(note, ctx.workItem) }),
+      : { onProgress: (note: string) => opts.onProgress?.(note, ctx.workItem, run.id) }),
   };
 
   const messages: ChatMessage[] = buildTier2Messages({
