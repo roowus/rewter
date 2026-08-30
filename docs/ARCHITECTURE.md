@@ -1573,8 +1573,11 @@ done-pattern) so any CLI harness is addable by config.
   [The registry editor](#the-registry-editor-m7f)) — `POST /internal/providers/:id/test`
   (a catalog read against the real upstream; every upstream failure is a **200 carrying a
   verdict**, 404 only for a provider rewter does not have — see
-  [Readiness](#readiness-would-this-thing-actually-answer)) — and `WS /internal/ws`
-  (see below).
+  [Readiness](#readiness-would-this-thing-actually-answer)) — `POST /internal/translate`
+  (all three stages of a request, sending nothing) and `POST /internal/chat-test` (the one
+  `/internal` route that **does** spend, bounded and itemised — see
+  [What the model actually receives](#what-the-model-actually-receives)) — and
+  `WS /internal/ws` (see below).
   Providers are safe to serve as-is: only the env var *name* is ever stored.
   There is deliberately **no `GET /internal/tasks/:id`**: per-task detail is a fold over
   the event stream, the fold lives in `shared`, and building a second answer to the same
@@ -1998,6 +2001,73 @@ to know exactly what the daemon did, in order):
 - **A failed refetch keeps the loaded rows**, same as every fetching panel: a table that
   empties reads as "the log is gone".
 
+### What the model actually receives
+
+Fifth item off the [OmniRoute UI survey](design/omniroute-ui-survey.md) shortlist, and the
+one that pays for the mesh this router is. rewter accepts two downstream dialects and
+speaks three upstream ones, and every bug in that mesh reads the same from outside: *the
+model got something I didn't send.* Answering it meant reading three files and holding the
+translation in your head. `POST /internal/translate` shows it instead — the request as
+posted, the `ChatMessage[]` it normalizes to, and the exact body the resolved provider
+would be handed.
+
+**The middle stage is the claim.** Two dialects converging is the whole reason
+`toChatMessages()` and `fromAnthropicMessages()` exist, and it is unverifiable by reading:
+flip the panel's dialect toggle with the equivalent request and the middle pane should not
+move. The third stage is where quirks apply, and quirks are invisible by construction —
+`max_tokens` becoming `max_completion_tokens`, a system prompt hoisted back out to a
+top-level parameter, a model id moving into the URL.
+
+**It sends nothing, and cannot.** The route builds stage three through
+`createDescribeOnlyAdapter(provider)`, which skips the env-var lookup (so a provider whose
+key is unset still describes) and installs a `fetch` that throws — a describe path that
+could reach the network is one keystroke from being a billing surface, since the panel
+describes as you type. The builder itself is `ProviderAdapter.describeRequest`, the *same*
+function `stream()` calls to construct its own request, pinned by per-adapter equivalence
+tests. The panel therefore cannot describe a request nobody would send; if the two ever
+diverge, a test fails rather than a user being misled.
+
+**A missing third stage is an answer.** An unknown model, a disabled provider, and
+`auto/orchestrator` all produce `upstream: null` with a `note` saying which — and the
+first two stages stay, because they are still real. A model that does not resolve is often
+*why* the panel was opened.
+
+**`POST /internal/chat-test` — the rung that spends.** Everything else on the debug surface
+is free and therefore incomplete. Translate proves the *shape* is right without sending.
+The provider probe (see [Readiness](#readiness-would-this-thing-actually-answer)) proves
+the key and base URL work by reading a catalog — but a catalog read is not a completion,
+six presets expose no catalog at all, and a catalog that *lists* a model is not a model
+that serves. So this route sends one real completion, and every decision in it follows from
+that:
+
+- **It goes through `router.complete()`**, not an adapter directly — resolution, quirks,
+  retry, and cost recording all run, so a test drive exercises the real path and lands in
+  `cost_records` like any other spend. It shows up in the costs panel because it *was*
+  spend; a debug route with a private accounting would be a hole in the ledger.
+- **Bounded before, visible after.** `maxTokens` defaults to 256 and is capped at 1000 —
+  this is a "does it answer" button, not a chat window, and the ceiling is what keeps a
+  mistyped box from becoming a bill. The response carries `usage` and a `costUsd` computed
+  from the same pricing snapshot the router just recorded with, so the two cannot disagree.
+- **`costUsd: null`, never `0`.** Keyed off `CostBreakdown.incomplete`: when a component
+  had tokens but no price, the total is a lower bound, and a lower bound printed as a
+  dollar figure is a wrong dollar figure. The panel renders "unpriced".
+- **The upstream's own words, at its own status.** `statusForUpstreamError` forwards 401 /
+  404 / 429 and friends; "invalid x-api-key" is the entire answer someone pressed this
+  button to get, and a generic 502 would send them back to the logs they came from.
+- **`auto/orchestrator` is refused with a 400** before anything is sent. Testing *one
+  model* is the question being asked; an orchestration would answer a different one at an
+  unbounded price.
+
+**The panel** (`src/TranslatePanel.tsx`, collapsed by default and sited next to the event
+log — both are opened when something has gone wrong; this one answers what the log cannot,
+which is not what the daemon did but what the upstream was handed). Describing is debounced
+at 300ms and aborts its in-flight predecessor. An unbalanced brace is caught client-side by
+`parseBody` and reported in place while the **last good render stays on screen** — a JSON
+editor that blanks its own output on every half-typed object is unusable to type into. The
+Test button takes its model from whatever is in the request box, so there is no second
+field to keep in sync, and it is the only control on the page drawn in the warning colour,
+because it is the only one that bills.
+
 ### The registry editor (M7f)
 
 Five routes and one panel, and they exist to make a single rule visible instead of
@@ -2207,7 +2277,8 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   118 routes), read to decide what rewter's one-page ops UI is actually missing. Documented,
   not copied: no OmniRoute source was taken for any of it. Ends in a shortlist — a health
   panel, a filterable event-log table, a time range on costs,
-  [provider readiness](#readiness-would-this-thing-actually-answer) — and an
+  [provider readiness](#readiness-would-this-thing-actually-answer),
+  [a translation debug panel](#what-the-model-actually-receives) — and an
   explicit account of what is deliberately *not* adopted (tabs, a router, a command palette,
   combos) and why, argued against [the dashboard app](#the-dashboard-app-one-store-one-clock-m7c).
 

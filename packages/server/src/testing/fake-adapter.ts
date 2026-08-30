@@ -7,7 +7,7 @@
  */
 import type { ChatResponse, FinishReason, ProviderKind, StreamChunk, Usage } from "@rewter/shared";
 import { collectStream } from "../providers/collect.js";
-import type { AdapterRequest, ProviderAdapter } from "../providers/types.js";
+import type { AdapterRequest, ProviderAdapter, UpstreamRequest } from "../providers/types.js";
 
 export interface FakeAdapterOptions {
   kind?: ProviderKind;
@@ -62,6 +62,15 @@ export class FakeAdapter implements ProviderAdapter {
 
   async complete(req: AdapterRequest, signal?: AbortSignal): Promise<ChatResponse> {
     return collectStream(this.stream(req, signal));
+  }
+
+  /**
+   * There is no wire format behind a scripted adapter, so this echoes the
+   * normalized request rather than inventing a vendor shape. A test that wants
+   * to assert on real translation uses a real adapter.
+   */
+  describeRequest(req: AdapterRequest): UpstreamRequest {
+    return { kind: this.kind, path: "/fake", body: { ...req } };
   }
 }
 

@@ -61,6 +61,34 @@ export interface ProviderAdapter {
   stream(req: AdapterRequest, signal?: AbortSignal): AsyncIterable<StreamChunk>;
   /** Non-streaming call. Defaults to folding `stream()`; adapters may override. */
   complete(req: AdapterRequest, signal?: AbortSignal): Promise<ChatResponse>;
+  /**
+   * The body this adapter *would* put on the wire, without sending it.
+   *
+   * Exists for the dialect panel, which shows a request at all three stages —
+   * as the client sent it, as `ChatMessage[]`, and as the upstream would
+   * receive it. The third stage is the one that catches real bugs, and it is
+   * only worth showing if it is the truth: so `stream()` builds its body by
+   * calling this, rather than the two constructing the same object twice and
+   * drifting.
+   *
+   * Never contains credentials. The key rides in a header (or, for Google, a
+   * query parameter) that the SDK attaches at call time — none of it is in the
+   * body, so nothing here needs redacting.
+   */
+  describeRequest(req: AdapterRequest): UpstreamRequest;
+}
+
+/** One outbound call, as JSON, for display rather than for sending. */
+export interface UpstreamRequest {
+  /** Which of the three translations produced this — not the provider's name. */
+  kind: ProviderKind;
+  /**
+   * Path relative to the provider's base URL. Written out rather than derived,
+   * because the SDKs own the real URL and a guess that looked plausible would
+   * be worse than no line at all.
+   */
+  path: string;
+  body: Record<string, unknown>;
 }
 
 /** Thrown by `collectStream` when the upstream terminated with an error chunk. */

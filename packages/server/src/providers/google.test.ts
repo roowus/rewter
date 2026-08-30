@@ -168,4 +168,54 @@ describe("google specifics", () => {
     const parts = contents[0]?.parts as Record<string, Record<string, unknown>>[];
     expect(parts[0]?.functionCall?.args).toEqual({});
   });
+
+  /**
+   * The anti-drift check, weakened to what is true here. Anthropic and
+   * openai-compat send the params object verbatim, so their tests can assert
+   * byte equality. `@google/genai` does not: it lifts `config` apart into
+   * `generationConfig` / `systemInstruction` / `tools`, moves the model id into
+   * the URL, and uppercases JSON Schema types (`object` → `OBJECT`). So the
+   * panel shows the *call as this adapter makes it* — the SDK's own input —
+   * and this asserts the contents survive that reshaping, field by field,
+   * rather than pretending to a deep equality that would be a lie.
+   */
+  it("describeRequest carries the same content the wire body ends up with", async () => {
+    const rec = recording(GOOGLE_TEXT);
+    const req = {
+      model: "gemini",
+      messages: [
+        { role: "system" as const, content: "core" },
+        { role: "user" as const, content: "hi" },
+      ],
+      tools: [{ name: "f", description: "d", parameters: { type: "object" } }],
+      maxTokens: 100,
+      temperature: 0.5,
+    };
+
+    const described = rec.adapter.describeRequest(req);
+    await collectStream(rec.adapter.stream(req));
+    const wire = rec.seen[0];
+
+    const config = described.body.config as Record<string, unknown>;
+    expect(described.body.contents).toEqual(wire?.body.contents);
+    // The SDK wraps the instruction string in a Content envelope.
+    expect(wire?.body.systemInstruction).toEqual({
+      role: "user",
+      parts: [{ text: config.systemInstruction }],
+    });
+    expect(wire?.body.generationConfig).toEqual({
+      temperature: config.temperature,
+      maxOutputTokens: config.maxOutputTokens,
+    });
+    // The model rides in the URL for Gemini, which is why `path` interpolates
+    // it where the other two adapters use a fixed string.
+    expect(described.path).toContain(String(described.body.model));
+    expect(wire?.url).toContain(described.path);
+    // Same declared tools, modulo the SDK's schema-type uppercasing.
+    const declared = (config.tools as { functionDeclarations: { name: string }[] }[])[0];
+    const sent = (wire?.body.tools as { functionDeclarations: { name: string }[] }[])[0];
+    expect(sent?.functionDeclarations.map((d) => d.name)).toEqual(
+      declared?.functionDeclarations.map((d) => d.name),
+    );
+  });
 });

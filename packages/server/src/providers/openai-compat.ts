@@ -10,7 +10,13 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import { collectStream } from "./collect.js";
-import type { AdapterConfig, AdapterRequest, ProviderAdapter, Quirks } from "./types.js";
+import type {
+  AdapterConfig,
+  AdapterRequest,
+  ProviderAdapter,
+  Quirks,
+  UpstreamRequest,
+} from "./types.js";
 import { toErrorChunk } from "./types.js";
 
 export class OpenAICompatAdapter implements ProviderAdapter {
@@ -30,18 +36,16 @@ export class OpenAICompatAdapter implements ProviderAdapter {
     });
   }
 
+  describeRequest(req: AdapterRequest): UpstreamRequest {
+    // Shown with `stream: true` and the usage option, because that is what the
+    // router actually sends — a body displayed without them would be a request
+    // this adapter never makes.
+    return { kind: this.kind, path: "/chat/completions", body: { ...this.streamBody(req) } };
+  }
+
   async *stream(req: AdapterRequest, signal?: AbortSignal): AsyncIterable<StreamChunk> {
     try {
-      const stream = await this.client.chat.completions.create(
-        {
-          ...this.body(req),
-          stream: true,
-          ...(this.quirks.noStreamOptions !== true && {
-            stream_options: { include_usage: true },
-          }),
-        },
-        { signal },
-      );
+      const stream = await this.client.chat.completions.create(this.streamBody(req), { signal });
 
       /** Upstream tool-call index → whether we've emitted its start chunk yet. */
       const started = new Set<number>();
@@ -118,6 +122,17 @@ export class OpenAICompatAdapter implements ProviderAdapter {
 
   async complete(req: AdapterRequest, signal?: AbortSignal): Promise<ChatResponse> {
     return collectStream(this.stream(req, signal));
+  }
+
+  /** The streaming body, built once and used by both `stream()` and the panel. */
+  private streamBody(req: AdapterRequest) {
+    return {
+      ...this.body(req),
+      stream: true as const,
+      ...(this.quirks.noStreamOptions !== true && {
+        stream_options: { include_usage: true },
+      }),
+    };
   }
 
   private body(req: AdapterRequest) {

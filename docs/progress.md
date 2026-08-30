@@ -41,6 +41,48 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-30 — what the model actually receives (survey item 5: translate + chat test)
+
+rewter takes two downstream dialects and speaks three upstream ones, and every bug in that
+mesh arrives worded the same way: *the model got something I didn't send*. Answering it meant
+reading three files and holding the translation in your head, which is exactly the kind of
+knowledge that lives in one person and rots. `POST /internal/translate` answers it instead:
+paste a request, get back the normalized `ChatMessage[]` both dialects converge on and the
+exact body the chosen provider would be handed.
+
+The middle pane is the claim, not the decoration. Flip the dialect toggle with the equivalent
+request in the other dialect and it should not move — that is the whole convergence property,
+made falsifiable by looking. The right-hand pane is where the quirks apply, and quirks are
+invisible by construction: `max_tokens` becoming `max_completion_tokens`, a system prompt
+hoisted out of the messages into a top-level parameter, a model id moving into the URL.
+
+Three decisions carried the feature:
+
+- **It runs the real builders, and cannot send.** `ProviderAdapter.describeRequest()` is the
+  same function `stream()` calls to build its body, pinned by a per-adapter equivalence test —
+  a panel describing a *second* implementation of the request would drift silently and be
+  worse than nothing, because it would be confidently wrong exactly when you needed it. To
+  make "sends nothing" structural rather than a promise, `createDescribeOnlyAdapter` skips the
+  env lookup and installs a `fetch` that throws, so the route cannot spend even by mistake.
+- **A missing third stage is an answer.** An unknown model, a disabled provider, and
+  `auto/orchestrator` all yield `upstream: null` with a `note` saying which — and the first
+  two panes stay, because they are still real information, and "no such model: openai/gpt-5"
+  is often *why* the panel was opened. Same instinct on the client: a half-typed brace sets
+  the error line and keeps the last good render, since blanking the panes on every unbalanced
+  brace makes a JSON editor unusable to type into.
+- **The one rung that spends is drawn as such.** `POST /internal/chat-test` is the only
+  `/internal` route that bills, because a perfectly-shaped request still cannot tell you
+  whether the key works or whether the upstream has ever heard of that model id. It goes
+  through `router.complete()` — real resolution, real quirks, real cost recording, so a test
+  drive shows up in the spend panel because it *was* spend — caps `maxTokens` at 1000, and
+  reports `costUsd: null` rather than `$0` for an unpriced model, which is a different claim.
+  Refusals come back at the upstream's own status in the upstream's own words: "invalid
+  x-api-key" is the entire answer someone pressed the button to get, and a client that
+  flattens it to "daemon said 401" sends them back to the logs they came from.
+
+1519 tests green (dashboard 169 → 190; server gains the translate and chat-test suites).
+Shortlist: 5 down, 4 to go; next is the budget UI for `Task.settings.maxSpendUsd`.
+
 ### 2026-08-30 — would it answer? (survey item 4: readiness, at three reaches)
 
 The registry panel is about models — prices, context windows, what the orchestrator may pick

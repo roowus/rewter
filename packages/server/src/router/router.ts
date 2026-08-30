@@ -23,8 +23,8 @@ import {
 import { computeCost } from "../costs/compute.js";
 import type { Repos } from "../db/repos.js";
 import { collectStream } from "../providers/collect.js";
-import { createAdapter } from "../providers/factory.js";
-import type { AdapterRequest, ProviderAdapter } from "../providers/types.js";
+import { createAdapter, createDescribeOnlyAdapter } from "../providers/factory.js";
+import type { AdapterRequest, ProviderAdapter, UpstreamRequest } from "../providers/types.js";
 import { type Registry, type Resolution, resolveModel } from "./resolve.js";
 
 export interface RouterOptions {
@@ -91,6 +91,24 @@ export class Router {
 
   resolve(model: string): Resolution {
     return resolveModel(this.registry, model);
+  }
+
+  /**
+   * The body this request would put on the wire, without sending it.
+   *
+   * Routed through here rather than composed at the call site so the debug
+   * panel sees the request `stream()` would have built — same resolution, same
+   * `toAdapterRequest`. A panel that assembled its own would be describing a
+   * request nobody sends, which is the one failure mode worse than no panel.
+   */
+  describe(req: RouteRequest): { resolution: Resolution; upstream: UpstreamRequest } {
+    const resolution = this.resolve(req.model);
+    return {
+      resolution,
+      upstream: createDescribeOnlyAdapter(resolution.provider).describeRequest(
+        toAdapterRequest(req, resolution),
+      ),
+    };
   }
 
   /**

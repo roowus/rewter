@@ -377,6 +377,174 @@ pre,
   cursor: pointer;
 }
 
+/* ── translate ──────────────────────────────────────────────────────── */
+
+.translate {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.translate-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.translate-head h2 {
+  font-size: 0.8rem;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.translate-head button,
+.translate-tabs button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.translate-tabs {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  margin: 0.7rem 0 0.5rem;
+}
+
+.translate-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The route the selected dialect arrives on, set apart from the toggle it
+   describes rather than crowded against it. */
+.translate-tabs .dim {
+  margin-left: 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Three columns because the claim is a progression, and a progression read
+   left-to-right is legible in a way a stack of three boxes is not. They
+   collapse to one column when there is no room to hold the comparison. */
+.translate-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.8rem;
+}
+
+.translate-pane h3 {
+  font-size: 0.7rem;
+  margin: 0 0 0.3rem;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+.translate-pane textarea,
+.translate-pane pre {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.5rem;
+  background: #0f1115;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+/* Same height on all three, so the panes line up and a difference between them
+   reads as a difference in content rather than in layout. */
+.translate-pane pre {
+  height: 21rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.translate-pane textarea {
+  height: 21rem;
+  resize: vertical;
+}
+
+/* The URL the body would be POSTed to. Half the surprises in this panel are
+   here rather than in the JSON below it — a model id that moved into the path,
+   a base URL still pointing at a provider the user thought they had left. */
+.translate-target {
+  margin: 0 0 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.translate-test {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+.translate-test input {
+  flex: 1 1 14rem;
+  background: #0f1115;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+}
+
+/* The only button on this page that spends money, and the only one drawn in
+   the warning colour. Everything above it is free; this one bills. */
+.translate-test button {
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--warn);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.translate-test button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.translate-result {
+  margin-top: 0.7rem;
+}
+
+.translate-answer {
+  margin: 0 0 0.3rem;
+  padding: 0.5rem;
+  background: #0f1115;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ── readiness ──────────────────────────────────────────── */
 
 /* The first-run card. Bordered rather than filled: it replaces a line of grey

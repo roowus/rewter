@@ -8,7 +8,7 @@
 import { GoogleGenAI } from "@google/genai";
 import type { ChatMessage, ChatResponse, StreamChunk, ToolDefinition } from "@rewter/shared";
 import { collectStream } from "./collect.js";
-import type { AdapterConfig, AdapterRequest, ProviderAdapter } from "./types.js";
+import type { AdapterConfig, AdapterRequest, ProviderAdapter, UpstreamRequest } from "./types.js";
 import { toErrorChunk } from "./types.js";
 
 interface GeminiPart {
@@ -32,21 +32,25 @@ export class GoogleAdapter implements ProviderAdapter {
     });
   }
 
+  describeRequest(req: AdapterRequest): UpstreamRequest {
+    // `:streamGenerateContent` is on the model, not a fixed path — the id is
+    // part of the URL here where the other two carry it in the body.
+    return {
+      kind: this.kind,
+      path: `/v1beta/models/${req.model}:streamGenerateContent`,
+      body: { ...buildBody(req) },
+    };
+  }
+
   async *stream(req: AdapterRequest, signal?: AbortSignal): AsyncIterable<StreamChunk> {
     try {
-      const { systemInstruction, contents } = splitSystem(req.messages);
+      const base = buildBody(req);
       const stream = await this.client.models.generateContentStream({
-        model: req.model,
-        contents: contents as never,
-        config: {
-          ...(systemInstruction !== undefined && { systemInstruction }),
-          ...(req.maxTokens !== undefined && { maxOutputTokens: req.maxTokens }),
-          ...(req.temperature !== undefined && { temperature: req.temperature }),
-          ...(req.tools !== undefined && {
-            tools: [{ functionDeclarations: req.tools.map(toGeminiTool) }],
-          }),
-          ...(signal !== undefined && { abortSignal: signal }),
-        },
+        ...base,
+        contents: base.contents as never,
+        // The abort signal is transport, not request shape: it belongs to this
+        // call and has no business in a body someone is reading.
+        config: { ...base.config, ...(signal !== undefined && { abortSignal: signal }) },
       });
 
       let usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -118,6 +122,28 @@ export class GoogleAdapter implements ProviderAdapter {
   async complete(req: AdapterRequest, signal?: AbortSignal): Promise<ChatResponse> {
     return collectStream(this.stream(req, signal));
   }
+}
+
+/**
+ * The outbound call as an object, built once for both `stream()` and the
+ * dialect panel. Gemini takes `contents` and `config` as siblings, so this is
+ * nested where the other two adapters are flat — the panel shows the shape as
+ * it is rather than flattening it into a lie about the API.
+ */
+function buildBody(req: AdapterRequest) {
+  const { systemInstruction, contents } = splitSystem(req.messages);
+  return {
+    model: req.model,
+    contents,
+    config: {
+      ...(systemInstruction !== undefined && { systemInstruction }),
+      ...(req.maxTokens !== undefined && { maxOutputTokens: req.maxTokens }),
+      ...(req.temperature !== undefined && { temperature: req.temperature }),
+      ...(req.tools !== undefined && {
+        tools: [{ functionDeclarations: req.tools.map(toGeminiTool) }],
+      }),
+    },
+  };
 }
 
 function splitSystem(messages: ChatMessage[]): {

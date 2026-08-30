@@ -163,4 +163,43 @@ describe("openai-compat specifics", () => {
     if (last?.type !== "error") throw new Error("unreachable");
     expect(last.retryable).toBe(true);
   });
+
+  /**
+   * The anti-drift check the dialect panel rests on. Everything else asserts
+   * that `describeRequest` is *shaped* right; this asserts it is the *same
+   * bytes* the upstream received. If the two ever diverge, the panel becomes a
+   * confident description of a request nobody sent — the worst possible
+   * outcome for a debugging tool.
+   */
+  it("describeRequest matches the body that actually went on the wire", async () => {
+    const rec = recordingFetch(OPENAI_TEXT);
+    const adapter = new OpenAICompatAdapter({
+      apiKey: "k",
+      baseUrl: "https://upstream.test/v1",
+      fetch: rec.fetch,
+    });
+    const req = {
+      model: "m",
+      messages: [
+        { role: "system" as const, content: "core" },
+        { role: "user" as const, content: "hi" },
+        {
+          role: "assistant" as const,
+          content: null,
+          toolCalls: [{ id: "t1", name: "f", arguments: '{"a":1}' }],
+        },
+        { role: "tool" as const, content: "42", toolCallId: "t1" },
+      ],
+      tools: [{ name: "f", description: "d", parameters: { type: "object" } }],
+      maxTokens: 100,
+      temperature: 0.5,
+    };
+
+    const described = adapter.describeRequest(req);
+    await collectStream(adapter.stream(req));
+
+    expect(described.body).toEqual(rec.seen[0]?.body);
+    // The path is relative to the configured base URL, not a second guess at it.
+    expect(rec.seen[0]?.url).toBe(`https://upstream.test/v1${described.path}`);
+  });
 });

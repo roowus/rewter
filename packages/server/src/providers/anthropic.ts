@@ -8,10 +8,15 @@
  * content blocks (not a `tool` role).
  */
 import Anthropic from "@anthropic-ai/sdk";
-import type { MessageParam, TextBlockParam, Tool } from "@anthropic-ai/sdk/resources/messages";
+import type {
+  MessageCreateParamsStreaming,
+  MessageParam,
+  TextBlockParam,
+  Tool,
+} from "@anthropic-ai/sdk/resources/messages";
 import type { ChatMessage, ChatResponse, StreamChunk, ToolDefinition } from "@rewter/shared";
 import { collectStream } from "./collect.js";
-import type { AdapterConfig, AdapterRequest, ProviderAdapter } from "./types.js";
+import type { AdapterConfig, AdapterRequest, ProviderAdapter, UpstreamRequest } from "./types.js";
 import { toErrorChunk } from "./types.js";
 
 /** Anthropic requires max_tokens; this is the fallback when a caller omits it. */
@@ -30,20 +35,13 @@ export class AnthropicAdapter implements ProviderAdapter {
     });
   }
 
+  describeRequest(req: AdapterRequest): UpstreamRequest {
+    return { kind: this.kind, path: "/v1/messages", body: { ...buildBody(req) } };
+  }
+
   async *stream(req: AdapterRequest, signal?: AbortSignal): AsyncIterable<StreamChunk> {
     try {
-      const { system, messages } = splitSystem(req.messages, req.cacheUpToMessage);
-      const stream = this.client.messages.stream(
-        {
-          model: req.model,
-          max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
-          messages,
-          ...(system !== undefined && { system }),
-          ...(req.tools !== undefined && { tools: req.tools.map(toAnthropicTool) }),
-          ...(req.temperature !== undefined && { temperature: req.temperature }),
-        },
-        { signal },
-      );
+      const stream = this.client.messages.stream(buildBody(req), { signal });
 
       let usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
       let stopReason: string | null = null;
@@ -112,6 +110,24 @@ export class AnthropicAdapter implements ProviderAdapter {
   async complete(req: AdapterRequest, signal?: AbortSignal): Promise<ChatResponse> {
     return collectStream(this.stream(req, signal));
   }
+}
+
+/**
+ * The outbound body, built once and used twice — by `stream()` to send and by
+ * `describeRequest()` to show. Typed as the SDK's own parameter object so the
+ * display cannot show a shape the wire call would have rejected.
+ */
+function buildBody(req: AdapterRequest): MessageCreateParamsStreaming {
+  const { system, messages } = splitSystem(req.messages, req.cacheUpToMessage);
+  return {
+    model: req.model,
+    max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
+    messages,
+    stream: true,
+    ...(system !== undefined && { system }),
+    ...(req.tools !== undefined && { tools: req.tools.map(toAnthropicTool) }),
+    ...(req.temperature !== undefined && { temperature: req.temperature }),
+  };
 }
 
 /**

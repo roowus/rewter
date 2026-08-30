@@ -182,6 +182,43 @@ export function describeAdapterContract(name: string, fixtures: ContractFixtures
       ).rejects.toThrow(AdapterError);
     });
 
+    /**
+     * `describeRequest` exists so the dialect panel can show what goes upstream.
+     * It is only worth showing if it is what actually goes upstream, which is
+     * why these assert on the *content* of the body and not merely its
+     * presence: a stub returning `{}` would satisfy the interface and lie to
+     * every reader.
+     */
+    it("describeRequest: names the model and carries the conversation", () => {
+      const described = fixtures.text.adapter().describeRequest(BASE_REQUEST);
+
+      expect(described.kind).toBe(name);
+      expect(described.path.startsWith("/")).toBe(true);
+
+      // Round-trips as JSON: the panel serializes it, and a body carrying a
+      // class instance or a cycle would render as something no upstream sees.
+      const json = JSON.stringify(described.body);
+      expect(json).toContain("test-model");
+      // The user's actual message survives translation into every dialect.
+      expect(json).toContain("hi");
+    });
+
+    it("describeRequest: sends nothing", async () => {
+      // The panel renders on keystrokes. If describing a request could reach an
+      // upstream, every character typed would be a billable call — so the
+      // adapter here is built on a fixture that fails the test if touched.
+      let called = false;
+      const adapter = fixtures.text.adapter();
+      const watched = new Proxy(adapter, {
+        get(target, prop, receiver) {
+          if (prop === "stream" || prop === "complete") called = true;
+          return Reflect.get(target, prop, receiver) as unknown;
+        },
+      });
+      watched.describeRequest(BASE_REQUEST);
+      expect(called).toBe(false);
+    });
+
     it("abort: signalling mid-stream ends it as non-retryable", async () => {
       const controller = new AbortController();
       controller.abort();

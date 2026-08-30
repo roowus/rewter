@@ -383,9 +383,23 @@ Before any task has run, the empty state says whether one *would* run: enabled p
 enabled models, capability cards, and — if something is missing — the command that fixes it.
 It distinguishes "a task would fail right now" (nothing to route to) from "this works but
 picks badly" (no capability cards, so the orchestrator chooses on price alone). It disappears
-once you have run anything. (If you are working on the dashboard itself, run
-`pnpm --filter @rewter/dashboard dev` instead and use :5273, which proxies back here rather
-than rebuilding the bundle on every keystroke.)
+once you have run anything.
+
+Expand "translate" for the answer to "the model got something I didn't send". Paste a request
+in either dialect and three panes show it becoming what the provider is actually handed:
+what you sent, the normalized form both dialects converge on, and the exact upstream body and
+URL — `max_tokens` turning into `max_completion_tokens`, a system prompt hoisted out of the
+messages, a model id moving into the path. It re-renders as you type and sends nothing,
+because it runs the same request builders the real route runs through an adapter whose
+transport throws. A model that doesn't resolve still fills the first two panes and says why
+the third is empty. Below them, one button does the opposite: **Test** sends a single real
+completion to the model named in the box, because a perfectly-shaped request still can't tell
+you whether the key works. It reports the answer, the tokens, and what it billed — and shows
+up in the spend panel, because it was spend.
+
+(If you are working on the dashboard itself, run `pnpm --filter @rewter/dashboard dev`
+instead and use :5273, which proxies back here rather than rebuilding the bundle on every
+keystroke.)
 
 Point any OpenAI client at it:
 

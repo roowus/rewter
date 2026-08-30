@@ -439,7 +439,18 @@ If we implement from this survey, roughly in value order:
    *blocked* (nothing to route to) from *degraded* (no cards — starts fine, picks on price
    alone), and vanishes once any task exists. See ARCHITECTURE.md → Readiness.
 5. **Dialect/translation debug panel** — request in either dialect → normalized form →
-   upstream form; plus a one-model chat tester.
+   upstream form; plus a one-model chat tester. **DONE 2026-08-30** — `POST
+   /internal/translate` answers all three stages by running the *same* builders the real
+   route runs (`describeRequest` on the adapter, pinned to `stream()` by per-adapter
+   equivalence tests), through a describe-only adapter whose transport throws — so the
+   panel cannot describe a request nobody would send, and cannot accidentally send one.
+   The chat tester is deliberately the opposite bargain and is drawn that way: `POST
+   /internal/chat-test` is the only `/internal` route that spends, so it goes through
+   `router.complete()` (real resolution, real quirks, real cost recording — a test drive
+   shows up in the spend panel because it was spend), caps `maxTokens` at 1000 with a
+   default of 256, and reports `usage` plus a `costUsd` that is `null` rather than `$0`
+   when the model is unpriced. Upstream refusals come back at the upstream's own status in
+   the upstream's own words. See ARCHITECTURE.md → "What the model actually receives".
 6. **Budget UI** — expose `maxSpendUsd`, which exists and is unreachable.
 7. **Run-a-task-from-the-dashboard** — the "test run" affordance; today every task must come
    from a client.

@@ -201,4 +201,42 @@ describe("anthropic specifics", () => {
     );
     expect(rec.seen[0]?.body.max_tokens).toBeGreaterThan(0);
   });
+
+  /**
+   * The anti-drift check the dialect panel rests on. Everything else asserts
+   * that `describeRequest` is *shaped* right; this asserts it is the *same
+   * bytes* the upstream received. If the two ever diverge, the panel becomes a
+   * confident description of a request nobody sent — the worst possible
+   * outcome for a debugging tool.
+   */
+  it("describeRequest matches the body that actually went on the wire", async () => {
+    const rec = recordingFetch(ANTHROPIC_TEXT);
+    const adapter = new AnthropicAdapter({
+      apiKey: "k",
+      baseUrl: "https://upstream.test",
+      fetch: rec.fetch,
+    });
+    const req = {
+      model: "claude",
+      messages: [
+        { role: "system" as const, content: "core" },
+        { role: "user" as const, content: "hi" },
+        {
+          role: "assistant" as const,
+          content: null,
+          toolCalls: [{ id: "t1", name: "f", arguments: '{"a":1}' }],
+        },
+        { role: "tool" as const, content: "42", toolCallId: "t1" },
+      ],
+      tools: [{ name: "f", description: "d", parameters: { type: "object" } }],
+      maxTokens: 100,
+      temperature: 0.5,
+      cacheUpToMessage: 0,
+    };
+
+    const described = adapter.describeRequest(req);
+    await collectStream(adapter.stream(req));
+
+    expect(described.body).toEqual(rec.seen[0]?.body);
+  });
 });

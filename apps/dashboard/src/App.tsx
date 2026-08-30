@@ -15,6 +15,7 @@ import { ProvidersPanel } from "./ProvidersPanel.js";
 import { ReadinessCard } from "./ReadinessCard.js";
 import { RegistryPanel } from "./RegistryPanel.js";
 import { TaskTree } from "./TaskTree.js";
+import { TranslatePanel } from "./TranslatePanel.js";
 import { useDashboard } from "./store.js";
 
 const STATUS_TEXT = {
@@ -93,6 +94,11 @@ export function App(): JSX.Element {
       {/* Collapsed by default and below the spend: what a model costs is the
           question that sends you looking for the editor in the first place. */}
       <RegistryPanel />
+
+      {/* Collapsed, and next to the log for the same reason: both are opened
+          when something has gone wrong. This one answers the question the log
+          cannot — not what the daemon did, but what the upstream was handed. */}
+      <TranslatePanel />
 
       {/* Also collapsed: the raw log is the inspection view — expanded when
           someone wants to know exactly what the daemon did, in order. */}

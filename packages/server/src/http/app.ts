@@ -17,12 +17,15 @@ import {
   CardOverridesBodySchema,
   type ChatMessage,
   type ChatResponse,
+  ChatTestRequestSchema,
+  type ChatTestResult,
   CostGroupBySchema,
   type DaemonHealth,
   EVENT_TYPES,
   type EventType,
   ModelCreateSchema,
   ModelPatchSchema,
+  type NormalizedRequest,
   type OpenAIChatChunk,
   type OpenAIChatCompletion,
   OpenAIChatRequestSchema,
@@ -36,6 +39,8 @@ import {
   type StreamChunk,
   TASK_TRANSITIONS,
   type TaskId,
+  TranslateRequestSchema,
+  type TranslateResponse,
   applyModelPatch,
   fromAnthropicMessages,
   fromAnthropicTools,
@@ -50,6 +55,7 @@ import {
 } from "@rewter/shared";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { ZodError } from "zod";
+import { computeCost } from "../costs/compute.js";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
 import { type Orchestrator, OrchestratorError } from "../orchestrator/engine.js";
@@ -61,6 +67,7 @@ import {
   AmbiguousModelError,
   ModelNotFoundError,
   ProviderDisabledError,
+  type Resolution,
   isOrchestratorModel,
 } from "../router/resolve.js";
 import type { RouteRequest, Router } from "../router/router.js";
@@ -558,6 +565,190 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       clock,
     });
     return reply.send(result);
+  });
+
+  // ── POST /internal/translate ──────────────────────────────────────────────
+  /**
+   * Show a request at all three stages: as the client wrote it, as
+   * `ChatMessage[]`, and as the chosen upstream would receive it.
+   *
+   * Sends nothing, ever. The third stage comes from `router.describe()`, which
+   * builds its body with the same function `stream()` does and is pinned to it
+   * by per-adapter equivalence tests. That is the whole value here — a panel
+   * showing a plausible-looking body nobody sends would be worse than no panel.
+   *
+   * Validation is deliberately the *real* route's schema for each dialect, so a
+   * body this rejects is a body `/v1/chat/completions` (or `/v1/messages`)
+   * would have rejected too, with the same message. Half the bugs this is meant
+   * to catch are malformed requests, and a lenient debug parser would hide them.
+   *
+   * A model that does not resolve is still a 200: the first two stages are real
+   * information, and translation is the question being asked. The reason rides
+   * in `note` instead.
+   */
+  app.post("/internal/translate", async (req, reply) => {
+    const outer = TranslateRequestSchema.safeParse(req.body);
+    if (!outer.success) {
+      return reply
+        .code(400)
+        .send({ error: { message: `invalid request: ${issues(outer.error)}` } });
+    }
+
+    let normalized: NormalizedRequest;
+    if (outer.data.dialect === "openai") {
+      const parsed = OpenAIChatRequestSchema.safeParse(outer.data.body);
+      if (!parsed.success) {
+        return reply
+          .code(400)
+          .send({ error: { message: `invalid request: ${issues(parsed.error)}` } });
+      }
+      const body = parsed.data;
+      const tools = toToolDefinitions(body.tools);
+      const maxTokens = body.max_tokens ?? body.max_completion_tokens;
+      normalized = {
+        model: body.model,
+        messages: toChatMessages(body.messages),
+        ...(tools !== undefined && { tools }),
+        ...(maxTokens !== undefined && { maxTokens }),
+        ...(body.temperature !== undefined && { temperature: body.temperature }),
+      };
+    } else {
+      const parsed = AnthropicMessagesRequestSchema.safeParse(outer.data.body);
+      if (!parsed.success) {
+        return reply
+          .code(400)
+          .send({ error: { message: `invalid request: ${issues(parsed.error)}` } });
+      }
+      const body = parsed.data;
+      const tools = fromAnthropicTools(body.tools);
+      normalized = {
+        model: body.model,
+        messages: fromAnthropicMessages(body.messages, body.system),
+        maxTokens: body.max_tokens,
+        ...(tools !== undefined && { tools }),
+        ...(body.temperature !== undefined && { temperature: body.temperature }),
+      };
+    }
+
+    const base = { dialect: outer.data.dialect, normalized };
+
+    // The orchestrator is not one upstream call — it fans out to many, chosen
+    // at runtime by the initiator. There is no single body to show, and
+    // inventing one would be the panel's first lie.
+    if (isOrchestratorModel(normalized.model)) {
+      return reply.send({
+        ...base,
+        resolution: null,
+        upstream: null,
+        note: `${normalized.model} runs an orchestration — it has no single upstream request. Pick a concrete model to see one.`,
+      } satisfies TranslateResponse);
+    }
+
+    try {
+      const { resolution, upstream } = router.describe({
+        model: normalized.model,
+        messages: normalized.messages,
+        ...(normalized.tools !== undefined && { tools: normalized.tools }),
+        ...(normalized.maxTokens !== undefined && { maxTokens: normalized.maxTokens }),
+        ...(normalized.temperature !== undefined && { temperature: normalized.temperature }),
+      });
+      return reply.send({
+        ...base,
+        resolution: {
+          modelId: resolution.model.id,
+          providerId: resolution.provider.id,
+          providerName: resolution.provider.name,
+          providerKind: resolution.provider.kind,
+          upstreamId: resolution.upstreamId,
+          baseUrl: resolution.provider.baseUrl,
+        },
+        upstream,
+        note: null,
+      } satisfies TranslateResponse);
+    } catch (err) {
+      return reply.send({
+        ...base,
+        resolution: null,
+        upstream: null,
+        note: (err as Error).message,
+      } satisfies TranslateResponse);
+    }
+  });
+
+  // ── POST /internal/chat-test ──────────────────────────────────────────────
+  /**
+   * The one route on `/internal` that spends money, on purpose.
+   *
+   * Everything else in the debug surface is free and therefore incomplete:
+   * `/internal/translate` proves the *shape* is right without sending, and the
+   * provider probe proves the key and base URL work by reading a catalog. What
+   * neither can prove is that this *model id* answers — six presets expose no
+   * catalog at all, and a catalog that lists a model is not a model that serves.
+   *
+   * So this one sends a real completion, and reports the bill: `usage` and a
+   * `costUsd` computed from the same pricing the router just recorded with. The
+   * call goes through `router.complete()` rather than an adapter directly, so a
+   * test drive exercises the whole path — resolution, quirks, retry, cost
+   * recording — and shows up in the spend panel like any other spend, because
+   * it was.
+   */
+  app.post("/internal/chat-test", async (req, reply) => {
+    const parsed = ChatTestRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: { message: `invalid request: ${issues(parsed.error)}` } });
+    }
+    const { model, prompt, maxTokens, temperature } = parsed.data;
+
+    // The orchestrator is a fan-out, not a model. Testing one model is the
+    // question being asked, and an orchestration would answer a different one
+    // at an unbounded price.
+    if (isOrchestratorModel(model)) {
+      return reply.code(400).send({
+        error: { message: `${model} runs an orchestration — pick a concrete model to test` },
+      });
+    }
+
+    let resolution: Resolution;
+    try {
+      resolution = router.resolve(model);
+    } catch (err) {
+      return reply
+        .code(statusForResolveError(err))
+        .send({ error: { message: (err as Error).message } });
+    }
+
+    const startedAt = clock();
+    let result: ChatResponse;
+    try {
+      result = await router.complete({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens,
+        ...(temperature !== undefined && { temperature }),
+      });
+    } catch (err) {
+      // The upstream's own words, at the upstream's own status where that
+      // status is about the request — "401 invalid x-api-key" is the entire
+      // answer someone pressed this button to get.
+      return reply
+        .code(statusForUpstreamError(err))
+        .send({ error: { message: (err as Error).message } });
+    }
+
+    const cost = computeCost(result.usage, resolution.model.pricing);
+    return reply.send({
+      modelId: resolution.model.id,
+      text: result.message.content ?? "",
+      finishReason: result.finishReason,
+      usage: result.usage,
+      // `incomplete` means some component had tokens but no price, so the total
+      // is a lower bound. A lower bound printed as a dollar figure is a wrong
+      // dollar figure; say "unpriced" instead.
+      costUsd: cost.incomplete ? null : cost.totalUsd,
+      latencyMs: Math.max(0, clock() - startedAt),
+    } satisfies ChatTestResult);
   });
 
   // ── Registry ──────────────────────────────────────────────────────────────
