@@ -35,14 +35,14 @@ your client (Claude Code, curl, any OpenAI or Anthropic client)
 
 ## Providers
 
-Breadth is a design goal — **28 upstreams ship as built-in presets**, and adding another is
+Breadth is a design goal — **75 upstreams ship as built-in presets**, and adding another is
 a table row (slug, base URL, env var name, quirks), not new code:
 
 | | |
 |---|---|
 | **First-party SDKs** | Anthropic, Google Gemini, OpenAI |
-| **Aggregators** | OpenRouter, Together, Fireworks, Groq, DeepInfra, Hyperbolic, Nebius, Novita, SambaNova, Cerebras, Perplexity, GitHub Models |
-| **Direct vendors** | xAI, Z.AI/GLM, Moonshot, DeepSeek, Mistral, Cohere, Qwen, MiniMax, Baseten |
+| **Aggregators** | OpenRouter, Together, Fireworks, Groq, DeepInfra, Hyperbolic, Nebius, Novita, SambaNova, Cerebras, Perplexity, SiliconFlow, NVIDIA NIM, Hugging Face, Vercel AI Gateway, Requesty, LLM Gateway, NanoGPT, ZenMux, Chutes, ModelScope, Ollama Cloud, nscale, Featherless, FriendliAI, Inference.net, Scaleway, DigitalOcean, Heroku, W&B, Venice, BytePlus, Qianfan, GitHub Models |
+| **Direct vendors** | xAI, Z.AI/GLM, Moonshot, DeepSeek, Mistral, Cohere, Qwen, MiniMax, Baseten, AI21, Reka, Writer, Upstage, Liquid, Inception, Nous Research, Morph, Meta Llama, Codestral, LongCat, StepFun, Baichuan, Hunyuan, Volcengine, SEA-LION, Typhoon, Sarvam, Public AI, Mixlayer, CLOVA Studio, iFlytek, Poolside, Opper |
 | **Local aggregators** | 9router |
 | **Local runtimes** | Ollama, LM Studio, llama.cpp, vLLM |
 
@@ -58,6 +58,13 @@ shared contract test suite holds every adapter to an identical normalized stream
 keys are referenced by **environment variable name** — raw keys are never stored in the
 database.
 
+Much of that breadth was sourced from [OmniRoute](https://github.com/diegosouzapw/OmniRoute)'s
+provider registry (MIT, © 2026 diegosouzapw), converted to rewter's shape — its base URLs
+include the chat path, rewter's stop at the API root — and then probed live, so a listed
+upstream is one that answered and `listModels` reflects a catalog route that actually exists.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md#provider-presets) for what was deliberately left
+out and why.
+
 ## Status
 
 **Phase 1 (MVP) is complete — M0 through M8, every acceptance run live** (including the ones a
@@ -69,7 +76,7 @@ board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
 `POST /v1/messages` for Anthropic ones, streaming and not), `GET /v1/models`, model
-resolution across all 28 upstreams, retry, SSE, and per-request cost metering. **Claude Code
+resolution across every upstream, retry, SSE, and per-request cost metering. **Claude Code
 runs on it** — verified live end to end, tool calls included, against two upstreams.
 
 Done (M4): the **model registry** the orchestrator chooses from — capability-card storage, where

@@ -689,8 +689,8 @@ Two semantics are load-bearing and easy to get wrong, so they are spelled out he
   as the user asking for something, which is weaker and can be argued with
   ([#5](https://github.com/roowus/rewter/issues/5)). It matches how `[USER STEERING]` marks the
   other message this router splices into a transcript.
-- **openai-compat** — one class parameterized by `{baseUrl, apiKey, quirks}`; covers ~25 of
-  the 27 presets.
+- **openai-compat** — one class parameterized by `{baseUrl, apiKey, quirks}`; covers all but
+  two of the presets, and every upstream added since.
 - **google** — `@google/genai`. Roles are `user`/`model`, messages are `contents`/`parts`,
   and there is no system role (leading system messages join into `systemInstruction`).
 
@@ -723,19 +723,52 @@ constructed with `maxRetries: 0`.
 ### Provider presets
 
 `presets.ts` is a **data table**: adding an upstream is a row (slug, kind, baseUrl, env var
-*name*, quirks), not a new class. 28 entries today, spanning five categories:
+*name*, quirks), not a new class. 75 entries today, spanning five categories:
 
 | Category | Presets |
 |---|---|
-| First-party SDK | anthropic, google, openai |
-| Aggregators | openrouter, together, fireworks, groq, deepinfra, hyperbolic, nebius, novita, sambanova, cerebras, perplexity, githubmodels |
-| Direct vendors | xai, zai, moonshot, deepseek, mistral, cohere, qwen, minimax, baseten |
-| Local aggregators | 9router |
-| Local runtimes | ollama, lmstudio, llamacpp, vllm |
+| First-party SDK (3) | anthropic, google, openai |
+| Aggregators (34) | openrouter, together, fireworks, groq, deepinfra, hyperbolic, nebius, novita, sambanova, cerebras, perplexity, siliconflow, nvidia, huggingface, vercel, requesty, llmgateway, nanogpt, zenmux, chutes, modelscope, ollamacloud, nscale, featherless, friendliai, inferencenet, scaleway, digitalocean, heroku, wandb, venice, byteplus, qianfan, githubmodels |
+| Direct vendors (33) | xai, zai, moonshot, deepseek, mistral, cohere, qwen, minimax, baseten, ai21, reka, writer, upstage, liquid, inception, nousresearch, morph, metallama, codestral, longcat, stepfun, baichuan, hunyuan, volcengine, sealion, typhoon, sarvam, publicai, mixlayer, clovastudio, iflytek, poolside, opper |
+| Local aggregators (1) | 9router |
+| Local runtimes (4) | ollama, lmstudio, llamacpp, vllm |
 
 The slug is a model-id namespace (`<slug>/<model>`), so it is constrained to `[a-z0-9-]+`.
 `apiKeyEnv` holds an env var **name** only — a test asserts it matches SCREAMING_SNAKE,
-which a real key never would. Local runtimes are the only presets allowed a null key.
+which a real key never would, and a second asserts no two presets name the *same* variable,
+since sharing one would mean configuring the second upstream silently reconfigured the first.
+Local runtimes are the only presets allowed a null key.
+
+**Where the breadth came from.** Rows 29–75 were sourced from
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute)'s provider registry (MIT, © 2026
+diegosouzapw), whose `open-sse/config/providers/registry/` holds ~250 upstreams. Its entries
+do not transfer verbatim, for two reasons:
+
+- **Their `baseUrl` is the chat path; ours is the API root.** OmniRoute's executor POSTs to
+  `baseUrl` literally, so it stores `https://api.cerebras.ai/v1/chat/completions`. rewter
+  hands `baseUrl` to the OpenAI SDK, which appends its own path. A row copied across
+  unconverted would POST to `/chat/completions/chat/completions` and 404 on the first real
+  request — invisible to unit tests and to every recorded fixture, since it is the live URL
+  that is wrong and not the code. `presets.test.ts` asserts no `baseUrl` contains
+  `/chat/completions`, which turns that into a test failure rather than a support ticket.
+- **They key auth per entry; we name an env var.** Nothing carrying a credential crossed
+  over — each row here names a variable rewter reads at request time.
+
+Of OmniRoute's ~250 entries, 150 are OpenAI-format with plain bearer auth; the rest are
+OAuth flows, browser-session shims (`grok-web`, `t3-web`, `huggingchat`) and IDE-token
+relays (`cursor`, `kiro`, `codex`) that need auth machinery rewter does not have. Of those
+150 only the upstreams that are a company's own documented API are here: the
+anonymous-key resellers and free-tier proxies were left out, because a preset is a
+recommendation and rewter should not be pointing at someone's key-sharing endpoint.
+
+**Every row was probed live before landing**, which is the only way to learn two things a
+copied table cannot tell you. Four hosts (`lambda.ai`, `predibase`, `galadriel`,
+`monsterapi`) did not answer at all and are absent. And `listModels` records whether
+`GET <baseUrl>/models` actually exists rather than whether it was hoped to: an unauthenticated
+401 proves the route is there and gated, but Heroku 404s, AI21 answers **410 Gone**, and
+Codestral serves one model family with no catalog route — all three carry `listModels: false`.
+A wrong `listModels` is not cosmetic: sync would report those providers as broken rather than
+as catalog-less.
 
 **A local aggregator is both, and no other preset is.** 9router runs on the operator's
 machine and authenticates nothing — a bearer header would be rejected as unexpected rather

@@ -6,9 +6,28 @@ describe("provider presets", () => {
   it("covers a broad upstream surface across every category", () => {
     // The point of the table is breadth: an aggregator-style router, not a
     // handful of hardcoded vendors.
-    expect(PROVIDER_PRESETS.length).toBeGreaterThanOrEqual(25);
-    expect(PROVIDER_PRESETS.filter((p) => p.aggregator === true).length).toBeGreaterThanOrEqual(5);
+    expect(PROVIDER_PRESETS.length).toBeGreaterThanOrEqual(70);
+    expect(PROVIDER_PRESETS.filter((p) => p.aggregator === true).length).toBeGreaterThanOrEqual(25);
     expect(PROVIDER_PRESETS.filter((p) => p.local === true).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps every baseUrl at the API root, not the chat path", () => {
+    // OmniRoute's registry — where much of this breadth came from — stores the
+    // full `…/chat/completions` URL, because its executor posts to `baseUrl`
+    // verbatim. rewter hands `baseUrl` to the OpenAI SDK, which appends its own
+    // path, so a row copied across unconverted would POST to
+    // `/chat/completions/chat/completions` and 404 at the first real request —
+    // a mistake no unit test would otherwise catch and no fixture would show.
+    for (const preset of PROVIDER_PRESETS) {
+      expect(preset.baseUrl ?? "").not.toContain("/chat/completions");
+    }
+  });
+
+  it("gives every keyed preset a distinct env var", () => {
+    // Two upstreams sharing one variable means configuring the second silently
+    // reconfigures the first.
+    const envs = PROVIDER_PRESETS.map((p) => p.apiKeyEnv).filter((e): e is string => e !== null);
+    expect(new Set(envs).size).toBe(envs.length);
   });
 
   it("has unique slugs and names", () => {

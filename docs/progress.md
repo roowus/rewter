@@ -41,6 +41,53 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — 28 upstreams → 75, every one of them dialled
+
+The other half of the OmniRoute request: *"copy over some code from omnirouter to support so
+many models."* Its registry (`open-sse/config/providers/registry/`, MIT) carries ~250
+upstreams, and the useful question was not how many of them to take but which ones survive
+contact with rewter's rules.
+
+**Of ~250, 150 are OpenAI-format with plain bearer auth.** The remainder are OAuth flows,
+browser-session shims (`grok-web`, `t3-web`, `huggingchat` — these POST to a chat UI's
+internal endpoint with a cookie) and IDE-token relays (`cursor`, `kiro`, `codex`), all of
+which need auth machinery rewter does not have and would not want in a table described as
+"presets". Of the 150, the ones that landed are the upstreams that are a company's own
+documented API. The anonymous-key resellers and free-tier proxies were left out on purpose: a
+preset is a recommendation, and rewter should not ship a row pointing at somebody's
+key-sharing endpoint.
+
+**The conversion that a test now enforces.** OmniRoute stores `baseUrl` as the full chat path
+(`https://api.cerebras.ai/v1/chat/completions`) because its executor POSTs there verbatim.
+rewter hands `baseUrl` to the OpenAI SDK, which appends its own path. A row carried across
+unconverted would POST to `/chat/completions/chat/completions` — a 404 on the first real
+request, and one that no unit test and no recorded fixture would ever show, because the code
+is right and the URL is wrong. `presets.test.ts` now asserts no `baseUrl` contains
+`/chat/completions`, which is the cheapest possible guard against the next person doing the
+paste faithfully.
+
+**Probing beat reading.** Every row was hit live before it landed, and that is where the
+table stopped agreeing with the source:
+
+- Four hosts (`api.lambda.ai`, `serving.app.predibase.com`, `api.galadriel.ai`,
+  `api.monsterapi.ai`) did not answer at all. They are not in the table.
+- `listModels` is now what `GET <baseUrl>/models` *does*, not what it ought to do. An
+  unauthenticated **401 proves the route exists and is gated** — the good case. But Heroku
+  404s, AI21 answers **410 Gone** (retired, not gated), and Codestral serves one family with
+  no catalog route. Those three carry `listModels: false`. Getting it wrong is not cosmetic:
+  sync would file them as broken providers rather than as catalog-less ones.
+- Both Nebius hosts are live — OmniRoute's `api.tokenfactory.nebius.com` and rewter's
+  existing `api.studio.nebius.ai` — so the existing row stayed put rather than being
+  "corrected" toward the newer copy.
+
+A second new test asserts no two presets name the same env var, because sharing one would
+mean configuring the second upstream silently reconfigured the first.
+
+Result: **75 presets** — 3 first-party SDK, 34 aggregators, 33 direct vendors, 1 local
+aggregator (9router), 4 local runtimes — still three adapter classes, still zero new code per
+upstream. 1376 tests green. Attribution sits in `presets.ts`, ARCHITECTURE.md and the README;
+no credential material crossed over, and nothing in the port reads any other tool's key store.
+
 ### 2026-08-29 — reading someone else's dashboard on purpose
 
 "The dashboard is really lacking" is true and not actionable. So rather than guess at
