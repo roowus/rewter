@@ -1899,6 +1899,32 @@ silently delete a price that was correct. `unpriced` is rendered as itself — a
 Ollama model costs nothing, a model whose price we never learned is a different fact,
 and `$0` reads as the first.
 
+**Narrowing the table** (`src/modelFilter.ts`). The panel was written for a registry of
+dozens; a [local aggregator](#provider-presets) makes it hundreds, and a hundred-row
+table with no way to narrow it is a list you scroll past rather than a registry you edit.
+A filter row — query, provider, on/off — sits above the table, and the matching rules
+are a pure function so they are provable without the DOM. Three of them are decisions
+rather than defaults:
+
+- **The query matches the full id, not the shortened one the table shows.** A registry
+  holding both `zai/glm-5.3` and `9router/glm/glm-5.3` renders two rows ending
+  `glm-5.3`, and typing the provider is the only way a reader can tell them apart.
+  Matching what is on screen would make that impossible.
+- **It also matches a card's `bestAt` tags.** "Which of my models is good at OCR" is the
+  question the registry exists to answer, and the tags come from the fixed vocabulary
+  the digest renders and the initiator reads — so the user types the same token the
+  orchestrator does.
+- **Order is the daemon's, never re-ranked by relevance.** A row that jumps to the top
+  mid-keystroke moves the Edit button out from under the pointer.
+
+The header shows `10 of 109 models` while narrowed rather than `10 models`, because a
+bare small number on a large registry reads as a sync that went wrong. A filter matching
+nothing gets its own empty state, distinct from an empty registry: the two send you to
+different places — one to the filter box, the other to `rewter sync-models`. The provider
+dropdown appears only when more than one provider exists, since a dropdown whose every
+option shows the same table is furniture. Nothing is debounced: filtering is an array
+pass over rows already in memory, so the only cost of a keystroke is a re-render.
+
 ## Phases
 
 - **Phase 1 (MVP)**: routing + provider adapters, registry + capability cards, orchestrator

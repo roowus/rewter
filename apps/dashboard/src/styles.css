@@ -232,6 +232,44 @@ pre,
   cursor: pointer;
 }
 
+.registry-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+
+.registry-filter input,
+.registry-filter select {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.4rem;
+}
+
+/* The query box carries the work, so it takes the slack; the two selects stay
+   at their content width. */
+.registry-filter input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A button that reads as a link: `clear` is an undo, not an action with
+   consequences, and giving it a box would rank it with Save and Delete. */
+.link {
+  border: none;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.78rem;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
 .registry-table {
   width: 100%;
   border-collapse: collapse;

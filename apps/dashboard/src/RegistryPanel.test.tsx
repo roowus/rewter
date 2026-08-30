@@ -58,7 +58,7 @@ const card = (over: Record<string, unknown> = {}): CapabilityCard =>
     ...over,
   }) as unknown as CapabilityCard;
 
-const provider = (): Provider =>
+const provider = (over: Record<string, unknown> = {}): Provider =>
   ({
     id: "prv_aaaaaaaaaaaa",
     name: "Anthropic",
@@ -68,6 +68,7 @@ const provider = (): Provider =>
     enabled: true,
     createdAt: 1,
     updatedAt: 1,
+    ...over,
   }) as Provider;
 
 const ok = (body: unknown, status = 200): Response =>
@@ -77,6 +78,7 @@ const ok = (body: unknown, status = 200): Response =>
 function stubFetch(options: {
   models?: Model[];
   cards?: CapabilityCard[];
+  providers?: Provider[];
   onWrite?: (url: string, init: RequestInit) => Response;
 }): { calls: Array<[string, RequestInit]> } {
   const calls: Array<[string, RequestInit]> = [];
@@ -84,7 +86,8 @@ function stubFetch(options: {
     const href = String(url);
     const method = init?.method ?? "GET";
     if (method === "GET") {
-      if (href.startsWith("/internal/providers")) return ok({ providers: [provider()] });
+      if (href.startsWith("/internal/providers"))
+        return ok({ providers: options.providers ?? [provider()] });
       return ok({ models: options.models ?? [model()], cards: options.cards ?? [] });
     }
     calls.push([href, init ?? {}]);
@@ -319,6 +322,64 @@ describe("RegistryPanel", () => {
       upstreamId: "qwen3-coder",
       displayName: "Qwen3 Coder",
     });
+  });
+
+  it("narrows the table as you type, and says how much it hid", async () => {
+    // The count matters as much as the filtering: "1 models" on a registry of
+    // a hundred reads as a sync that went wrong.
+    stubFetch({
+      models: [model(), model({ id: "9router/glm/glm-5.3" }), model({ id: "ollama/qwen3-4b" })],
+    });
+    await open();
+    expect(screen.getByText("3 models")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("filter models"), { target: { value: "glm" } });
+    expect(screen.getByText("1 of 3 models")).toBeTruthy();
+    expect(screen.getByText("glm/glm-5.3")).toBeTruthy();
+    expect(screen.queryByText("claude-sonnet-5")).toBeNull();
+  });
+
+  it("says no model matched rather than showing an empty registry", async () => {
+    // The two empties are different problems: "you have no models" sends you to
+    // `sync-models`, and this one sends you to the filter box.
+    stubFetch({});
+    await open();
+    fireEvent.change(screen.getByLabelText("filter models"), { target: { value: "nope" } });
+    expect(screen.getByText(/No model matches this filter/)).toBeTruthy();
+    expect(screen.queryByText(/Run/)).toBeNull();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "clear" })[0] as HTMLElement);
+    expect(screen.getByText("claude-sonnet-5")).toBeTruthy();
+  });
+
+  it("offers a provider filter only when there is more than one provider", async () => {
+    // A dropdown whose every option shows the same table is furniture.
+    stubFetch({});
+    await open();
+    expect(screen.queryByLabelText("filter by provider")).toBeNull();
+  });
+
+  it("narrows to one provider when there are two", async () => {
+    // The positive half of the rule above — and the case the 9router preset
+    // creates: two providers' models interleaved in one table.
+    stubFetch({
+      providers: [provider(), provider({ id: "prv_bbbbbbbbbbbb", name: "9router" })],
+      models: [model(), model({ id: "9router/glm/glm-5.3", providerId: "prv_bbbbbbbbbbbb" })],
+    });
+    await open();
+    fireEvent.change(screen.getByLabelText("filter by provider"), {
+      target: { value: "prv_bbbbbbbbbbbb" },
+    });
+    expect(screen.getByText("glm/glm-5.3")).toBeTruthy();
+    expect(screen.queryByText("claude-sonnet-5")).toBeNull();
+  });
+
+  it("hides the disabled models on request", async () => {
+    stubFetch({ models: [model(), model({ id: "ollama/qwen3-4b", enabled: false })] });
+    await open();
+    fireEvent.change(screen.getByLabelText("filter by enabled"), { target: { value: "on" } });
+    expect(screen.queryByText("qwen3-4b")).toBeNull();
+    expect(screen.getByText("claude-sonnet-5")).toBeTruthy();
   });
 
   it("keeps the rows on screen when a reload fails", async () => {

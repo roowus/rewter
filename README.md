@@ -240,6 +240,15 @@ The editor also carries the capability card beside the price, because what a mod
 is the half that steers the orchestrator; its overrides save separately, since `rewter card
 <model>` regenerates the card underneath and the override is what survives that.
 
+A filter row above the table — query, provider, on/off — keeps that editable once the registry
+is large. Pointing rewter at a running 9router takes it from a dozen rows to over a hundred, and
+the search matches the **full** model id rather than the shortened one on screen, because
+`zai/glm-5.3` and `9router/glm/glm-5.3` both display as something ending `glm-5.3` and the
+provider prefix is the only thing that separates them. It matches capability-card tags too, so
+"which of my models is good at OCR" is a question you can type. While narrowed the header says
+`10 of 109 models`, because a bare small number on a large registry reads as a sync that went
+wrong.
+
 M7 closed live on 2026-08-29: a `uname -a` parked mid-orchestration, the card was answered in
 the browser, and the same still-open stream carried on and finished with the kernel string.
 The distinction from M6's run is which path resolved it — `resolvedBy: "dashboard"` — and the

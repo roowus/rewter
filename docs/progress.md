@@ -41,6 +41,38 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-29 — a registry you can find a row in
+
+The 9router preset landed earlier today and took the registry from a dozen rows to 109. That
+turned a latent design assumption into a visible defect: `RegistryPanel`'s own docstring says
+"a registry is dozens of rows and the reason to open this page is usually one of them", and
+until now nothing helped you find that one. Hooking up an aggregator without this is shipping
+the scroll bar as the search feature.
+
+So: a filter row above the table — query, provider, on/off — with the matching rules in
+`modelFilter.ts` as a pure function, tested away from the DOM. Two rules are the ones a naive
+version gets wrong. The query matches the **full** id rather than the shortened form the table
+displays, because a registry holding both `zai/glm-5.3` and `9router/glm/glm-5.3` shows two rows
+ending `glm-5.3` and the provider prefix is the only thing that distinguishes them. And it
+matches a card's `bestAt` tags, because "which of my models is good at OCR" is the question the
+registry is for, and those tags are the same vocabulary the digest renders and the initiator
+reads. Results keep the daemon's order: re-ranking by relevance would move the Edit button out
+from under the pointer mid-keystroke.
+
+Two counting decisions came out of looking at it rather than reasoning about it. The header
+reads `10 of 109 models` while narrowed — a bare `10 models` on a registry of a hundred reads as
+a sync that went wrong — and a filter matching nothing gets its own empty state, because "you
+have no models" sends you to `sync-models` and "nothing matched" sends you to the filter box.
+The provider dropdown only appears once a second provider exists.
+
+Verified in a real browser, not only in jsdom: driven through CDP against the live daemon, the
+open panel showed 109 rows and `109 models`, typing `glm` left 10 rows and `10 of 109 models`,
+and the screenshot confirmed the filter row lays out correctly rather than merely existing in
+the DOM. One caught-in-passing detail: the filter's provider `<select>` originally had the
+accessible name `provider`, which the create form below already uses — two controls with one
+name is a screen reader that cannot tell them apart, so it is `filter by provider`. Dashboard
+tests 104 → 109.
+
 ### 2026-08-29 — 9router as a local aggregator, and a catalog that reads a volunteered report
 
 Two changes, one preset row and one parser branch, that between them turn a machine with no API

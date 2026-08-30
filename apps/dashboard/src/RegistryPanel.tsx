@@ -15,12 +15,16 @@
  * off must not take its prices off the sync path forever.
  *
  * Everything is expanded on demand. A registry is dozens of rows and the reason
- * to open this page is usually one of them.
+ * to open this page is usually one of them — which is what the filter row is
+ * for. It stopped being optional when a local aggregator became a supported
+ * provider: one 9router preset is a hundred-plus models, and an unnarrowable
+ * hundred-row table is a list you scroll past rather than a registry you edit.
  */
 import type { CapabilityCard, Model, Provider } from "@rewter/shared";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ModelEditor } from "./ModelEditor.js";
 import { shortModelId, usd } from "./format.js";
+import { type ModelFilter, emptyFilter, filterModels, isUnfiltered } from "./modelFilter.js";
 import { type Result, fetchProviders, fetchRegistry } from "./registry.js";
 
 /** `$3/$15 per MTok`, or an honest gap. Unpriced is a real state: a local */
@@ -44,6 +48,7 @@ export function RegistryPanel(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [filter, setFilter] = useState<ModelFilter>(emptyFilter);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     const [registry, provs] = await Promise.all([
@@ -81,6 +86,12 @@ export function RegistryPanel(): JSX.Element {
     [load],
   );
 
+  const shown = useMemo(
+    () => (models === null ? null : filterModels(models, cards, filter)),
+    [models, cards, filter],
+  );
+  const narrowed = !isUnfiltered(filter);
+
   return (
     <section className="registry" aria-label="model registry">
       <header className="registry-head">
@@ -88,18 +99,39 @@ export function RegistryPanel(): JSX.Element {
         <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
           {open ? "hide" : "edit models"}
         </button>
-        {models !== null && open && <span className="dim">{models.length} models</span>}
+        {models !== null && open && (
+          // Both numbers when narrowed: "3 models" alone, on a registry of a
+          // hundred, reads as a sync that went wrong.
+          <span className="dim">
+            {narrowed && shown !== null
+              ? `${shown.length} of ${models.length} models`
+              : `${models.length} models`}
+          </span>
+        )}
         {error !== null && <span className="error">{error}</span>}
       </header>
 
+      {open && models !== null && models.length > 0 && (
+        <FilterRow filter={filter} providers={providers} onChange={setFilter} />
+      )}
+
       {open &&
-        (models === null ? (
+        (models === null || shown === null ? (
           error === null ? (
             <p className="empty">loading…</p>
           ) : null
         ) : models.length === 0 ? (
           <p className="empty">
             No models. Run <code>rewter sync-models</code>, or add one by hand below.
+          </p>
+        ) : shown.length === 0 ? (
+          // Distinct from the empty registry above: the models exist, this
+          // filter just does not match any of them.
+          <p className="empty">
+            No model matches this filter.{" "}
+            <button type="button" className="link" onClick={() => setFilter(emptyFilter())}>
+              clear
+            </button>
           </p>
         ) : (
           <table className="registry-table">
@@ -114,7 +146,7 @@ export function RegistryPanel(): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {models.map((model) => (
+              {shown.map((model) => (
                 <RegistryRow
                   key={model.id}
                   model={model}
@@ -131,6 +163,79 @@ export function RegistryPanel(): JSX.Element {
 
       {open && <ModelEditor mode="create" providers={providers} onWrote={afterWrite} />}
     </section>
+  );
+}
+
+/**
+ * Query, provider, on/off.
+ *
+ * Only providers that own a model are offered, and only when there is more than
+ * one — a dropdown whose every option shows the same table is furniture. The
+ * query box is deliberately not debounced: filtering is a pure array pass over
+ * rows already in memory, so the keystroke cost is a re-render, and a delay
+ * would only make typing feel laggy.
+ */
+function FilterRow({
+  filter,
+  providers,
+  onChange,
+}: {
+  filter: ModelFilter;
+  providers: Provider[];
+  onChange: (next: ModelFilter) => void;
+}): JSX.Element {
+  return (
+    <div className="registry-filter">
+      <label>
+        <span className="visually-hidden">filter models</span>
+        <input
+          type="search"
+          placeholder="filter by id, name or tag…"
+          value={filter.query}
+          onChange={(e) => onChange({ ...filter, query: e.target.value })}
+        />
+      </label>
+
+      {/* "filter by provider", not "provider": the create form below has its own
+          provider select, and two controls with one accessible name is a screen
+          reader — and a test — that cannot tell them apart. */}
+      {providers.length > 1 && (
+        <label>
+          <span className="visually-hidden">filter by provider</span>
+          <select
+            value={filter.providerId}
+            onChange={(e) => onChange({ ...filter, providerId: e.target.value })}
+          >
+            <option value="all">all providers</option>
+            {providers.map((provider) => (
+              <option value={provider.id} key={provider.id}>
+                {provider.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      <label>
+        <span className="visually-hidden">filter by enabled</span>
+        <select
+          value={filter.enabled}
+          onChange={(e) =>
+            onChange({ ...filter, enabled: e.target.value as ModelFilter["enabled"] })
+          }
+        >
+          <option value="all">on and off</option>
+          <option value="on">enabled only</option>
+          <option value="off">disabled only</option>
+        </select>
+      </label>
+
+      {!isUnfiltered(filter) && (
+        <button type="button" className="link" onClick={() => onChange(emptyFilter())}>
+          clear
+        </button>
+      )}
+    </div>
   );
 }
 
