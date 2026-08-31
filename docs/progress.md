@@ -97,6 +97,46 @@ dry run), and `packages/cli`'s `build` script chmods, so the broken state is not
 the first place. Both are tested, the second by asserting the built artifact's mode. Verified
 by `chmod 644` → `permission denied` → `install-cli` → works, and by a clean rebuild from 644.
 
+### 2026-08-31 — the plist named a node that a `brew upgrade` would delete (M8c)
+
+Found by auditing the *installed* artefact rather than the code that writes it. The live
+`~/Library/LaunchAgents/com.roowus.rewter.plist` had
+`/opt/homebrew/Cellar/node/25.2.1/bin/node` in `ProgramArguments` — a path with a version
+number in it, which `brew upgrade node` removes. The bug is `process.execPath`: node resolves
+symlinks before reporting where it is, so asking it for its own path is asking for the
+version-pinned answer, never the stable alias.
+
+What makes it worth a fix rather than a shrug is *how* it fails. Not at install, not at
+`rewter start`, but at **boot** — in launchd's own log, on the one path nobody watches — and
+the first symptom is rewter quietly not running after a reboot, weeks later, with nothing
+connecting it to a `brew upgrade` from the month before.
+
+`stableNodePath` walks the aliases a package manager keeps pointed at the current version
+(`/opt/homebrew/bin/node`, `/usr/local/bin/node`, `~/.local/bin/node`, `/usr/bin/node`) and
+takes the first whose `realpathSync` equals the running node's. Matching the resolved *file*
+is the whole check — a string comparison would be beaten by exactly the indirection being
+looked for. No alias matching (nvm, a source build) keeps the resolved path, which is at
+least true today.
+
+**A second bug fell out of reading the same call site.** `install-service` passed
+`fileURLToPath(import.meta.url)` as `cliPath`, ignoring the `entryPoint(opts)` seam
+`install-cli` was given a day earlier for the same reason: under vitest that expression is
+the TypeScript *source*, so the tests were asserting a plist that told launchd to run a
+`.ts` file. Both commands now read the path through one seam, and each has a test that what
+it recorded is what it was given.
+
+Verified live: `install-service --force` rewrote the plist to `/Users/rewis/.local/bin/node`,
+`launchctl bootout` + `bootstrap` reloaded it, `launchctl print` reports `state = running`
+with that program, and `/internal/health` answers. The same restart picked up 16 commits the
+daemon had been running behind — it predated the whole dashboard shortlist, provable by
+`/internal/registry/export` 404ing before and answering 200 after.
+
+- Docs: ARCHITECTURE's plist section gains the node-path decision as its first bullet, and
+  the `install-cli` section's claim about `install-service` recording `import.meta.url` is
+  corrected to the shared seam.
+- 8 new tests (6 `stableNodePath`, 2 CLI — one asserting the recorded entry point, one that
+  the plist's node path exists and carries no `x.y.z` segment). **1738 green.**
+
 ### 2026-08-31 — a truncated worker is a failed worker, in both tiers
 
 Found by running rewter rather than by reading it. A three-way `auto/orchestrator` fan-out onto

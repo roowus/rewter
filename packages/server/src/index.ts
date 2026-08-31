@@ -167,6 +167,7 @@ export {
   SERVICE_LABEL,
   installService,
   renderPlist,
+  stableNodePath,
   uninstallService,
   type InstallOptions,
   type InstallResult,

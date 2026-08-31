@@ -1226,9 +1226,14 @@ at this target is `unchanged`, anything else needs `--force`, and `uninstall-cli
 only a symlink that is ours, never a real file someone else put there. `rewter` is a short
 name.
 
-`install-service` is unaffected by any of this: it records `fileURLToPath(import.meta.url)`,
-the resolved `dist` path, so the plist points into the checkout rather than through
-`~/.local/bin` — one less thing between launchd and the code.
+`install-service` is unaffected by any of this: it records the running file's own resolved
+`dist` path, so the plist points into the checkout rather than through `~/.local/bin` — one
+less thing between launchd and the code. Both commands read that path through the same
+`entryPoint(opts)` seam, injectable for exactly one reason: under vitest `import.meta.url`
+is the TypeScript *source*, and the two commands do different damage with it —
+`install-cli` chmods a checked-in file, `install-service` writes a plist telling launchd to
+run a `.ts`. Neither is caught by an assertion about the happy path, so the seam is the
+fix, and each command has a test that the path it recorded is the one it was given.
 
 ### The pidfile, and talking to a daemon you did not start (M8)
 
@@ -1330,10 +1335,23 @@ overrides the path.
 `~/Library/LaunchAgents/com.roowus.rewter.plist` and creates the log directory, because a
 `StandardOutPath` launchd cannot open makes the job fail with nowhere to say so — the worst
 failure mode a login daemon has. `ProgramArguments` is `[<absolute node>, <absolute cli>,
-"start"]`: `process.execPath` and `fileURLToPath(import.meta.url)`, because there is no PATH
-to search.
+"start"]`, because there is no PATH to search.
 
-Three decisions are worth stating:
+Four decisions are worth stating:
+
+- **The node path is a *stable alias*, not `process.execPath`.** The obvious answer is a
+  slow-acting bug. Node resolves symlinks before reporting where it is, so a Homebrew node
+  calls itself `/opt/homebrew/Cellar/node/25.2.1/bin/node` — a path with a version number
+  in it, which `brew upgrade node` deletes. The plist then names a binary that is not
+  there, and nothing says so: the job fails at *boot*, in launchd's log, and the first
+  symptom is rewter quietly not running after a reboot weeks later. `stableNodePath`
+  (`service/launchd.ts`) walks the aliases a package manager keeps pointed at the current
+  version — `/opt/homebrew/bin/node`, `/usr/local/bin/node`, `~/.local/bin/node`,
+  `/usr/bin/node` — and takes the first whose `realpathSync` matches. Comparing the
+  resolved *file*, not the string, is the whole check; a string match would be defeated by
+  exactly the indirection being looked for. With no match (nvm, a source build) the
+  resolved path is still true today and is used unchanged. This was found live: the
+  installed plist named the Cellar path.
 
 - **No `EnvironmentVariables` key, ever.** `launchctl print` reads the plist back to anyone
   who asks, and a plist's mode is not somewhere people look. An env file's mode is checkable;

@@ -50,6 +50,7 @@ import {
   presetSlugForProvider,
   readLogs,
   runUntilSignal,
+  stableNodePath,
   startDaemon,
   stopDaemon,
   syncModels,
@@ -631,9 +632,11 @@ function installCommand(args: string[], opts: RunOptions): number {
   const configPath = flagValue(args, "--config");
 
   const result = installService({
-    // Absolute, because launchd starts us with no PATH to search.
-    nodePath: process.execPath,
-    cliPath: fileURLToPath(import.meta.url),
+    // Absolute, because launchd starts us with no PATH to search — and stable,
+    // because `process.execPath` resolves to a versioned Cellar path that the
+    // next `brew upgrade node` deletes. See `service/launchd.ts`.
+    nodePath: stableNodePath(process.execPath, home),
+    cliPath: entryPoint(opts),
     logDir: expandPath(LOG_DIR, home),
     plistPath: plistPathFor(args, env),
     ...(configPath !== undefined && { configPath }),

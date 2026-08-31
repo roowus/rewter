@@ -12,7 +12,9 @@
  *    they come from `~/.rewter/env` (see `config/envfile.ts`), a file with a
  *    mode we can check, rather than from a plist that `launchctl print` will
  *    happily read back to anyone. `ProgramArguments` names an absolute node
- *    binary for the same reason: there is no PATH to search.
+ *    binary for the same reason: there is no PATH to search — but *which*
+ *    absolute path matters, and `process.execPath` is the wrong one. See
+ *    `stableNodePath`.
  *
  * 2. **launchd wants the process to stay in the foreground.** A daemon that
  *    forks and exits looks like a crash to it. `rewter start` already runs in
@@ -32,7 +34,7 @@
  * ways worth reading, and a tool that silently ran privileged-ish commands on
  * your behalf is not what you want holding your API keys.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** Reverse-DNS, matching the convention every other agent in `~/Library/LaunchAgents` uses. */
@@ -114,6 +116,55 @@ ${argXml}
 </dict>
 </plist>
 `;
+}
+
+/**
+ * Stable aliases for a node binary, most-preferred first.
+ *
+ * Only symlinks that a package manager maintains across upgrades belong here —
+ * the point is a path whose *meaning* survives the version changing underneath.
+ */
+const STABLE_NODE_ALIASES = [
+  "/opt/homebrew/bin/node",
+  "/usr/local/bin/node",
+  "~/.local/bin/node",
+  "/usr/bin/node",
+];
+
+/**
+ * Pick the least version-pinned path that names the node we are running under.
+ *
+ * `process.execPath` is the obvious answer and a slow-acting bug: node resolves
+ * symlinks, so a Homebrew node reports `/opt/homebrew/Cellar/node/25.2.1/bin/node`
+ * — a path with a version number in it. Homebrew deletes that directory on the
+ * next `brew upgrade node`, and the plist then names a binary that is not there.
+ * The daemon does not fail loudly; it fails at *boot*, in launchd's log, on the
+ * one path nobody watches, and the first symptom is rewter quietly not running
+ * after a reboot weeks later.
+ *
+ * So: walk the aliases a package manager keeps pointing at the current version,
+ * and take the first that resolves to the same file. `realpathSync` is the whole
+ * check — matching on the string would be defeated by exactly the indirection we
+ * are looking for. If none matches (nvm, a checkout, an unusual install), the
+ * resolved path is still the honest answer and is used unchanged.
+ */
+export function stableNodePath(execPath: string, home: string): string {
+  const real = realSafely(execPath);
+  if (real === undefined) return execPath;
+
+  for (const alias of STABLE_NODE_ALIASES) {
+    const path = alias.startsWith("~/") ? join(home, alias.slice(2)) : alias;
+    if (realSafely(path) === real) return path;
+  }
+  return execPath;
+}
+
+function realSafely(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
 }
 
 export interface InstallOptions extends PlistOptions {

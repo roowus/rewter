@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +15,7 @@ import {
   SERVICE_LABEL,
   installService,
   renderPlist,
+  stableNodePath,
   uninstallService,
 } from "./launchd.js";
 
@@ -145,6 +154,65 @@ describe("installService", () => {
   it("is quiet when re-run after an upgrade changed nothing", () => {
     installService(opts());
     expect(installService(opts()).action).toBe("unchanged");
+  });
+});
+
+/**
+ * The plist has to name a node that still exists next month.
+ *
+ * `~/.local/bin/node` is the one alias in the list that can be pointed at a
+ * scratch file, so it stands in here for `/opt/homebrew/bin/node` — the real
+ * case, and the one that bit: Homebrew's `node` symlink is stable while the
+ * Cellar path behind it carries a version number and is deleted on upgrade.
+ */
+describe("stableNodePath", () => {
+  let home: string;
+  let versioned: string;
+  let alias: string;
+
+  beforeEach(() => {
+    home = join(dir, "home");
+    versioned = join(dir, "cellar", "node", "25.2.1", "bin", "node");
+    alias = join(home, ".local", "bin", "node");
+    mkdirSync(join(dir, "cellar", "node", "25.2.1", "bin"), { recursive: true });
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(versioned, "");
+  });
+
+  it("prefers the stable alias over the versioned path node reports", () => {
+    symlinkSync(versioned, alias);
+    // `process.execPath` is always the resolved path — node follows the symlink
+    // before telling you where it is, which is the whole problem.
+    expect(stableNodePath(versioned, home)).toBe(alias);
+  });
+
+  it("matches on the file, not the string — the indirection is the point", () => {
+    symlinkSync(join(dir, "cellar", "node", "25.2.1", "bin", "..", "bin", "node"), alias);
+    expect(stableNodePath(versioned, home)).toBe(alias);
+  });
+
+  it("keeps the resolved path when no alias points at this node", () => {
+    // nvm, a source build, a checkout: there is no stable name to prefer, and
+    // the versioned path is at least true today.
+    expect(stableNodePath(versioned, home)).toBe(versioned);
+  });
+
+  it("ignores an alias that points at a different node", () => {
+    const other = join(dir, "cellar", "node", "24.0.0", "bin", "node");
+    mkdirSync(join(dir, "cellar", "node", "24.0.0", "bin"), { recursive: true });
+    writeFileSync(other, "");
+    symlinkSync(other, alias);
+
+    expect(stableNodePath(versioned, home)).toBe(versioned);
+  });
+
+  it("does not throw when the path it is given is gone", () => {
+    expect(stableNodePath(join(dir, "nope"), home)).toBe(join(dir, "nope"));
+  });
+
+  it("does not name a path that is not there", () => {
+    symlinkSync(versioned, alias);
+    expect(existsSync(stableNodePath(versioned, home))).toBe(true);
   });
 });
 

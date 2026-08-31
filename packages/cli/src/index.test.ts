@@ -385,6 +385,32 @@ describe("run — install-service", () => {
     expect(readFileSync(plist, "utf8")).toContain("com.roowus.rewter");
   });
 
+  it("names the file it is running, not whatever module wrote the plist", async () => {
+    // Under vitest that distinction is visible: `import.meta.url` is the
+    // TypeScript source, and a plist telling launchd to run a `.ts` file boots
+    // nothing. Injected here for the same reason `install-cli` injects it.
+    const { env, plist } = home();
+    const entryPoint = join(dir, "checkout", "dist", "index.js");
+    mkdirSync(join(dir, "checkout", "dist"), { recursive: true });
+    writeFileSync(entryPoint, "");
+
+    await run(["install-service"], { env, entryPoint });
+    expect(readFileSync(plist, "utf8")).toContain(`<string>${entryPoint}</string>`);
+  });
+
+  it("does not write a node path that a version upgrade will delete", async () => {
+    // Homebrew's node resolves to `.../Cellar/node/<version>/bin/node`, and
+    // `brew upgrade node` removes that directory — the daemon then fails at
+    // boot, in launchd's log, weeks later. See `service/launchd.ts`.
+    const { env, plist } = home();
+    await run(["install-service"], { env });
+
+    const nodeLine = /<string>(\S*node)<\/string>/.exec(readFileSync(plist, "utf8"))?.[1];
+    expect(nodeLine).toBeDefined();
+    expect(existsSync(nodeLine as string)).toBe(true);
+    expect(nodeLine).not.toMatch(/\/\d+\.\d+\.\d+\//);
+  });
+
   it("is quiet when re-run after an upgrade changed nothing", async () => {
     const { env } = home();
     await run(["install-service"], { env });
