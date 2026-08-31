@@ -43,7 +43,47 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 **Phase 1 is complete — every milestone's acceptance has been run live.**
 
+## Phase 2 milestones
+
+Decided 2026-08-31 — see [the direction doc](design/phase2-direction.md) for what each is
+and why in this order.
+
+| # | Milestone | Status |
+|---|---|---|
+| P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection | ⬜ |
+| P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ⬜ |
+| P2-M3 | `rewt` TUI: WS client + shared fold, always-live input, mid-run steer, approvals | ⬜ |
+| P2-M4 | Skills loop: SKILL.md store, distiller, stage/approve pipeline, digest + `load_skill` | ⬜ |
+| P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
+
 ## Log
+
+### 2026-08-31 — phase 2 has a shape (design)
+
+Settled in a design Q&A with the owner and written up in
+[docs/design/phase2-direction.md](design/phase2-direction.md). The blend: **Multica**'s
+workspace model (projects, not sessions — resources, policy, model prefs, durable agents,
+replayable runs), **Hermes**'s learning loop (agentskills.io `SKILL.md` skills distilled
+from actual work, progressive-disclosure retrieval), and the OmniRoute absorption already
+done in phase 1. Locked decisions: a native `rewt` TUI becomes the primary interface (the
+harness question, answered: the expensive parts — loop, tools, approvals, streaming,
+costs, cancellation — are already phase-1 server code, so the CLI is a thin client of
+`/internal/ws` + the steer/approve routes); projects own resources *and* learned state
+*and* policy *and* model prefs, with global/project scoping like `CLAUDE.md`; skills ship
+first among the learning dimensions; everything learned is advise-only with agent-authored
+writes gated behind owner approval (Hermes ships that gate off; rewter ships it on);
+Tailscale exposure is in scope and names the real blocker — `/internal` currently has no
+auth at all, so hardening lands *before* the TUI. Mid-run prompting is a hard requirement
+carried directly from the owner ("the way u can prompt claude while another prompt is
+running") — the mechanism is an always-live input line queueing to the existing
+turn-boundary steering, which phase 1 already built server-side.
+
+Also filed [#17](https://github.com/roowus/rewter/issues/17) — a possible rename to
+`rewt`, parked with the full blast-radius checklist (npm scope, binary, header, state
+dir, launchd label, repo) rather than half-done.
+
+No behaviour changed in this commit; ARCHITECTURE.md's phase list and the README status
+now point at the direction doc.
 
 ### 2026-08-31 — `rewter` is a word now, not a path (M8b)
 

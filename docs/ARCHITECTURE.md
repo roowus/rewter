@@ -2637,6 +2637,15 @@ named did not land, and a scripted import needs to go red.
 
 Larger decisions and investigations live under [`docs/design/`](design/):
 
+- [**Phase 2 direction**](design/phase2-direction.md) — the decided shape of phase 2,
+  settled 2026-08-31: **projects** replace sessions as the top-level unit (Multica's
+  workspace model — resources, policy, model prefs, and learned state scoped per project
+  with a global layer, like `CLAUDE.md` scopes), a **skills learning loop**
+  (Hermes-style agentskills.io `SKILL.md` distillation, advise-only with gated writes),
+  a **native `rewt` TUI** as the primary interface (a thin client of the existing
+  daemon surfaces — the harness already exists server-side), **Tailscale exposure**
+  (which requires giving `/internal` the auth it currently lacks), and mid-run
+  prompting as a hard requirement. Includes the P2-M1…M5 build order.
 - [**OmniRoute UI/UX survey**](design/omniroute-ui-survey.md) — a written record of
   [OmniRoute](https://github.com/diegosouzapw/OmniRoute)'s dashboard (10 sidebar sections,
   118 routes), read to decide what rewter's one-page ops UI is actually missing. Documented,
@@ -2652,10 +2661,20 @@ Larger decisions and investigations live under [`docs/design/`](design/):
 - **Phase 1 (MVP)**: routing + provider adapters, registry + capability cards, orchestrator
   pseudo-model, tier-1 fan-out, tier-2 loop with approval gates, dashboard (live task tree,
   approvals, kill, costs), daemonization. Milestones M0–M8 in [progress.md](progress.md).
-- **Phase 2**: tier-3 harness adapters, tmux attach/mirror, learned-from-experience stats.
-  (The plan listed Anthropic-native `/v1/messages` here; it was pulled into phase 1 as M3d
-  once it became clear M3's own acceptance criterion depends on it.)
-- **Phase 3**: multi-initiator handoff chains, budgets, scheduling.
+- **Phase 2** — redefined 2026-08-31, see [the direction doc](design/phase2-direction.md):
+  **P2-M1** projects (top-level unit, Multica-style — resources, policy, model prefs,
+  scoped learned state), **P2-M2** Tailscale hardening (`/internal` auth, fail-closed
+  non-loopback boot), **P2-M3** the native `rewt` TUI (always-live input, mid-run
+  prompting), **P2-M4** the skills loop (agentskills.io `SKILL.md`, distill → stage →
+  approve → progressive-disclosure retrieval), **P2-M5** tier-3 harness #1 (Claude Code
+  headless on the committed `HarnessAdapter` seam, tmux attach). The original phase-2
+  items all survive inside this: harness adapters are P2-M5, tmux attach rides with it,
+  and learned stats queue directly behind P2-M4. (The plan listed Anthropic-native
+  `/v1/messages` here; it was pulled into phase 1 as M3d once it became clear M3's own
+  acceptance criterion depends on it.)
+- **Phase 3**: multi-initiator handoff chains, budgets, scheduling; stats-driven advice
+  and practices memory as the learning loop's second and third dimensions; a possible
+  project rename ([#17](https://github.com/roowus/rewter/issues/17)).
 
 ## Key risks
 

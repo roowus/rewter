@@ -73,6 +73,15 @@ approved from the browser mid-stream, `kill -9` mid-task, and a real reboot with
 brought back by launchd at login). See [docs/progress.md](docs/progress.md) for the milestone
 board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
+**Phase 2 is decided and underway** — see the
+[direction doc](docs/design/phase2-direction.md): **projects** as the top-level unit
+(pinned repos/dirs/docs, per-project policy and model prefs, learned state scoped global
+vs. project like `CLAUDE.md`), a **skills learning loop** (agentskills.io `SKILL.md`
+distilled from what the system actually did, gated behind your approval), a **native
+`rewt` terminal client** where you can keep typing while a task runs, **Tailscale**
+support so the daemon is usable from any device on your tailnet, and the first tier-3
+harness (headless Claude Code) on the seam built in phase 1.
+
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
 `POST /v1/messages` for Anthropic ones, streaming and not), `GET /v1/models`, model
