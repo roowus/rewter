@@ -507,7 +507,13 @@ describe("run — install-cli", () => {
  * the entry-point guard they never touch is exactly where invoking through a
  * symlink used to fail — `process.argv[1]` was the link and `import.meta.url`
  * the file behind it, the guard compared them as strings, and the CLI exited 0
- * having printed nothing. Only a real `execFile` through a real symlink sees it.
+ * having printed nothing. Only a real process with the link as `argv[1]` sees it.
+ *
+ * Node is invoked explicitly rather than executing the link as a program,
+ * because that would depend on the build artifact's mode: `tsc` emits 644, and
+ * on a fresh checkout `execFile` on the link is `EACCES` — which CI found and a
+ * developer machine hides, `install-cli` having already set the bit there.
+ * Setting it is `linkcli`'s job and has its own test; the guard is this one's.
  */
 describe("the symlink, executed", () => {
   const entry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -515,7 +521,7 @@ describe("the symlink, executed", () => {
   it.skipIf(!existsSync(entry))("runs the command when invoked through the link", () => {
     const link = join(dir, "rewter");
     symlinkSync(entry, link);
-    const result = execFileSync(link, ["version"], { encoding: "utf8" });
+    const result = execFileSync(process.execPath, [link, "version"], { encoding: "utf8" });
     expect(result).toContain("rewter 0.1.0");
   });
 

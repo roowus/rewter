@@ -64,8 +64,15 @@ path for one and not the other — so the guard was false, `main` never ran, and
 0 having printed nothing**. Now compared as `realpathSync` of both, which also drops a
 hand-built `file://${path}` that mangled spaces. The unit tests could not have caught it: they
 call `run()` directly, so the guard is the one line they never execute. The regression test
-`execFile`s a real symlink, and was checked against the old guard — it fails there and passes
-here.
+spawns a real process with the link as `argv[1]`, and was checked against the old guard — it
+fails there and passes here.
+
+**That regression test then went green locally and red in CI**, which is the more useful half
+of the story. It executed the link as a program, and executing depends on the artifact's mode:
+`tsc` emits 644, so a fresh checkout gets `EACCES` — while this machine passed because a live
+`install-cli` run had already set the bit. It now spawns `node <link> version`, which tests the
+guard and nothing else; the execute bit is `installCli`'s to set and `linkcli.test.ts`'s to
+check. Reproduced by `chmod 644` on `dist/index.js` before re-running.
 
 **Directory choice is by `PATH` membership only, never by existence.** The first version fell
 back to `/usr/local/bin` because it existed, and died on `EACCES` in the test suite — trading
@@ -77,7 +84,8 @@ in the plist rather than the symlink.
 
 - Docs: README gains an install step and every invocation drops the `node …` prefix;
   ARCHITECTURE gains [Putting the command on PATH](ARCHITECTURE.md#putting-the-command-on-path-m8b).
-- 29 new tests (20 `linkcli`, 9 CLI, of which 2 execute a real symlink). **1727 green.**
+- 29 new tests (20 `linkcli`, 9 CLI, of which 2 spawn a real process through a symlink).
+  **1727 green**, on a 644 `dist` as well as a 755 one.
 
 ### 2026-08-31 — a truncated worker is a failed worker, in both tiers
 

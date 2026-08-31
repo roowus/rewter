@@ -1191,7 +1191,15 @@ is the `dist` file behind it — so the guard was false, `main` never ran, and t
 to say. The guard now compares `realpathSync` of both, which also drops a hand-built
 `file://${path}` that mangled spaces in a checkout path. Note that `run()` unit tests cannot
 see this class of bug at all: they import and call the function, so the guard is the one line
-they never execute. The regression test `execFile`s a real symlink.
+they never execute. The regression test spawns a real process with the link as `argv[1]`.
+
+It spawns `node <link> version` rather than executing the link directly, and that distinction
+is itself a lesson CI taught. Executing it depends on the artifact's mode: `tsc` emits 644, so
+on a fresh checkout `execFile` on the link is `EACCES` — while on a developer machine it
+passes, `install-cli` having already set the execute bit during a live run. The first version
+was green locally and red in CI for precisely that reason. Setting the bit is `installCli`'s
+job and has its own test in `linkcli.test.ts`; the guard is this test's job, and it should not
+fail for an unrelated reason.
 
 The directory is chosen by **`PATH` membership only, never by whether it exists**.
 `~/.local/bin` leads, `/usr/local/bin` follows, and if neither is on `PATH` the answer is
