@@ -398,17 +398,22 @@ describe("run — install-service", () => {
     expect(readFileSync(plist, "utf8")).toContain(`<string>${entryPoint}</string>`);
   });
 
-  it("does not write a node path that a version upgrade will delete", async () => {
-    // Homebrew's node resolves to `.../Cellar/node/<version>/bin/node`, and
-    // `brew upgrade node` removes that directory — the daemon then fails at
-    // boot, in launchd's log, weeks later. See `service/launchd.ts`.
+  it("writes a node path that exists and is the node we are running", async () => {
+    // The interesting property — preferring a stable alias over the versioned
+    // path `process.execPath` reports — is `stableNodePath`'s, and is tested
+    // there against scratch symlinks. Asserting it here instead was a bug of
+    // its own: it forbade a versioned path outright, and CI's node
+    // (`/opt/hostedtoolcache/node/22.23.2/x64/bin/node`) has no alias to
+    // prefer, so the legitimate fallback read as a failure. What this level
+    // can honestly claim is that whichever path was chosen names the running
+    // node — an alias for a *different* node would boot the wrong runtime.
     const { env, plist } = home();
     await run(["install-service"], { env });
 
-    const nodeLine = /<string>(\S*node)<\/string>/.exec(readFileSync(plist, "utf8"))?.[1];
-    expect(nodeLine).toBeDefined();
-    expect(existsSync(nodeLine as string)).toBe(true);
-    expect(nodeLine).not.toMatch(/\/\d+\.\d+\.\d+\//);
+    const nodePath = /<string>(\S*node)<\/string>/.exec(readFileSync(plist, "utf8"))?.[1];
+    expect(nodePath).toBeDefined();
+    expect(existsSync(nodePath as string)).toBe(true);
+    expect(realpathSync(nodePath as string)).toBe(realpathSync(process.execPath));
   });
 
   it("is quiet when re-run after an upgrade changed nothing", async () => {

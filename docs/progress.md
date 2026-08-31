@@ -134,8 +134,18 @@ daemon had been running behind — it predated the whole dashboard shortlist, pr
 - Docs: ARCHITECTURE's plist section gains the node-path decision as its first bullet, and
   the `install-cli` section's claim about `install-service` recording `import.meta.url` is
   corrected to the shared seam.
-- 8 new tests (6 `stableNodePath`, 2 CLI — one asserting the recorded entry point, one that
-  the plist's node path exists and carries no `x.y.z` segment). **1738 green.**
+**The CLI-level test for this was itself wrong, and CI said so.** It asserted the plist's node
+path contains no `x.y.z` segment — forbidding the versioned shape outright. But the fallback is
+legitimate: GitHub's runner node is `/opt/hostedtoolcache/node/22.23.2/x64/bin/node`, with no
+alias to prefer, so `stableNodePath` correctly returns it and the assertion failed. The
+property I actually wanted lives one layer down and is tested there against scratch symlinks;
+what the CLI level can honestly claim is that whichever path was written **exists and
+`realpathSync`s to the running node** — an alias for a *different* node would boot the wrong
+runtime. Checked by patching `stableNodePath` to return the first alias that merely exists:
+the test fails, so it discriminates rather than just passing.
+
+- 8 new tests (6 `stableNodePath`, 2 CLI — one asserting the recorded entry point, one that the
+  plist's node path exists and resolves to the running node). **1738 green.**
 
 ### 2026-08-31 — a truncated worker is a failed worker, in both tiers
 
