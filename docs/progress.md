@@ -45,6 +45,33 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-31 — one gate, run the same way locally and in CI (closes #3)
+
+`pnpm check` = `build && typecheck && lint && test`, and CI now runs **that one command**
+instead of the four steps it used to list. The failure it closes is old and purely local:
+vitest transpiles with esbuild and never invokes `tsc`, so `pnpm test` can be green while the
+code does not compile. It bit five times — three recorded further down this log, twice more in
+the M7c session — and every time the shape was the same: green tests, a commit, and CI finding
+the type error a minute later.
+
+The fix that was *not* chosen is `typecheck: true` in the vitest config. It removes the failure
+mode outright, but it puts a `tsc` pass inside the fast inner loop, and a slow `vitest run` is
+a `vitest run` people stop running. Making the gate one command keeps `pnpm test` fast for
+iteration and gives the pre-commit step a name.
+
+CI collapsing to a single step is the load-bearing half. Four steps in the workflow and one
+script in `package.json` is exactly how the two drift — someone adds a step to CI, and local
+green quietly stops meaning CI green. Now there is one definition and CI runs it.
+
+Documented where the commands are rather than in a log entry, which was the original
+complaint: `CLAUDE.md` says run `check`, not `test`, and says why; `README.md`'s Development
+section says the same for a contributor. Both carry the related trap — `defineConfig` must come
+from `vitest/config`, because with an explicit `types` list in a tsconfig the
+`/// <reference types="vitest" />` augmentation never loads and the `test` block becomes a
+`TS2769` only `tsc` can see.
+
+- No new tests; this is the harness. **1691 green** through the new gate.
+
 ### 2026-08-30 — moving a registry between machines (survey item 9: export/import)
 
 A registry is hours of syncing, card generation and hand-typed corrections, and until now it

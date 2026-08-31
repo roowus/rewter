@@ -668,10 +668,15 @@ and it is cancelled, so an interrupted client does not leave workers billing to 
 
 ```sh
 pnpm install
+pnpm check     # build → typecheck → lint → test; the gate CI runs, and the one to run locally
 pnpm build     # build all packages
 pnpm test      # run all tests
 pnpm lint      # biome
 ```
+
+Run `pnpm check` before committing rather than `pnpm test`: vitest transpiles with esbuild and
+never invokes `tsc`, so a green test run does not mean the code compiles. CI runs the same
+single command, so local green and CI green mean the same thing.
 
 Requires Node ≥ 22 and pnpm 10.
 

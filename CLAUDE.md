@@ -17,12 +17,22 @@ No behavioural change lands with stale docs. This is enforced, not aspirational.
 
 ```sh
 pnpm install         # bootstrap
+pnpm check           # build && typecheck && lint && test — THE pre-commit gate
 pnpm build           # pnpm -r build (topological)
 pnpm test            # pnpm -r test (vitest)
 pnpm typecheck       # tsc --noEmit everywhere
 pnpm lint            # biome check .
 pnpm lint:fix        # biome check --write .
 ```
+
+**Run `pnpm check` before committing, not `pnpm test`.** vitest transpiles with esbuild and
+never runs `tsc`, so a green test run says nothing about whether the code compiles — this has
+bitten five times (see issue #3). `pnpm check` runs the same four steps CI does, in the same
+order, so local green and CI green mean the same thing.
+
+Related trap: in a vitest config, `defineConfig` must be imported from `vitest/config`, not
+from `vite`. With an explicit `types` list in a tsconfig the `/// <reference types="vitest" />`
+augmentation never loads, and the `test` block becomes `TS2769` — which only `tsc` sees.
 
 ## Conventions
 

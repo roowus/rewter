@@ -16,7 +16,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
+      # The same one command the contributor runs locally (see CLAUDE.md). Kept as a single
+      # step deliberately: four steps here and one script there is how the two drift, and the
+      # whole point of `check` is that local green and CI green mean the same thing.
+      - run: pnpm check
