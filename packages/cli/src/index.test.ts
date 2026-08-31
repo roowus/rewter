@@ -1,6 +1,18 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./index.js";
 
@@ -393,6 +405,123 @@ describe("run — install-service", () => {
     out = [];
     expect(await run(["uninstall-service"], { env })).toBe(0);
     expect(out.join("")).toContain("nothing installed");
+  });
+});
+
+describe("run — install-cli", () => {
+  /**
+   * A scratch `~` with a bin dir on PATH, so nothing lands in the real one —
+   * and a scratch entry point, because the real one under vitest is
+   * `src/index.ts`, and `install-cli` sets the execute bit on its target.
+   * A test that leaves a mode change in `git status` is a test with a bug.
+   */
+  let entryPoint: string;
+
+  function home(onPath = true): { env: NodeJS.ProcessEnv; link: string } {
+    const bin = join(dir, ".local", "bin");
+    return {
+      env: { HOME: dir, PATH: onPath ? `${bin}:/usr/bin` : "/usr/bin" },
+      link: join(bin, "rewter"),
+    };
+  }
+
+  beforeEach(() => {
+    entryPoint = join(dir, "checkout", "index.js");
+    mkdirSync(join(dir, "checkout"), { recursive: true });
+    writeFileSync(entryPoint, "#!/usr/bin/env node\n", { mode: 0o644 });
+  });
+
+  it("links the built entry point and says the word now works", async () => {
+    const { env, link } = home();
+    expect(await run(["install-cli"], { env, entryPoint })).toBe(0);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    // It points at the CLI itself, not at a copy of it.
+    expect(realpathSync(link)).toBe(realpathSync(entryPoint));
+    expect(out.join("")).toContain("works from anywhere");
+  });
+
+  it("prints the export line instead of editing a shell rc when off PATH", async () => {
+    const { env } = home(false);
+    expect(await run(["install-cli"], { env, entryPoint })).toBe(0);
+    expect(out.join("")).toContain("not on your PATH");
+    expect(out.join("")).toContain('export PATH="');
+    expect(out.join("")).not.toContain("works from anywhere");
+  });
+
+  it("writes nothing on --dry-run", async () => {
+    const { env, link } = home();
+    expect(await run(["install-cli", "--dry-run"], { env, entryPoint })).toBe(0);
+    expect(existsSync(link)).toBe(false);
+    expect(out.join("")).toContain("would link");
+  });
+
+  it("is quiet when re-run against an unchanged link", async () => {
+    const { env } = home();
+    await run(["install-cli"], { env, entryPoint });
+    out = [];
+    expect(await run(["install-cli"], { env, entryPoint })).toBe(0);
+    expect(out.join("")).toContain("already current");
+  });
+
+  it("refuses to clobber someone else's `rewter`, and says how to override", async () => {
+    const { env, link } = home();
+    mkdirSync(join(dir, ".local", "bin"), { recursive: true });
+    writeFileSync(link, "#!/bin/sh\necho not us\n");
+
+    expect(await run(["install-cli"], { env, entryPoint })).toBe(1);
+    expect(err.join("")).toContain("--force");
+    expect(readFileSync(link, "utf8")).toContain("not us");
+
+    expect(await run(["install-cli", "--force"], { env, entryPoint })).toBe(0);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  });
+
+  it("honours --dir for a bin directory of the user's choosing", async () => {
+    const { env } = home();
+    const custom = join(dir, "opt", "bin");
+    expect(await run(["install-cli", "--dir", custom], { env, entryPoint })).toBe(0);
+    expect(lstatSync(join(custom, "rewter")).isSymbolicLink()).toBe(true);
+  });
+
+  it("removes it again, and leaves a file that is not ours alone", async () => {
+    const { env, link } = home();
+    await run(["install-cli"], { env, entryPoint });
+
+    out = [];
+    expect(await run(["uninstall-cli"], { env, entryPoint })).toBe(0);
+    expect(existsSync(link)).toBe(false);
+    expect(out.join("")).toContain("removed");
+
+    writeFileSync(link, "#!/bin/sh\n");
+    out = [];
+    expect(await run(["uninstall-cli"], { env, entryPoint })).toBe(0);
+    expect(out.join("")).toContain("not a symlink");
+    expect(existsSync(link)).toBe(true);
+  });
+});
+
+/**
+ * The installed command, executed as a program.
+ *
+ * `run()` tests cannot catch this: they call the exported function directly, so
+ * the entry-point guard they never touch is exactly where invoking through a
+ * symlink used to fail — `process.argv[1]` was the link and `import.meta.url`
+ * the file behind it, the guard compared them as strings, and the CLI exited 0
+ * having printed nothing. Only a real `execFile` through a real symlink sees it.
+ */
+describe("the symlink, executed", () => {
+  const entry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
+
+  it.skipIf(!existsSync(entry))("runs the command when invoked through the link", () => {
+    const link = join(dir, "rewter");
+    symlinkSync(entry, link);
+    const result = execFileSync(link, ["version"], { encoding: "utf8" });
+    expect(result).toContain("rewter 0.1.0");
+  });
+
+  it.skipIf(!existsSync(entry))("runs the same way when invoked directly", () => {
+    const result = execFileSync(process.execPath, [entry, "version"], { encoding: "utf8" });
+    expect(result).toContain("rewter 0.1.0");
   });
 });
 

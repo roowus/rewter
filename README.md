@@ -300,6 +300,14 @@ you exported just now still wins over a file you wrote once. It is separate from
 key sits on disk, a loose mode is reported at boot. Reported, not refused: refusing would
 leave a login daemon dead with its explanation in a log you don't yet know how to read.
 
+`install-cli` is the same shape, one layer down: it symlinks the built entry point into
+`~/.local/bin` so `rewter` is a word you can type anywhere. It links rather than copies, so
+a rebuild needs no reinstall; it sets the execute bit `tsc` does not; and when the directory
+is off `PATH` it prints the `export` line instead of editing your rc, for the same reason
+`install-service` prints `launchctl` lines instead of running them. It also refuses to
+overwrite a `rewter` it did not create without `--force`, in either direction — the checkout
+is not the only thing that might own a four-letter name on your `PATH`.
+
 `install-service` writes the plist with an absolute node and an absolute CLI path, and it
 carries **no environment block at all** — `launchctl print` reads a plist back to anyone who
 asks, which is exactly why the keys live somewhere whose permissions can be checked.
@@ -352,9 +360,31 @@ stay in the file you paste this into.
 }
 ```
 
+Put the command on your `PATH` once, and it works from any directory:
+
+```sh
+pnpm build
+node packages/cli/dist/index.js install-cli
+# linked: ~/.local/bin/rewter
+#   → ~/projects/rewter/packages/cli/dist/index.js
+#
+# `rewter` now works from anywhere. Try: rewter status
+```
+
+That is a **symlink into this checkout**, not a copy — `pnpm build` and the command is
+already the new one, with no reinstall to forget. The flip side is that moving or deleting
+the checkout breaks `rewter`, which is the honest outcome; a copy would keep answering with
+a stale version instead. If the chosen directory is not on your `PATH`, the command says so
+and prints the `export` line to add — it will not edit your shell rc. Use `--dir <path>` to
+choose somewhere else, `--force` to replace a different `rewter` already sitting there, and
+`rewter uninstall-cli` to remove it again (never a file that is not ours).
+
+Every command below assumes that. Without it, they are all
+`node packages/cli/dist/index.js <verb>`.
+
 ```sh
 export ANTHROPIC_API_KEY=… ZAI_API_KEY=…
-node packages/cli/dist/index.js start
+rewter start
 # rewter listening on http://127.0.0.1:20130 — 2 provider(s), 2 model(s)
 ```
 
@@ -432,10 +462,10 @@ carries no credentials and a made-up upstream would only fail later, from inside
 The same thing without a browser, and without a running daemon:
 
 ```sh
-node packages/cli/dist/index.js export-registry ~/rewter-registry.json --note 'before reinstall'
+rewter export-registry ~/rewter-registry.json --note 'before reinstall'
 # wrote /Users/you/rewter-registry.json — 109 models, 12 cards, no keys
 
-node packages/cli/dist/index.js import-registry ~/rewter-registry.json --dry-run
+rewter import-registry ~/rewter-registry.json --dry-run
 # models: 109 added
 # cards: 12 added
 # (dry run — nothing written)
@@ -493,10 +523,10 @@ Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, 
 From another terminal — or a script — ask whether one is up, and ask it to stop:
 
 ```sh
-node packages/cli/dist/index.js status
+rewter status
 # rewter 0.1.0 running on http://127.0.0.1:20130, pid 51234, up 3h — 2 provider(s), 2 model(s)
 
-node packages/cli/dist/index.js stop
+rewter stop
 # stopped (pid 51234)
 ```
 
@@ -515,7 +545,7 @@ ZAI_API_KEY=…
 EOF
 chmod 600 ~/.rewter/env
 
-node packages/cli/dist/index.js install-service
+rewter install-service
 # written: ~/Library/LaunchAgents/com.roowus.rewter.plist
 #
 # put your keys in ~/.rewter/env (chmod 600), then:
@@ -537,8 +567,8 @@ variable exported in your shell still overrides the file for that run.
 When it's launchd starting the daemon, there's no terminal to watch:
 
 ```sh
-node packages/cli/dist/index.js logs -n 50            # both streams, merged by time
-node packages/cli/dist/index.js logs --level warn     # the "why didn't it start" filter
+rewter logs -n 50            # both streams, merged by time
+rewter logs --level warn     # the "why didn't it start" filter
 ```
 
 ### Housekeeping
@@ -547,7 +577,7 @@ Every orchestration appends events, work items and worker runs, plus a workspace
 per tier-2 task. `gc` collects the finished ones:
 
 ```sh
-node packages/cli/dist/index.js gc --older-than 30 --dry-run
+rewter gc --older-than 30 --dry-run
 # would remove 12 task(s) finished before 2026-07-30:
 #   4831 event(s), 39 work item(s), 44 worker run(s), 7 approval(s)
 #   12 workspace director(ies)
@@ -568,7 +598,7 @@ instead — it opens the same database the daemon uses, so it works whether or n
 running:
 
 ```sh
-node packages/cli/dist/index.js sync-models
+rewter sync-models
 # openai: 84 added, 0 updated
 # openrouter: 319 added, 0 updated
 # New models arrive disabled; enable the ones you want in the config or dashboard.
@@ -589,7 +619,7 @@ A card is what the orchestrator will read to decide which model gets which subta
 writes them for the others:
 
 ```sh
-node packages/cli/dist/index.js card zai/glm-5.3 --using anthropic/claude-sonnet-5
+rewter card zai/glm-5.3 --using anthropic/claude-sonnet-5
 # zai/glm-5.3
 #   summary:    Cheap 1M-context workhorse; strong at code, weak at hard math.
 #   best at:    coding, long_context

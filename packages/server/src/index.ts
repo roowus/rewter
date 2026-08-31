@@ -173,6 +173,13 @@ export {
   type PlistOptions,
 } from "./service/launchd.js";
 export {
+  CLI_COMMAND,
+  installCli,
+  uninstallCli,
+  type LinkOptions,
+  type LinkResult,
+} from "./service/linkcli.js";
+export {
   formatLogs,
   logPaths,
   readLogs,

@@ -1160,12 +1160,55 @@ The boot log gets one line (`interrupted by a previous shutdown: 1 task(s), 2 wo
 logs. `rewter status` and `rewter stop` talk to a daemon this process did not start; see
 [The pidfile, and talking to a daemon you did not
 start](#the-pidfile-and-talking-to-a-daemon-you-did-not-start-m8).
+`rewter install-cli` / `uninstall-cli` are what make `rewter` a word rather than a path; see
+[Putting the command on PATH](#putting-the-command-on-path-m8b).
 `rewter install-service` / `uninstall-service`, `rewter logs` and `rewter gc` are the
 launchd side and are described in [Living under launchd](#living-under-launchd-m8).
 `rewter export-registry` / `import-registry` move models and cards between machines as a
 file, without a daemon —
 see [Moving a registry](#moving-a-registry-between-machines-m7j).
 `rewter version` / `rewter help` round it out.
+
+### Putting the command on PATH (M8b)
+
+A monorepo builds to `packages/cli/dist/index.js`, and nothing about that makes `rewter` a
+word the shell knows. `install-cli` closes that gap, and is deliberately the smallest thing
+that can: it **symlinks** the built entry point into `~/.local/bin`.
+
+A symlink rather than a copy, because a copy is correct only until the next `pnpm build`,
+after which it is a stale binary reporting an old version and failing in ways that make no
+sense next to a checkout that looks right. It works because node resolves a symlinked entry
+point to its **real path** before resolving imports, so `@rewter/server` still resolves
+through the workspace's `node_modules`. The same property means deleting or moving the
+checkout breaks the command — the honest outcome, and better than a copy that keeps
+answering.
+
+That real-path resolution has a sharp edge, and it drew blood the first time this ran. The
+module's entry-point guard compared `import.meta.url` against `process.argv[1]` as strings.
+Invoked through the link those differ — `argv[1]` is `~/.local/bin/rewter`, `import.meta.url`
+is the `dist` file behind it — so the guard was false, `main` never ran, and the CLI **exited
+0 having printed nothing**, which is indistinguishable from a command that ran and had nothing
+to say. The guard now compares `realpathSync` of both, which also drops a hand-built
+`file://${path}` that mangled spaces in a checkout path. Note that `run()` unit tests cannot
+see this class of bug at all: they import and call the function, so the guard is the one line
+they never execute. The regression test `execFile`s a real symlink.
+
+The directory is chosen by **`PATH` membership only, never by whether it exists**.
+`~/.local/bin` leads, `/usr/local/bin` follows, and if neither is on `PATH` the answer is
+`~/.local/bin`, created on the spot. Preferring an existing `/usr/local/bin` would trade a
+directory the user owns for one needing `sudo` — the first version did exactly that and died
+on `EACCES`.
+
+Two rules it shares with `install-service`. It **does not edit your shell rc**: off-`PATH`,
+the result carries the `export` line for you to add, because a tool holding your API keys
+does not get to rewrite your dotfiles. And it **clobbers nothing** — a link already pointing
+at this target is `unchanged`, anything else needs `--force`, and `uninstall-cli` removes
+only a symlink that is ours, never a real file someone else put there. `rewter` is a short
+name.
+
+`install-service` is unaffected by any of this: it records `fileURLToPath(import.meta.url)`,
+the resolved `dist` path, so the plist points into the checkout rather than through
+`~/.local/bin` — one less thing between launchd and the code.
 
 ### The pidfile, and talking to a daemon you did not start (M8)
 

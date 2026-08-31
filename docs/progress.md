@@ -45,6 +45,40 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-31 — `rewter` is a word now, not a path (M8b)
+
+Reported the shortest way possible: `rewter` → `zsh: command not found`. Every doc wrote the
+verbs as `rewter <verb>`; the only way to actually run one was
+`node packages/cli/dist/index.js <verb>`. Two things were missing and one was broken.
+
+**`rewter install-cli`**, sibling to `install-service`. Symlinks the built entry point into
+`~/.local/bin` — a link, not a copy, so `pnpm build` needs no reinstall and a moved checkout
+breaks the command honestly instead of leaving a stale binary reporting an old version. It
+sets the execute bit `tsc` does not emit. Off-`PATH` it prints the `export` line rather than
+editing a shell rc, and it refuses to overwrite a `rewter` it did not create without
+`--force`; `uninstall-cli` removes only a symlink of ours, never a real file.
+
+**The entry-point guard was broken for exactly this case.** It compared `import.meta.url`
+against `process.argv[1]` as strings. Through a symlink those differ — node resolves the real
+path for one and not the other — so the guard was false, `main` never ran, and the CLI **exited
+0 having printed nothing**. Now compared as `realpathSync` of both, which also drops a
+hand-built `file://${path}` that mangled spaces. The unit tests could not have caught it: they
+call `run()` directly, so the guard is the one line they never execute. The regression test
+`execFile`s a real symlink, and was checked against the old guard — it fails there and passes
+here.
+
+**Directory choice is by `PATH` membership only, never by existence.** The first version fell
+back to `/usr/local/bin` because it existed, and died on `EACCES` in the test suite — trading
+a directory the user owns for one needing `sudo`. `~/.local/bin` now wins, created if absent.
+
+Verified live: `rewter status` and `rewter version` from `/tmp` and `~`, `install-cli` twice
+(`already current`), and `install-service --dry-run` still recording the resolved `dist` path
+in the plist rather than the symlink.
+
+- Docs: README gains an install step and every invocation drops the `node …` prefix;
+  ARCHITECTURE gains [Putting the command on PATH](ARCHITECTURE.md#putting-the-command-on-path-m8b).
+- 29 new tests (20 `linkcli`, 9 CLI, of which 2 execute a real symlink). **1727 green.**
+
 ### 2026-08-31 — a truncated worker is a failed worker, in both tiers
 
 Found by running rewter rather than by reading it. A three-way `auto/orchestrator` fan-out onto

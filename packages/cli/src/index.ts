@@ -20,7 +20,7 @@
  * server, so they work whether or not the daemon is up. SQLite in WAL mode makes
  * that safe.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,7 @@ import {
   formatStatus,
   formatSyncReport,
   generateCards,
+  installCli,
   installService,
   logPaths,
   openRegistry,
@@ -52,6 +53,7 @@ import {
   startDaemon,
   stopDaemon,
   syncModels,
+  uninstallCli,
   uninstallService,
   vacuum,
 } from "@rewter/server";
@@ -78,6 +80,10 @@ Usage:
   rewter logs [-n <lines>] [--level <level>] [--log-dir <path>]
                                                 what the daemon wrote when
                                                 nobody was watching
+  rewter install-cli [--dir <path>] [--force] [--dry-run]
+                                                symlink this build onto your PATH
+                                                so \`rewter\` works anywhere
+  rewter uninstall-cli [--dir <path>]           remove that symlink
   rewter install-service [--force] [--dry-run] [--config <path>]
                                                 write the launchd plist so it
                                                 starts at login
@@ -107,6 +113,13 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
   /** Injectable so tests can sync against fixtures instead of the live web. */
   fetch?: typeof globalThis.fetch;
+  /**
+   * The file `install-cli` links to. Defaults to this module, which is the
+   * right answer for a real invocation and the wrong one under vitest, where
+   * `import.meta.url` is the TypeScript source — `install-cli` would then
+   * chmod a checked-in file, so the tests point this at a scratch copy.
+   */
+  entryPoint?: string;
 }
 
 export async function run(argv: string[], opts: RunOptions = {}): Promise<number> {
@@ -148,6 +161,12 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
 
     case "logs":
       return logsCommand(argv.slice(1), opts);
+
+    case "install-cli":
+      return installCliCommand(argv.slice(1), opts);
+
+    case "uninstall-cli":
+      return uninstallCliCommand(argv.slice(1), opts);
 
     case "install-service":
       return installCommand(argv.slice(1), opts);
@@ -529,6 +548,77 @@ function logsCommand(args: string[], opts: RunOptions): number {
 }
 
 /**
+ * `rewter install-cli` — make the word work from any directory.
+ *
+ * The target is whatever file is running right now, which is the built entry
+ * point in this checkout. So the link always points at the build you invoked it
+ * from, and there is no path to configure or get wrong.
+ */
+function installCliCommand(args: string[], opts: RunOptions): number {
+  const env = opts.env ?? process.env;
+  const home = env.HOME ?? homedir();
+  const dir = flagValue(args, "--dir");
+
+  const result = installCli({
+    target: entryPoint(opts),
+    home,
+    pathEnv: env.PATH ?? "",
+    ...(dir !== undefined && { dir }),
+    dryRun: args.includes("--dry-run"),
+    force: args.includes("--force"),
+  });
+
+  if (result.action === "exists") {
+    process.stderr.write(
+      `${result.linkPath} already exists and is not ours — inspect it, then re-run with --force\n`,
+    );
+    return 1;
+  }
+
+  const verb =
+    result.action === "dry-run"
+      ? `would link ${result.linkPath}`
+      : result.action === "unchanged"
+        ? `already current: ${result.linkPath}`
+        : `${result.action}: ${result.linkPath}`;
+  const tail =
+    result.next.length === 0
+      ? result.onPath
+        ? "\n`rewter` now works from anywhere. Try: rewter status\n"
+        : "\n"
+      : `\n${result.linkPath.replace(/\/[^/]+$/, "")} is not on your PATH yet:\n${result.next
+          .map((line) => `  ${line}`)
+          .join("\n")}\n`;
+  process.stdout.write(`${verb}\n  → ${result.target}\n${tail}`);
+  return 0;
+}
+
+/** This module's own path, unless a caller (a test) named a different one. */
+function entryPoint(opts: RunOptions): string {
+  return opts.entryPoint ?? fileURLToPath(import.meta.url);
+}
+
+/** `rewter uninstall-cli` — remove the symlink, if it is one of ours. */
+function uninstallCliCommand(args: string[], opts: RunOptions): number {
+  const env = opts.env ?? process.env;
+  const dir = flagValue(args, "--dir");
+  const result = uninstallCli({
+    target: entryPoint(opts),
+    home: env.HOME ?? homedir(),
+    pathEnv: env.PATH ?? "",
+    ...(dir !== undefined && { dir }),
+  });
+
+  if (!result.removed) {
+    const why = result.reason === undefined ? "" : ` — ${result.reason}`;
+    process.stdout.write(`nothing removed at ${result.linkPath}${why}\n`);
+    return 0;
+  }
+  process.stdout.write(`removed ${result.linkPath}\n`);
+  return 0;
+}
+
+/**
  * `rewter install-service` — write the plist, print the two `launchctl` lines.
  *
  * It stops short of loading the job on purpose: `bootstrap` needs the right
@@ -670,7 +760,27 @@ function flagValue(args: string[], flag: string): string | undefined {
   return value === undefined || value.startsWith("--") ? undefined : value;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
+/**
+ * Run only when invoked as the program, not when imported by a test.
+ *
+ * Compared as resolved real paths, because `install-cli` puts a symlink on
+ * `PATH`: through it, `process.argv[1]` is the link (`~/.local/bin/rewter`)
+ * while `import.meta.url` is the file behind it, and a naive comparison is
+ * false — so the CLI would exit 0 having printed nothing, which looks exactly
+ * like a command that ran and had nothing to say. Real paths also avoid
+ * hand-building a `file://` URL, which mangles spaces in a checkout path.
+ */
+function invokedDirectly(): boolean {
+  const argv1 = process.argv[1];
+  if (argv1 === undefined) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
   run(process.argv.slice(2)).then(
     (code) => {
       if (code !== 0) process.exit(code);
