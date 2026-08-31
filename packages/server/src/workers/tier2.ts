@@ -192,6 +192,31 @@ export async function runTier2Worker(
       return done("failed", { summary: `failed: ${message}`, fullText: null, error: message });
     }
 
+    // Truncation ends the run here rather than feeding the loop a half-turn.
+    // `length` means the ceiling cut the model off mid-sentence, and a tool call
+    // caught by it arrives with unclosed JSON — `parseWorkerArgs` would reject
+    // it, the loop would answer "malformed arguments", and the model would try
+    // the same too-long call again until the turn budget ran out. The run then
+    // dies as "no finish_report after 16 turns", which names the wrong cause:
+    // the ceiling is the cause, and only the ceiling is actionable. Same rule as
+    // tier 1, and the same reason — see `runTier1Worker`.
+    if (response.finishReason === "length") {
+      if (ctx.signal.aborted) return closeCancelled(ctx, run, done);
+      const limit = opts.maxTokens ?? ctx.maxTokens ?? DEFAULT_MAX_TOKENS;
+      const partial = (response.message.content ?? "").trim();
+      if (partial !== "") lastProse = partial;
+      const error = `truncated: turn ${turn + 1} hit the ${limit}-token output limit. Ask for less per turn, raise the limit, or use a model that doesn't emit reasoning tokens.`;
+      ctx.repos.transitionWorkerRun(run.id, "failed", {
+        error,
+        ...(lastProse === "" ? {} : { resultText: lastProse }),
+      });
+      return done("failed", {
+        summary: `failed: ${error}`,
+        fullText: lastProse === "" ? null : lastProse,
+        error,
+      });
+    }
+
     const calls = response.message.toolCalls ?? [];
     messages.push({
       role: "assistant",

@@ -232,6 +232,63 @@ describe("runTier1Worker", () => {
     expect(outcome.status).toBe("failed");
     expect(outcome.error).toBe("the model returned an error");
   });
+
+  it("fails a worker cut off at the token ceiling, and says the ceiling is why", async () => {
+    // Observed live: a reasoning model spent the whole 4k budget thinking and
+    // emitted no visible text. Reported as a success it reads as a worker that
+    // returned nothing for no reason, and the initiator's only move is to guess
+    // — it re-spawned all three workers unchanged and paid twice for the same
+    // empty results. The number has to be in the message: "ask for less" is not
+    // actionable without knowing less than what.
+    const router = stubRouter(async () => reply("", "length"));
+
+    const outcome = await runTier1Worker(makeContext(router));
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("truncated");
+    expect(outcome.error).toContain("4000-token");
+    expect(outcome.error).toContain("no visible text");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.status).toBe("failed");
+  });
+
+  it("keeps the half-written text of a truncated worker rather than discarding it", async () => {
+    // Half an answer beats none: the initiator can still read it with
+    // `get_result` and decide whether it needs the rest.
+    const router = stubRouter(async () => reply("The keyboard has a satisfying", "length"));
+
+    const outcome = await runTier1Worker(makeContext(router));
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.fullText).toBe("The keyboard has a satisfying");
+    expect(outcome.error).toContain("29 chars");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.resultText).toBe(
+      "The keyboard has a satisfying",
+    );
+  });
+
+  it("reports the ceiling actually used, not the default, when one was passed", async () => {
+    const router = stubRouter(async () => reply("", "length"));
+    const ctx = makeContext(router);
+
+    const outcome = await runTier1Worker({ ...ctx, maxTokens: 250 });
+
+    expect(outcome.error).toContain("250-token");
+    expect(outcome.error).not.toContain("4000");
+  });
+
+  it("counts a truncation during an abort as cancelled, not failed", async () => {
+    // Same rule as a throw: what the user did outranks what the model did.
+    const controller = new AbortController();
+    const router = stubRouter(async () => {
+      controller.abort();
+      return reply("partial", "length");
+    });
+
+    const outcome = await runTier1Worker(makeContext(router, { signal: controller.signal }));
+
+    expect(outcome.status).toBe("cancelled");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.status).toBe("cancelled");
+  });
 });
 
 describe("splitSummary", () => {

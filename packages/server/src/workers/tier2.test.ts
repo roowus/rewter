@@ -574,6 +574,72 @@ describe("provider failure and cancellation", () => {
     expect(outcome.error).toContain("context length exceeded");
   });
 
+  it("stops at a truncated turn instead of burning the turn budget on it", async () => {
+    // A tool call cut off at the ceiling arrives with unclosed JSON, which the
+    // loop answers as "malformed arguments" — so the model retries the same
+    // too-long call until the turns run out and the run dies naming the turn
+    // budget. The ceiling is the cause and the only actionable part, so the run
+    // ends here, on the first truncated turn, saying so.
+    const truncated: ChatResponse = {
+      message: { role: "assistant", content: "I'll start by reading the fi" },
+      finishReason: "length",
+      usage: { inputTokens: 10, outputTokens: 4000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    };
+    const router = scriptedRouter([truncated, report("success", "unreachable")]);
+
+    const outcome = await runTier2Worker(makeContext(router), options());
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("truncated");
+    expect(outcome.error).toContain("turn 1");
+    expect(outcome.error).toContain("4000-token");
+    // One turn, not sixteen: the script's second reply is never reached.
+    expect(router.turns).toBe(1);
+    // Whatever it managed to say is kept — the initiator can still read it.
+    expect(outcome.fullText).toBe("I'll start by reading the fi");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.status).toBe("failed");
+  });
+
+  it("reports the ceiling actually in force, not the default", async () => {
+    const router = scriptedRouter([
+      {
+        message: { role: "assistant", content: "" },
+        finishReason: "length",
+        usage: { inputTokens: 10, outputTokens: 512, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      },
+    ]);
+
+    const outcome = await runTier2Worker(makeContext(router), options({ maxTokens: 512 }));
+
+    expect(outcome.error).toContain("512-token");
+    expect(outcome.error).not.toContain("4000");
+    expect(outcome.fullText).toBeNull();
+  });
+
+  it("counts a truncation during an abort as cancelled, not failed", async () => {
+    // Same rule as a throw: what the user did outranks what the model did.
+    const controller = new AbortController();
+    const router: WorkerRouter = {
+      async complete() {
+        controller.abort();
+        return {
+          message: { role: "assistant", content: "partial" },
+          finishReason: "length",
+          usage: { inputTokens: 10, outputTokens: 4000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      },
+      resolve: () => ({ model: model(MODEL_ID) }),
+    };
+
+    const outcome = await runTier2Worker(
+      makeContext(router, { signal: controller.signal }),
+      options(),
+    );
+
+    expect(outcome.status).toBe("cancelled");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.status).toBe("cancelled");
+  });
+
   it("closes the run when cancelled before it starts", async () => {
     const controller = new AbortController();
     controller.abort();

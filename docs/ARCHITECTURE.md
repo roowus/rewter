@@ -526,11 +526,26 @@ contains "SUMMARY:" would otherwise hand back a line of its own input. Bold labe
 falls back to the head of the body; an empty reply still yields something readable, since the
 initiator has to be able to read it.
 
-Every exit path — pre-aborted, thrown, error-finish, success, mid-flight abort — writes the
-run lifecycle. `WORKER_RUN_TRANSITIONS` has no `created → succeeded` edge, so a path that
-forgets `streaming` throws at the repo write and takes the whole task down. A throw *during*
-an abort counts as cancelled, not failed: the two mean different things to the user, and the
-signal is the only thing that can tell them apart.
+Every exit path — pre-aborted, thrown, error-finish, truncated, success, mid-flight abort —
+writes the run lifecycle. `WORKER_RUN_TRANSITIONS` has no `created → succeeded` edge, so a
+path that forgets `streaming` throws at the repo write and takes the whole task down. A throw
+*during* an abort counts as cancelled, not failed: the two mean different things to the user,
+and the signal is the only thing that can tell them apart.
+
+**Truncation is a failure, not a short success.** `finishReason: "length"` means the ceiling
+cut the model off — and a reasoning model cut off mid-thought has spent its whole budget
+before writing a single visible character, so the text can be empty while the call cost full
+price. Reported as succeeded, that reaches the initiator as a worker that inexplicably
+returned nothing, and its only move is to guess. Observed live on a three-way fan-out: all
+three workers hit exactly 4,000 output tokens, all three were reported succeeded-and-empty,
+and the initiator wrote *"Workers returned empty; retrying the three blurb requests on the
+same free tier-1 model"* and re-spawned all three unchanged — paying twice for the same
+result, because nothing in the outcome said *why* they were empty. The error now names the
+ceiling actually in force (`ctx.maxTokens ?? 4_000`, not the constant) and whether any visible
+text arrived, since "ask for less" is not actionable without knowing less than what. Partial
+text is kept in both the outcome and `resultText`: half an answer beats none, and the
+initiator can read it with `get_result`. The same rule holds inside a tier-2 turn — see
+[the agent loop](#the-agent-loop-as-built-m6d).
 
 ### Progress-as-text
 
@@ -1459,12 +1474,23 @@ initiator — a model — and it will be pasted into a synthesis prompt. A `fail
 the run but still stores the report text; `partial` succeeds with a `partial:`-prefixed
 summary, since two findings out of three are worth more to the initiator than a failure.
 
+**A truncated turn ends the run, rather than feeding the loop half of one.** Tier 1's rule
+applies here with an extra edge: a tool call caught by the ceiling arrives with unclosed JSON,
+so `parseWorkerArgs` rejects it, the loop answers "malformed arguments", and the model — being
+told its *syntax* was wrong when its *length* was — tries the same too-long call again until
+the turn budget is gone. The run then dies as `no finish_report after 16 turns`, which names
+the wrong cause and sends the reader to raise `maxTurns`, the one knob that cannot help. So
+`finishReason: "length"` fails the run on the spot, naming the turn number and the ceiling
+actually in force, and keeps whatever prose arrived as the result text. As everywhere else, a
+truncation *during* an abort is cancelled rather than failed: what the user did outranks what
+the model did.
+
 Lifecycle is unchanged from tier 1 and non-negotiable: `created → streaming → succeeded |
 failed | cancelled`, with no shortcut edge in `WORKER_RUN_TRANSITIONS`. The loop's tests walk
 **every** exit against a real in-memory database — report success/failure/partial, prose
-fallback, turn exhaustion, provider throw, `finishReason: "error"`, pre-abort and mid-flight
-abort — because a path that returns without transitioning throws at the repo write in
-production rather than in a test. The denial tests count approval cards off the **event log**
+fallback, turn exhaustion, provider throw, `finishReason: "error"`, truncation, pre-abort and
+mid-flight abort — because a path that returns without transitioning throws at the repo write
+in production rather than in a test. The denial tests count approval cards off the **event log**
 rather than the pending list: by the time an assertion runs every card has been resolved, and
 counting is the only way to see the difference between asking once and asking twice.
 

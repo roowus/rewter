@@ -137,6 +137,37 @@ export const runTier1Worker: WorkerRunner = async (ctx) => {
   }
 
   const fullText = response.message.content ?? "";
+
+  // Truncation is a *failure*, not a short success. `finishReason: "length"`
+  // means the model was cut off at the token ceiling — and a reasoning model cut
+  // off mid-thought has spent its whole budget before writing a single visible
+  // character, so the text can be empty while the call cost full price. Reported
+  // as "succeeded", that lands on the initiator as a worker that inexplicably
+  // returned nothing, and the only move it has is to guess: observed live, one
+  // initiator re-spawned all three workers unchanged, paid twice, and got the
+  // same empty results, because nothing in the outcome said *why* they were
+  // empty. Saying "truncated at the limit" instead makes the next move obvious
+  // — a smaller ask, a bigger ceiling, or a model that doesn't think in the
+  // open. The text is still kept: half an answer beats none, and the initiator
+  // can read it with `get_result`.
+  if (response.finishReason === "length") {
+    const limit = ctx.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const wrote = fullText.trim() === "" ? "no visible text" : `${fullText.trim().length} chars`;
+    const message = `truncated: hit the ${limit}-token output limit (${wrote}). Ask for less, raise the limit, or use a model that doesn't emit reasoning tokens.`;
+    ctx.repos.transitionWorkerRun(run.id, ctx.signal.aborted ? "cancelled" : "failed", {
+      error: message,
+      resultText: fullText === "" ? null : fullText,
+    });
+    return {
+      status: ctx.signal.aborted ? "cancelled" : "failed",
+      summary: `failed: ${message}`,
+      fullText: fullText === "" ? null : fullText,
+      error: message,
+      workerRunId: run.id,
+      durationMs: ctx.clock() - startedAt,
+    };
+  }
+
   const { summary, body } = splitSummary(fullText);
   ctx.repos.transitionWorkerRun(run.id, "succeeded", { resultText: fullText });
 

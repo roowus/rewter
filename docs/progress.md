@@ -45,6 +45,42 @@ Newest first. Every milestone/behavioural change gets an entry in the same commi
 
 ## Log
 
+### 2026-08-31 — a truncated worker is a failed worker, in both tiers
+
+Found by running rewter rather than by reading it. A three-way `auto/orchestrator` fan-out onto
+a free local model came back with three workers reported **succeeded** and three empty results:
+every one had hit exactly 4,000 output tokens — `DEFAULT_MAX_TOKENS` — and spent the entire
+budget on reasoning tokens before emitting a visible character. The initiator's next move is in
+the event log: `plan_note: "Workers returned empty; retrying the three blurb requests on the
+same free tier-1 model."` It re-spawned all three unchanged and paid twice for the same
+failure, because nothing in the outcome said *why* they were empty.
+
+**`finishReason: "length"` now fails the run.** Not because truncation is catastrophic, but
+because "succeeded with nothing to say" is unactionable and "truncated at the ceiling" is: the
+next move is a smaller ask, a bigger ceiling, or a model that doesn't think in the open. The
+message names the ceiling **actually in force** (`ctx.maxTokens ?? 4_000`, not the constant —
+a test pins that, since reporting the default when a caller passed 250 sends the reader to
+change the wrong number) and says whether any visible text arrived, because "ask for less" is
+not actionable without knowing less than what.
+
+**Partial text is kept**, in the outcome and in `resultText` both. Half an answer beats none
+and the initiator can still read it with `get_result`; discarding it would bill the user for a
+call and then throw the product away.
+
+**Tier 2 had the same defect wearing a disguise.** A truncated turn there is not merely a short
+one: a tool call caught by the ceiling arrives with unclosed JSON, `parseWorkerArgs` rejects
+it, and the loop replies "malformed arguments" — telling the model its *syntax* was wrong when
+its *length* was. It retries the same too-long call until the turn budget is gone and the run
+dies as `no finish_report after 16 turns`, which points the reader at `maxTurns`, the one knob
+that cannot help. The loop now ends on the first truncated turn, naming the turn number and the
+ceiling. A test asserts the router is called exactly **once**, because "it eventually failed"
+and "it failed without burning fifteen more turns" are different products.
+
+Both tiers keep the existing precedence rule: a truncation *during* an abort is `cancelled`,
+not `failed` — what the user did outranks what the model did.
+
+- 7 new tests (4 tier 1, 3 tier 2). **1698 green.**
+
 ### 2026-08-31 — one gate, run the same way locally and in CI (closes #3)
 
 `pnpm check` = `build && typecheck && lint && test`, and CI now runs **that one command**
