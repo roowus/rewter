@@ -74,6 +74,25 @@ describe("installCli", () => {
     expect(again.action).toBe("unchanged");
   });
 
+  it("re-arms the execute bit a rebuild dropped, rather than calling it unchanged", () => {
+    // The state after `pnpm build`: link still correct, target back to 644 —
+    // installed and broken, which is `permission denied` on the word we told
+    // the user would work. `unchanged` must not mean `did nothing`.
+    installCli(opts());
+    chmodSync(target, 0o644);
+
+    expect(installCli(opts()).action).toBe("unchanged");
+    expect(lstatSync(target).mode & 0o111).toBe(0o111);
+  });
+
+  it("does not touch the mode of an unchanged link on a dry run", () => {
+    installCli(opts());
+    chmodSync(target, 0o644);
+
+    expect(installCli(opts({ dryRun: true })).action).toBe("unchanged");
+    expect(lstatSync(target).mode & 0o111).toBe(0);
+  });
+
   it("refuses to clobber a link pointing somewhere else without --force", () => {
     const other = join(root, "someone-elses-rewter");
     writeFileSync(other, "");

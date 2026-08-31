@@ -518,6 +518,13 @@ describe("run — install-cli", () => {
 describe("the symlink, executed", () => {
   const entry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 
+  it.skipIf(!existsSync(entry))("is left executable by the build", () => {
+    // `tsc` emits 644, so `build` chmods. Without that, `pnpm build` breaks an
+    // already-installed `rewter` with `permission denied` — which is how this
+    // was found: by the user, after a rebuild, on a command that had worked.
+    expect(lstatSync(entry).mode & 0o111).toBe(0o111);
+  });
+
   it.skipIf(!existsSync(entry))("runs the command when invoked through the link", () => {
     const link = join(dir, "rewter");
     symlinkSync(entry, link);

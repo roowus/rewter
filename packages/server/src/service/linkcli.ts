@@ -86,6 +86,13 @@ export interface LinkResult {
  * The target is made executable if it is not already: `tsc` emits mode 644, and
  * a symlink to a non-executable file fails with a permission error that blames
  * the link rather than the shebang'd file behind it.
+ *
+ * That includes the `unchanged` path, which is not a shortcut for "do nothing".
+ * A rebuild rewrites the target at 644 and leaves the link pointing at it, so
+ * the state where the command is installed and broken is reached by running
+ * `pnpm build` — the single most likely thing to happen between installs. The
+ * `build` script chmods too; this is the belt to that suspenders, because the
+ * failure is `permission denied` on a word the user was told would work.
  */
 export function installCli(opts: LinkOptions): LinkResult {
   const dir = resolve(expandHome(opts.dir ?? chooseDir(opts.home, opts.pathEnv), opts.home));
@@ -96,6 +103,7 @@ export function installCli(opts: LinkOptions): LinkResult {
 
   const existing = readLink(linkPath);
   if (existing === opts.target) {
+    if (opts.dryRun !== true) ensureExecutable(opts.target);
     return { linkPath, target: opts.target, action: "unchanged", onPath, next };
   }
 

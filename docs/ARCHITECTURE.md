@@ -1201,6 +1201,18 @@ was green locally and red in CI for precisely that reason. Setting the bit is `i
 job and has its own test in `linkcli.test.ts`; the guard is this test's job, and it should not
 fail for an unrelated reason.
 
+That mode is a live concern, not just a test detail, and it produced the one user-visible
+regression this feature shipped: **`tsc` rewrites `dist/index.js` at 644 on every build**, so
+`pnpm build` turned an installed `rewter` into `zsh: permission denied`. Two defences, because
+the symptom names the command rather than the cause and is worth preventing outright:
+
+1. `packages/cli`'s `build` script is `tsc … && chmod +x dist/index.js`, so a build never
+   leaves a non-executable entry point. A CLI test asserts the built artifact's mode.
+2. `installCli`'s `unchanged` branch still calls `ensureExecutable` (except on a dry run).
+   `unchanged` describes the *link*, and must not be read as "did nothing" — re-running
+   `install-cli` is what a user reaches for when the command stops working, so it has to
+   actually repair that state rather than congratulate itself on the symlink.
+
 The directory is chosen by **`PATH` membership only, never by whether it exists**.
 `~/.local/bin` leads, `/usr/local/bin` follows, and if neither is on `PATH` the answer is
 `~/.local/bin`, created on the spot. Preferring an existing `/usr/local/bin` would trade a

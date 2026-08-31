@@ -379,6 +379,9 @@ and prints the `export` line to add — it will not edit your shell rc. Use `--d
 choose somewhere else, `--force` to replace a different `rewter` already sitting there, and
 `rewter uninstall-cli` to remove it again (never a file that is not ours).
 
+If `rewter` ever answers `permission denied`, re-run `rewter install-cli` — it re-arms the
+execute bit `tsc` does not emit. `pnpm build` sets it too, so you should not need to.
+
 Every command below assumes that. Without it, they are all
 `node packages/cli/dist/index.js <verb>`.
 

@@ -84,8 +84,18 @@ in the plist rather than the symlink.
 
 - Docs: README gains an install step and every invocation drops the `node …` prefix;
   ARCHITECTURE gains [Putting the command on PATH](ARCHITECTURE.md#putting-the-command-on-path-m8b).
-- 29 new tests (20 `linkcli`, 9 CLI, of which 2 spawn a real process through a symlink).
-  **1727 green**, on a 644 `dist` as well as a 755 one.
+- 32 new tests (22 `linkcli`, 10 CLI, of which 2 spawn a real process through a symlink).
+  **1730 green**, on a 644 `dist` as well as a 755 one.
+
+**Follow-up, same day — `pnpm build` broke the installed command.** The user hit
+`zsh: permission denied: rewter`. `tsc` rewrites `dist/index.js` at 644 on every build, and
+the link keeps pointing at it, so the command was installed and broken; `install-cli` then
+answered `already current` and fixed nothing, because the `unchanged` branch returned before
+touching the mode. `unchanged` describes the *link*, and re-running `install-cli` is exactly
+what a user does when the command stops working — so it now re-arms the execute bit (not on a
+dry run), and `packages/cli`'s `build` script chmods, so the broken state is not reached in
+the first place. Both are tested, the second by asserting the built artifact's mode. Verified
+by `chmod 644` → `permission denied` → `install-cli` → works, and by a clean rebuild from 644.
 
 ### 2026-08-31 — a truncated worker is a failed worker, in both tiers
 
