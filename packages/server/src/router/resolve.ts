@@ -53,22 +53,55 @@ export interface Registry {
 }
 
 /**
- * Is this the orchestrator pseudo-model? Accepts `auto`, `auto/orchestrator`,
- * and `auto/orchestrator:<modelId>` (pinning the initiator).
+ * The full orchestrator grammar: `auto` or `auto/orchestrator`, optionally
+ * `@<project-slug>` (scoping the task to a project), optionally `:<modelId>`
+ * (pinning the initiator) — in that order, because slugs never contain `:` but
+ * pins are model ids that may contain anything.
+ *
+ * The slug charset here is looser than `ProjectSlugSchema` on purpose: this
+ * parser only decides *routing* ("is this an orchestrator request, and what did
+ * the client name?"). Whether the named project exists — or whether the slug
+ * was even well-formed — is answered by the lookup, so `auto@Bad_Slug` becomes
+ * "no such project" rather than falling through to `unknown model`, which would
+ * point the user at the registry when the typo is in the suffix.
  */
-export function isOrchestratorModel(requested: string): boolean {
-  return (
-    requested === "auto" ||
-    requested === ORCHESTRATOR_MODEL ||
-    requested.startsWith(`${ORCHESTRATOR_MODEL}:`)
-  );
+const ORCHESTRATOR_FORM = /^auto(?:\/orchestrator)?(?:@([^:]+))?(?::(.*))?$/;
+
+interface OrchestratorRequestParts {
+  /** Project slug from `@<slug>`, if any. */
+  slug: string | null;
+  /** Pinned initiator from `:<modelId>`, if any. */
+  pin: string | null;
 }
 
-/** The pinned initiator from `auto/orchestrator:<modelId>`, if any. */
+function parseOrchestratorModel(requested: string): OrchestratorRequestParts | null {
+  const m = ORCHESTRATOR_FORM.exec(requested);
+  if (m === null) return null;
+  const slug = m[1];
+  const pin = m[2];
+  return {
+    slug: slug === undefined || slug === "" ? null : slug,
+    // A bare trailing `:` is tolerated as "no pin", matching the old parser.
+    pin: pin === undefined || pin === "" ? null : pin,
+  };
+}
+
+/**
+ * Is this the orchestrator pseudo-model? Accepts `auto`, `auto/orchestrator`,
+ * and either with `@<project-slug>` and/or `:<modelId>` suffixes.
+ */
+export function isOrchestratorModel(requested: string): boolean {
+  return parseOrchestratorModel(requested) !== null;
+}
+
+/** The pinned initiator from `auto/orchestrator[@slug]:<modelId>`, if any. */
 export function pinnedInitiator(requested: string): string | null {
-  if (!requested.startsWith(`${ORCHESTRATOR_MODEL}:`)) return null;
-  const pinned = requested.slice(ORCHESTRATOR_MODEL.length + 1);
-  return pinned === "" ? null : pinned;
+  return parseOrchestratorModel(requested)?.pin ?? null;
+}
+
+/** The project slug from `auto[/orchestrator]@<slug>[:pin]`, if any. */
+export function projectSlug(requested: string): string | null {
+  return parseOrchestratorModel(requested)?.slug ?? null;
 }
 
 export function resolveModel(registry: Registry, requested: string): Resolution {

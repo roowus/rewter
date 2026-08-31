@@ -116,6 +116,7 @@ describe("GET /internal/costs", () => {
       status: "running",
       title: "t",
       initiatorModelId: SONNET as never,
+      projectId: null,
       conversationFingerprint: "fp",
       settings: { autoApprove: false, maxSpendUsd: null, workspaceDir: null, concurrency: 4 },
       resultSummary: null,

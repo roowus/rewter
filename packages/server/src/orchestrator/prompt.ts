@@ -16,7 +16,7 @@
  * regression this project can have, so changes are deliberate and visible in a
  * diff rather than incidental.
  */
-import type { ChatMessage } from "@rewter/shared";
+import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
 export const ORCHESTRATOR_PROMPT_VERSION = 3;
@@ -141,6 +141,39 @@ export interface InitiatorPromptOptions {
   taskId: string;
   /** Models available to spawn, for the "cannot name what isn't listed" rule. */
   dashboardUrl?: string | undefined;
+  /**
+   * The project this task runs under, if any. Rendered *after* the digest — the
+   * project block is per-task, and putting it in the cacheable region would
+   * invalidate the prompt cache for every other project's tasks.
+   */
+  project?: Project | undefined;
+}
+
+/**
+ * The project section of the task header: what the project is, what resources
+ * it owns, and the owner's model preferences.
+ *
+ * Preferences are hints, not rules — that is locked decision 4 (advise-only),
+ * and the wording here is what implements it. Policy (caps, auto-approve) is
+ * deliberately absent: it is enforced by the engine, and telling the model
+ * about an enforcement it cannot influence only invites it to narrate about it.
+ */
+export function renderProjectBlock(project: Project): string {
+  const lines = [`Project: ${project.name} (${project.slug})`];
+  if (project.description !== "") lines.push(project.description);
+  if (project.resources.length > 0) {
+    lines.push("", "Project resources:");
+    for (const r of project.resources) {
+      lines.push(`- [${r.kind}] ${r.location}${r.note === null ? "" : ` — ${r.note}`}`);
+    }
+  }
+  const { prefer, avoid } = project.modelPrefs;
+  if (prefer.length > 0 || avoid.length > 0) {
+    lines.push("", "Model preferences for this project (hints, not rules):");
+    if (prefer.length > 0) lines.push(`- prefer: ${prefer.join(", ")}`);
+    if (avoid.length > 0) lines.push(`- avoid: ${avoid.join(", ")}`);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -167,6 +200,7 @@ export function buildInitiatorMessages(opts: InitiatorPromptOptions): ChatMessag
     "",
     `Task id: ${opts.taskId}`,
     ...(opts.dashboardUrl === undefined ? [] : [`Dashboard: ${opts.dashboardUrl}`]),
+    ...(opts.project === undefined ? [] : ["", renderProjectBlock(opts.project)]),
     "",
     "The conversation below is the user's request. Begin.",
   ].join("\n");

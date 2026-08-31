@@ -19,9 +19,12 @@
 import {
   type ChatMessage,
   ModelIdSchema,
+  type Project,
+  ProjectSchema,
   type StreamChunk,
   type TaskId,
   newCostRecordId,
+  newProjectId,
   newTaskId,
   newWorkerRunId,
 } from "@rewter/shared";
@@ -161,6 +164,7 @@ async function drive(
     requestedModel?: string;
     settings?: Record<string, unknown>;
     signal?: AbortSignal;
+    project?: Project;
   } = {},
 ): Promise<{ feed: string; chunks: StreamChunk[] }> {
   const chunks: StreamChunk[] = [];
@@ -169,6 +173,7 @@ async function drive(
     requestedModel: over.requestedModel ?? "auto/orchestrator",
     settings: over.settings,
     signal: over.signal,
+    ...(over.project !== undefined && { project: over.project }),
   })) {
     chunks.push(c);
   }
@@ -1075,6 +1080,94 @@ describe("the task row", () => {
     expect(task?.title).toBe("follow-up");
     // The prefix is what a follow-up re-POST will still match.
     expect(task?.conversationFingerprint).toBe(fingerprintConversation(conversation));
+  });
+});
+
+describe("projects", () => {
+  function makeProject(over: Record<string, unknown> = {}): Project {
+    return ProjectSchema.parse({
+      id: newProjectId(),
+      slug: "rewter",
+      name: "Rewter",
+      createdAt: tick,
+      updatedAt: tick,
+      ...over,
+    });
+  }
+  const finishTurn = (): StreamChunk[] => turn({ name: "finish", args: { answer: "ok" } });
+
+  it("lets the project pin the initiator, below a request pin, above the default", () => {
+    const project = makeProject({
+      modelPrefs: { initiatorPin: SMALL, prefer: [], avoid: [] },
+    });
+    const { orchestrator } = makeHarness([], { defaultInitiatorModel: BIG });
+    // Project pin beats the configured default: standing configuration.
+    expect(orchestrator.pickInitiator("auto", project)).toBe(SMALL);
+    // Request pin beats the project pin: this request saying otherwise.
+    expect(orchestrator.pickInitiator(`auto:${BIG}`, project)).toBe(BIG);
+    // No project — nothing changes.
+    expect(orchestrator.pickInitiator("auto")).toBe(BIG);
+  });
+
+  it("fails loudly when the project pins a model the registry no longer has", () => {
+    const project = makeProject({
+      modelPrefs: { initiatorPin: "gone/removed-model", prefer: [], avoid: [] },
+    });
+    expect(() => makeHarness([]).orchestrator.pickInitiator("auto", project)).toThrow(
+      /unknown model/,
+    );
+  });
+
+  it("folds policy into the task row once, tighten-only", async () => {
+    const project = makeProject({
+      policy: { autoApprove: false, maxSpendUsd: 2, allowedTools: null, allowedHarnesses: null },
+    });
+    const h = makeHarness([finishTurn()]);
+    // The request asks for looser settings than the project allows.
+    await drive(h, { project, settings: { autoApprove: true, maxSpendUsd: 10 } });
+
+    const task = only(tasks());
+    // The row records the *folded* result — every later reader sees it pre-folded.
+    expect(task?.settings.autoApprove).toBe(false);
+    expect(task?.settings.maxSpendUsd).toBe(2);
+    expect(task?.projectId).toBe(project.id);
+  });
+
+  it("defaults the workspace to the project's primary dir, unless the task named one", async () => {
+    const project = makeProject({
+      resources: [
+        { kind: "url", location: "https://example.com", note: null },
+        { kind: "dir", location: "/tmp/rewter-project", note: null },
+      ],
+    });
+    const h = makeHarness([finishTurn()]);
+    await drive(h, { project });
+    expect(only(tasks())?.settings.workspaceDir).toBe("/tmp/rewter-project");
+
+    // An explicit workspaceDir is narrower, not looser — the fold keeps it.
+    const h2 = makeHarness([finishTurn()]);
+    await drive(h2, { project, settings: { workspaceDir: "/tmp/scratch" } });
+    const named = tasks().find((t) => t?.settings.workspaceDir === "/tmp/scratch");
+    expect(named).toBeDefined();
+  });
+
+  it("renders the project block into the initiator's system prompt", async () => {
+    const project = makeProject({ description: "the router itself" });
+    const h = makeHarness([finishTurn()]);
+    await drive(h, { project });
+
+    const system = h.adapter.requests[0]?.messages[0]?.content ?? "";
+    expect(system).toContain("Project: Rewter (rewter)");
+    expect(system).toContain("the router itself");
+  });
+
+  it("leaves a project-less task exactly as phase 1", async () => {
+    const h = makeHarness([finishTurn()]);
+    await drive(h, { settings: { autoApprove: true } });
+    const task = only(tasks());
+    expect(task?.projectId).toBeNull();
+    // No project fold: the request's own settings stand.
+    expect(task?.settings.autoApprove).toBe(true);
   });
 });
 

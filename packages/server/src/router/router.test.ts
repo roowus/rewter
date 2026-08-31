@@ -54,6 +54,7 @@ function makeTask(): Task {
     status: "pending",
     title: "cost attribution",
     initiatorModelId: ModelIdSchema.parse(MODEL_ID),
+    projectId: null,
     conversationFingerprint: "fp_test",
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

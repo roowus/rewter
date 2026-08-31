@@ -16,6 +16,7 @@ export const ID_PREFIXES = {
   provider: "prv",
   model: "mdl",
   cost: "cst",
+  project: "proj",
 } as const;
 
 type Prefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
@@ -34,6 +35,7 @@ export const ApprovalIdSchema = idSchema(ID_PREFIXES.approval);
 export const EventIdSchema = idSchema(ID_PREFIXES.event);
 export const ProviderIdSchema = idSchema(ID_PREFIXES.provider);
 export const CostRecordIdSchema = idSchema(ID_PREFIXES.cost);
+export const ProjectIdSchema = idSchema(ID_PREFIXES.project);
 
 export type TaskId = z.infer<typeof TaskIdSchema>;
 export type WorkItemId = z.infer<typeof WorkItemIdSchema>;
@@ -42,6 +44,7 @@ export type ApprovalId = z.infer<typeof ApprovalIdSchema>;
 export type EventId = z.infer<typeof EventIdSchema>;
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 export type CostRecordId = z.infer<typeof CostRecordIdSchema>;
+export type ProjectId = z.infer<typeof ProjectIdSchema>;
 
 function makeId<T>(prefix: Prefix, schema: { parse: (v: string) => T }): () => T {
   return () => schema.parse(`${prefix}_${alphabet()}`);
@@ -54,6 +57,7 @@ export const newApprovalId = makeId(ID_PREFIXES.approval, ApprovalIdSchema);
 export const newEventId = makeId(ID_PREFIXES.event, EventIdSchema);
 export const newProviderId = makeId(ID_PREFIXES.provider, ProviderIdSchema);
 export const newCostRecordId = makeId(ID_PREFIXES.cost, CostRecordIdSchema);
+export const newProjectId = makeId(ID_PREFIXES.project, ProjectIdSchema);
 
 /** Model IDs are human-authored slugs like `anthropic/claude-sonnet-5`, not generated. */
 export const ModelIdSchema = z
@@ -62,3 +66,21 @@ export const ModelIdSchema = z
   .regex(/^[a-z0-9][a-z0-9._:/-]*$/i)
   .brand("modelId");
 export type ModelId = z.infer<typeof ModelIdSchema>;
+
+/**
+ * Project slugs are human-chosen handles ("clarity", "portfolio") that travel
+ * everywhere the project is named from outside: the `x-rewter-project` header,
+ * the `auto/orchestrator@<slug>` model suffix, and the on-disk skills directory
+ * `~/.rewter/skills/<slug>/`. The charset is the intersection of what all three
+ * accept safely — lowercase, digits, single hyphens; no slashes (it's a dirname),
+ * no `@` or `:` (they delimit the model suffix), bounded so it fits on one
+ * digest line. Distinct from the `proj_…` id, which is the stable DB key: slugs
+ * are for humans and may be renamed; ids never change.
+ */
+export const ProjectSlugSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+  .brand("projectSlug");
+export type ProjectSlug = z.infer<typeof ProjectSlugSchema>;

@@ -81,6 +81,7 @@ beforeEach(() => {
     status: "running",
     title: "tool execution",
     initiatorModelId: ModelIdSchema.parse("anthropic/claude-sonnet-5"),
+    projectId: null,
     conversationFingerprint: null,
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

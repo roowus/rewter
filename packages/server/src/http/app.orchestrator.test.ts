@@ -15,7 +15,13 @@
  *    second task. Getting that wrong doubles the bill and silently orphans the
  *    task the user was actually replying to.
  */
-import type { ChatMessage, StreamChunk } from "@rewter/shared";
+import {
+  type ChatMessage,
+  type Project,
+  ProjectSchema,
+  type StreamChunk,
+  newProjectId,
+} from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Db, openDb } from "../db/connection.js";
@@ -27,7 +33,7 @@ import type { WorkerOutcome, WorkerRunner } from "../orchestrator/worker.js";
 import { Router } from "../router/router.js";
 import { FakeAdapter, end, text } from "../testing/fake-adapter.js";
 import { PRV_A, model, provider } from "../testing/registry.js";
-import { TASK_ID_HEADER, buildApp } from "./app.js";
+import { PROJECT_HEADER, TASK_ID_HEADER, buildApp } from "./app.js";
 
 const BIG = "anthropic/claude-opus-5";
 const SMALL = "zai/glm-5.3";
@@ -295,6 +301,136 @@ describe("POST /v1/chat/completions — orchestrator", () => {
     });
     expect(res.statusCode).toBe(501);
     expect(res.json<{ error: { type: string } }>().error.type).toBe("not_implemented");
+  });
+});
+
+describe("project selection", () => {
+  function saveProject(over: Record<string, unknown> = {}): Project {
+    const project = ProjectSchema.parse({
+      id: newProjectId(),
+      slug: "rewter",
+      name: "Rewter",
+      createdAt: CREATED_MS,
+      updatedAt: CREATED_MS,
+      ...over,
+    });
+    repos.upsertProject(project);
+    return project;
+  }
+
+  it("selects a project by model suffix and records it on the task", async () => {
+    const project = saveProject();
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat({ model: "auto@rewter" }),
+    });
+    expect(res.statusCode).toBe(200);
+    const taskId = res.headers[TASK_ID_HEADER] as string;
+    expect(repos.getTask(taskId)?.projectId).toBe(project.id);
+  });
+
+  it("selects a project by header, for clients whose picker cannot carry a suffix", async () => {
+    const project = saveProject();
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat(),
+      headers: { [PROJECT_HEADER]: "rewter" },
+    });
+    expect(res.statusCode).toBe(200);
+    const taskId = res.headers[TASK_ID_HEADER] as string;
+    expect(repos.getTask(taskId)?.projectId).toBe(project.id);
+  });
+
+  it("400s when the suffix and the header disagree", async () => {
+    saveProject();
+    saveProject({ slug: "other", name: "Other" });
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat({ model: "auto@rewter" }),
+      headers: { [PROJECT_HEADER]: "other" },
+    });
+    // Guessing would silently run the task under the wrong project's policy.
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("pick one");
+    expect(res.headers[TASK_ID_HEADER]).toBeUndefined();
+  });
+
+  it("agrees with itself when both channels name the same project", async () => {
+    saveProject();
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat({ model: "auto@rewter" }),
+      headers: { [PROJECT_HEADER]: "rewter" },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("404s a slug that names no project — before any task row exists", async () => {
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat({ model: "auto@no-such-project" }),
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toContain("unknown project");
+    expect(res.headers[TASK_ID_HEADER]).toBeUndefined();
+    expect(tasksSeen()).toHaveLength(0);
+  });
+
+  it("400s an archived project, distinctly from an unknown one", async () => {
+    saveProject({ archived: true });
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat({ model: "auto@rewter" }),
+    });
+    // "Retired, unarchive it" is actionable in a way "typo" is not.
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("archived");
+  });
+
+  it("carries the project through a pinned model suffix too", async () => {
+    const project = saveProject();
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chat({ model: `auto@rewter:${SMALL}` }),
+    });
+    expect(res.statusCode).toBe(200);
+    const taskId = res.headers[TASK_ID_HEADER] as string;
+    expect(repos.getTask(taskId)).toMatchObject({
+      projectId: project.id,
+      initiatorModelId: SMALL,
+    });
+  });
+
+  it("applies project selection on the Anthropic dialect as well", async () => {
+    const project = saveProject();
+    setup(fanOutScript());
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      payload: {
+        model: "auto/orchestrator",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "go" }],
+      },
+      headers: { [PROJECT_HEADER]: "rewter" },
+    });
+    expect(res.statusCode).toBe(200);
+    const taskId = res.headers[TASK_ID_HEADER] as string;
+    expect(repos.getTask(taskId)?.projectId).toBe(project.id);
   });
 });
 

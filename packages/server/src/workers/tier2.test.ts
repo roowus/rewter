@@ -71,6 +71,7 @@ beforeEach(() => {
     status: "running",
     title: "tier 2",
     initiatorModelId: ModelIdSchema.parse(MODEL_ID),
+    projectId: null,
     conversationFingerprint: null,
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

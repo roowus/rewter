@@ -50,13 +50,44 @@ and why in this order.
 
 | # | Milestone | Status |
 |---|---|---|
-| P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection | ⬜ |
+| P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection | 🟨 server side done 2026-08-31; dashboard panel + CRUD routes remain |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ⬜ |
 | P2-M3 | `rewt` TUI: WS client + shared fold, always-live input, mid-run steer, approvals | ⬜ |
 | P2-M4 | Skills loop: SKILL.md store, distiller, stage/approve pipeline, digest + `load_skill` | ⬜ |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-08-31 — projects exist, server-side (P2-M1, part 1)
+
+The Multica-style unit lands: `ProjectSchema` + `effectiveTaskSettings` +
+`primaryWorkspace` in `shared`, a `projects` table (UNIQUE slug, **no FK** from
+`tasks.projectId` — deleting a project must not orphan history, and the column defaults to
+`null` so pre-projects event logs replay unchanged), repo methods, and the selection
+grammar: `auto[@slug][:pin]` on the model string or `x-rewter-project` as a header. Both
+channels present must agree (400 "pick one"); unknown slug 404s before any task row
+exists; archived 400s distinctly ("unarchive it" is actionable in a way "typo" is not).
+Selection resolves before `live.match`, so steering re-POSTs are validated identically,
+and `/internal/run` carries the project in the model string only.
+
+What a project changes about a task, all at creation: initiator precedence gains a rung
+(request `:pin` → project `initiatorPin` → configured default → price heuristic, and a
+pin naming a removed model fails loudly *before* the task row); policy folds
+**tighten-only** (autoApprove ANDs, maxSpendUsd takes the lower cap) exactly once, so the
+row records the result and replay never re-derives from a project that has since changed;
+a task with no `workspaceDir` gets the project's first `dir`-else-`repo` resource.
+`prefer`/`avoid` render into the prompt as *hints, not rules* (the advise-only decision),
+policy deliberately does not render at all, and the project block sits **after** the
+registry digest so it never invalidates the cache region other projects share.
+`ORCHESTRATOR_PROMPT_VERSION` unchanged — the static core is untouched.
+
+The engine's boundary is a resolved `Project` object, never a name: HTTP owns lookup and
+the archived refusal. Tests pin each seam where it lives — grammar in `resolve.test.ts`
+(25), prompt placement + wording in `prompt.test.ts` (21), precedence/fold/workspace
+against the task row in `engine.test.ts` (47), the two selection channels and their
+status codes in `app.orchestrator.test.ts` (20). A project-less task is byte-for-byte
+phase 1; the full suite stayed green throughout. Remaining for the milestone:
+`/internal/projects` CRUD and the dashboard panel.
 
 ### 2026-08-31 — phase 2 has a shape (design)
 

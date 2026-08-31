@@ -6,6 +6,7 @@ import {
   ProviderDisabledError,
   isOrchestratorModel,
   pinnedInitiator,
+  projectSlug,
   resolveModel,
 } from "./resolve.js";
 
@@ -97,14 +98,19 @@ describe("resolveModel", () => {
 });
 
 describe("orchestrator pseudo-model", () => {
-  it.each(["auto", "auto/orchestrator", "auto/orchestrator:anthropic/claude-opus-5"])(
-    "recognizes %s",
-    (name) => {
-      expect(isOrchestratorModel(name)).toBe(true);
-    },
-  );
+  it.each([
+    "auto",
+    "auto/orchestrator",
+    "auto/orchestrator:anthropic/claude-opus-5",
+    "auto@rewter",
+    "auto/orchestrator@rewter",
+    "auto@rewter:anthropic/claude-opus-5",
+    "auto/orchestrator@rewter:anthropic/claude-opus-5",
+  ])("recognizes %s", (name) => {
+    expect(isOrchestratorModel(name)).toBe(true);
+  });
 
-  it.each(["anthropic/claude-sonnet-5", "automatic/thing", "auto-x"])(
+  it.each(["anthropic/claude-sonnet-5", "automatic/thing", "auto-x", "auto/orch@x"])(
     "does not claim %s",
     (name) => {
       expect(isOrchestratorModel(name)).toBe(false);
@@ -117,5 +123,26 @@ describe("orchestrator pseudo-model", () => {
     );
     expect(pinnedInitiator("auto/orchestrator")).toBeNull();
     expect(pinnedInitiator("auto/orchestrator:")).toBeNull();
+  });
+
+  it("extracts a pin that follows a project slug", () => {
+    expect(pinnedInitiator("auto@rewter:anthropic/claude-opus-5")).toBe("anthropic/claude-opus-5");
+    expect(pinnedInitiator("auto/orchestrator@rewter")).toBeNull();
+  });
+
+  it("extracts a project slug, with and without a pin", () => {
+    expect(projectSlug("auto@rewter")).toBe("rewter");
+    expect(projectSlug("auto/orchestrator@rewter")).toBe("rewter");
+    expect(projectSlug("auto/orchestrator@rewter:anthropic/claude-opus-5")).toBe("rewter");
+    expect(projectSlug("auto/orchestrator")).toBeNull();
+    expect(projectSlug("auto/orchestrator:anthropic/claude-opus-5")).toBeNull();
+    expect(projectSlug("anthropic/claude-sonnet-5")).toBeNull();
+    // Empty suffix is "no project", not a project named "".
+    expect(projectSlug("auto@")).toBeNull();
+  });
+
+  it("routing accepts a malformed slug — existence is the lookup's question", () => {
+    expect(isOrchestratorModel("auto@Not_A_Slug")).toBe(true);
+    expect(projectSlug("auto@Not_A_Slug")).toBe("Not_A_Slug");
   });
 });

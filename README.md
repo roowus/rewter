@@ -76,7 +76,8 @@ board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 **Phase 2 is decided and underway** — see the
 [direction doc](docs/design/phase2-direction.md): **projects** as the top-level unit
 (pinned repos/dirs/docs, per-project policy and model prefs, learned state scoped global
-vs. project like `CLAUDE.md`), a **skills learning loop** (agentskills.io `SKILL.md`
+vs. project like `CLAUDE.md`) — *the server side of this shipped: `auto@<slug>` or an
+`x-rewter-project` header runs a task under a project today* — a **skills learning loop** (agentskills.io `SKILL.md`
 distilled from what the system actually did, gated behind your approval), a **native
 `rewt` terminal client** where you can keep typing while a task runs, **Tailscale**
 support so the daemon is usable from any device on your tailnet, and the first tier-3
@@ -677,9 +678,17 @@ curl -N localhost:20130/v1/chat/completions -H 'content-type: application/json' 
 ```
 
 Progress arrives as ordinary assistant text, so a client needs no rewter awareness to show it.
-`auto/orchestrator:<model-id>` pins the initiator; otherwise the configured default is used,
-falling back to the most expensive enabled model not *known* to lack tools — a model a catalog
-reported tool-capable outranks one nobody vouched for, and only a reported denial disqualifies.
+`auto/orchestrator:<model-id>` pins the initiator; otherwise the selected project's pin (below),
+then the configured default, falling back to the most expensive enabled model not *known* to
+lack tools — a model a catalog reported tool-capable outranks one nobody vouched for, and only
+a reported denial disqualifies.
+
+`auto@<project-slug>` (or the `x-rewter-project` header — they must agree if both are sent)
+runs the task **under a project**: the initiator sees the project's pinned repos/dirs/URLs and
+model preferences, the task's workspace defaults to the project's primary directory, and the
+project's policy folds in tighten-only — a project can force approval gates on or lower the
+spending cap, never the reverse. `auto@myproj:zai/glm-5.3` combines both. Unknown slugs 404,
+archived projects refuse with a 400 that says so.
 
 That output is real, not illustrative: an `orchestrator` block in the config sets who leads and
 what a task may spend, and a request that says nothing about settings inherits both.

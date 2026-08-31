@@ -36,6 +36,7 @@ function makeTask() {
     status: "pending",
     title: "test task",
     initiatorModelId: mdl,
+    projectId: null,
     conversationFingerprint: null,
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

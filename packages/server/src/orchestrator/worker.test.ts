@@ -79,6 +79,7 @@ function makeContext(
     status: "pending",
     title: "worker lifecycle",
     initiatorModelId: ModelIdSchema.parse(MODEL_ID),
+    projectId: null,
     conversationFingerprint: null,
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

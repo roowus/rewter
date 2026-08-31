@@ -85,13 +85,20 @@ export {
   ProviderDisabledError,
   isOrchestratorModel,
   pinnedInitiator,
+  projectSlug,
   resolveModel,
   type Registry,
   type Resolution,
 } from "./router/resolve.js";
 export { Router, type RouteRequest, type RouterOptions } from "./router/router.js";
 
-export { buildApp, type AppOptions } from "./http/app.js";
+export {
+  PROJECT_HEADER,
+  ProjectArchivedError,
+  ProjectNotFoundError,
+  buildApp,
+  type AppOptions,
+} from "./http/app.js";
 export {
   roleFrame,
   toOpenAIChunk,

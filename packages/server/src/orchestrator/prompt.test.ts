@@ -9,7 +9,7 @@
  * quietly rewrote the caller's system prompt would be a bug the caller could
  * never see from the outside.
  */
-import type { ChatMessage } from "@rewter/shared";
+import { type ChatMessage, ProjectSchema, newProjectId } from "@rewter/shared";
 import { describe, expect, it } from "vitest";
 import {
   ORCHESTRATOR_CORE_PROMPT,
@@ -20,6 +20,7 @@ import {
   buildInitiatorMessages,
   buildTier2Messages,
   buildWorkerMessages,
+  renderProjectBlock,
 } from "./prompt.js";
 
 const DIGEST = "zai/glm-5.3 — $0.6/$2.2 MTok, 1M ctx — best_at:[summarize]";
@@ -126,6 +127,79 @@ describe("buildInitiatorMessages", () => {
     });
     expect(messages).toHaveLength(2);
     expect(messages.filter((m) => m.role === "system")).toHaveLength(1);
+  });
+
+  it("renders the project block after the digest, in the per-task region", () => {
+    // The digest is the cacheable region; a project block before it would
+    // invalidate the prompt cache for every other project's tasks.
+    const messages = buildInitiatorMessages({
+      digest: DIGEST,
+      conversation: CONVERSATION,
+      taskId: "task_abc",
+      project: makeProject(),
+    });
+    const text = messages[0]?.content ?? "";
+    expect(text.indexOf("Project: Rewter (rewter)")).toBeGreaterThan(text.indexOf(DIGEST));
+    // And a project-less task has no project section at all.
+    const without = buildInitiatorMessages({
+      digest: DIGEST,
+      conversation: CONVERSATION,
+      taskId: "task_abc",
+    });
+    expect(without[0]?.content).not.toContain("Project:");
+  });
+});
+
+function makeProject(over: Record<string, unknown> = {}) {
+  return ProjectSchema.parse({
+    id: newProjectId(),
+    slug: "rewter",
+    name: "Rewter",
+    createdAt: 1700000000000,
+    updatedAt: 1700000000000,
+    ...over,
+  });
+}
+
+describe("renderProjectBlock", () => {
+  it("names the project, lists resources with kinds, and keeps prefs advisory", () => {
+    const block = renderProjectBlock(
+      makeProject({
+        description: "the router itself",
+        resources: [
+          { kind: "repo", location: "/Users/x/projects/rewter", note: "main checkout" },
+          { kind: "url", location: "https://example.com/spec", note: null },
+        ],
+        modelPrefs: {
+          initiatorPin: null,
+          prefer: ["anthropic/claude-opus-5"],
+          avoid: ["zai/glm-5.3"],
+        },
+      }),
+    );
+    expect(block).toContain("Project: Rewter (rewter)");
+    expect(block).toContain("the router itself");
+    expect(block).toContain("- [repo] /Users/x/projects/rewter — main checkout");
+    // A null note renders nothing, not the word "null".
+    expect(block).toContain("- [url] https://example.com/spec\n");
+    expect(block).not.toContain("null");
+    // Locked decision 4: hints, not rules — the wording is the implementation.
+    expect(block).toContain("hints, not rules");
+    expect(block).toContain("prefer: anthropic/claude-opus-5");
+    expect(block).toContain("avoid: zai/glm-5.3");
+  });
+
+  it("omits empty sections rather than rendering headers over nothing", () => {
+    const block = renderProjectBlock(makeProject());
+    expect(block).toBe("Project: Rewter (rewter)");
+  });
+
+  it("never mentions policy — enforcement is the engine's, not the model's", () => {
+    const block = renderProjectBlock(
+      makeProject({ policy: { autoApprove: false, maxSpendUsd: 5 } }),
+    );
+    expect(block).not.toContain("approve");
+    expect(block).not.toContain("5");
   });
 });
 

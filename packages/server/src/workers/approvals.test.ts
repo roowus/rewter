@@ -46,6 +46,7 @@ beforeEach(() => {
     status: "pending",
     title: "approval gate",
     initiatorModelId: ModelIdSchema.parse("anthropic/claude-sonnet-5"),
+    projectId: null,
     conversationFingerprint: null,
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

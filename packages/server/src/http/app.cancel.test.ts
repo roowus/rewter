@@ -173,6 +173,7 @@ function orphanTask(status: Task["status"] = "running"): TaskId {
     status: "pending",
     title: "an earlier task",
     initiatorModelId: ModelIdSchema.parse(BIG),
+    projectId: null,
     conversationFingerprint: null,
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,

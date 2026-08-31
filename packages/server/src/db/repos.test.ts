@@ -1,10 +1,13 @@
 import {
   type EventEnvelope,
+  EventPayloadSchema,
   IllegalTransitionError,
   ModelIdSchema,
+  ProjectSchema,
   TaskSettingsSchema,
   newApprovalId,
   newCostRecordId,
+  newProjectId,
   newTaskId,
   newWorkItemId,
   newWorkerRunId,
@@ -36,6 +39,7 @@ function makeTask() {
     status: "pending",
     title: "test task",
     initiatorModelId: mdl,
+    projectId: null,
     conversationFingerprint: "fp_abc",
     settings: TaskSettingsSchema.parse({}),
     resultSummary: null,
@@ -298,6 +302,140 @@ describe("Repos round-trips (in-memory SQLite)", () => {
         finishedAt: null,
       }),
     ).toThrow(/FOREIGN KEY/i);
+  });
+});
+
+describe("Projects (configuration, not lifecycle)", () => {
+  function makeProject(slug: string, over: Record<string, unknown> = {}) {
+    return ProjectSchema.parse({
+      id: newProjectId(),
+      slug,
+      name: `Project ${slug}`,
+      createdAt: tick,
+      updatedAt: tick,
+      ...over,
+    });
+  }
+
+  it("upsert → read back identical; JSON columns survive the round-trip", () => {
+    const p = makeProject("rewter", {
+      description: "the router itself",
+      resources: [
+        { kind: "repo", location: "/Users/x/projects/rewter", note: "main checkout" },
+        { kind: "url", location: "https://example.com/spec", note: null },
+      ],
+      policy: {
+        autoApprove: true,
+        maxSpendUsd: 2.5,
+        allowedTools: ["shell"],
+        allowedHarnesses: null,
+      },
+      modelPrefs: { initiatorPin: mdl, prefer: [mdl], avoid: [] },
+    });
+    repos.upsertProject(p);
+    expect(repos.getProject(p.id)).toEqual(p);
+    expect(repos.getProjectBySlug("rewter")).toEqual(p);
+  });
+
+  it("upsert on the same id updates in place — settings edits are idempotent", () => {
+    const p = makeProject("proj-a");
+    repos.upsertProject(p);
+    const renamed = { ...p, name: "Renamed", updatedAt: tick + 1 };
+    repos.upsertProject(renamed);
+    expect(repos.listProjects()).toHaveLength(1);
+    expect(repos.getProject(p.id)?.name).toBe("Renamed");
+  });
+
+  it("slug is UNIQUE at the DB layer — a second project cannot take a taken name", () => {
+    repos.upsertProject(makeProject("taken"));
+    // Different id, same slug: the selection key would become ambiguous, so the
+    // constraint (not application code) refuses it.
+    expect(() => repos.upsertProject(makeProject("taken"))).toThrow(/UNIQUE/i);
+  });
+
+  it("slug rename frees the old name for reuse (ids never change, slugs may)", () => {
+    const p = makeProject("old-name");
+    repos.upsertProject(p);
+    repos.upsertProject({ ...p, slug: ProjectSchema.shape.slug.parse("new-name") });
+    expect(repos.getProjectBySlug("old-name")).toBeUndefined();
+    expect(repos.getProjectBySlug("new-name")?.id).toBe(p.id);
+    repos.upsertProject(makeProject("old-name"));
+    expect(repos.listProjects()).toHaveLength(2);
+  });
+
+  it("listProjects hides archived by default, includes them on request, sorts by slug", () => {
+    repos.upsertProject(makeProject("zebra"));
+    repos.upsertProject(makeProject("alpha"));
+    repos.upsertProject(makeProject("shelved", { archived: true }));
+
+    expect(repos.listProjects().map((p) => p.slug)).toEqual(["alpha", "zebra"]);
+    expect(repos.listProjects({ includeArchived: true }).map((p) => p.slug)).toEqual([
+      "alpha",
+      "shelved",
+      "zebra",
+    ]);
+    // Archived projects still load directly — the dashboard un-archives via id.
+    const shelved = repos.getProjectBySlug("shelved");
+    expect(shelved?.archived).toBe(true);
+  });
+
+  it("emits NO events — old event logs must replay without knowing projects exist", () => {
+    const before = bus.eventsAfter(0).length;
+    const p = makeProject("silent");
+    repos.upsertProject(p);
+    repos.deleteProject(p.id);
+    expect(bus.eventsAfter(0)).toHaveLength(before);
+  });
+
+  it("task keeps its projectId across the round-trip; deleting the project does not touch the task", () => {
+    const p = makeProject("owner");
+    repos.upsertProject(p);
+    const now = tick;
+    const task = repos.createTask({
+      id: newTaskId(),
+      status: "pending",
+      title: "scoped task",
+      initiatorModelId: mdl,
+      projectId: p.id,
+      conversationFingerprint: "fp_proj",
+      settings: TaskSettingsSchema.parse({}),
+      resultSummary: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: null,
+    });
+    expect(repos.getTask(task.id)?.projectId).toBe(p.id);
+
+    // No FK on purpose: history stays attributed to an id that no longer
+    // resolves, rather than blocking the delete or nulling the column.
+    repos.deleteProject(p.id);
+    expect(repos.getTask(task.id)?.projectId).toBe(p.id);
+    expect(repos.getProject(p.id)).toBeUndefined();
+  });
+
+  it("pre-phase-2 task.created payloads (no projectId key) still parse", () => {
+    // Events persisted before the projects milestone embed a Task without the
+    // field at all. Replay must default it, not reject the whole log.
+    const legacy = {
+      type: "task.created",
+      task: {
+        id: newTaskId(),
+        status: "pending",
+        title: "from an old log",
+        initiatorModelId: "anthropic/claude-sonnet-5",
+        conversationFingerprint: null,
+        settings: TaskSettingsSchema.parse({}),
+        resultSummary: null,
+        error: null,
+        createdAt: 1,
+        updatedAt: 1,
+        finishedAt: null,
+      },
+    };
+    const parsed = EventPayloadSchema.parse(legacy);
+    if (parsed.type !== "task.created") throw new Error("wrong branch");
+    expect(parsed.task.projectId).toBeNull();
   });
 });
 

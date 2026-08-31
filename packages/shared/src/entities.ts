@@ -7,6 +7,8 @@ import {
   ApprovalIdSchema,
   CostRecordIdSchema,
   ModelIdSchema,
+  ProjectIdSchema,
+  ProjectSlugSchema,
   ProviderIdSchema,
   TaskIdSchema,
   WorkItemIdSchema,
@@ -116,6 +118,79 @@ export const CapabilityCardSchema = z.object({
 });
 export type CapabilityCard = z.infer<typeof CapabilityCardSchema>;
 
+// ── Projects (phase 2) ───────────────────────────────────────────────────────
+//
+// A project is a durable, named container for related work: it pins resources
+// (repos/dirs/docs), owns learned state by scoping (skills, memory, stats),
+// carries policy (budget + approval rules), and holds model preferences. Tasks
+// reference a project via a *nullable* projectId — nullable is the whole
+// compatibility story: a project-less task behaves exactly like phase 1.
+
+export const ProjectResourceSchema = z.object({
+  /**
+   * `dir` and `repo` are local paths; `doc` and `url` are references the
+   * initiator can read/fetch. The FIRST `dir` resource is the project's primary
+   * workspace — order matters, which is why resources are an array, not a set.
+   */
+  kind: z.enum(["dir", "repo", "doc", "url"]),
+  /** Absolute path for dir/repo/doc, URL for url. */
+  location: z.string().min(1),
+  /** Why this resource is attached — rendered into the project block verbatim. */
+  note: z.string().nullable().default(null),
+});
+export type ProjectResource = z.infer<typeof ProjectResourceSchema>;
+
+export const ProjectPolicySchema = z.object({
+  /**
+   * Project-level counterpart of TaskSettings.autoApprove. Precedence is
+   * tighten-only (see effectiveTaskSettings in projects.ts): a task inside a
+   * gated project cannot turn approvals off. Defaults false because project
+   * workspaces point at real repos — "inside the workspace" auto-approves
+   * writes to real code, so the loosening must be an explicit owner act.
+   */
+  autoApprove: z.boolean().default(false),
+  /** Project spending cap; tasks can tighten it, never raise it. null = uncapped. */
+  maxSpendUsd: z.number().positive().nullable().default(null),
+  /** null = all tools allowed; a list is an allowlist enforced at spawn time. */
+  allowedTools: z.array(z.string().min(1)).nullable().default(null),
+  /** null = all harnesses; a list gates tier-3 adapters (phase-2 M5). */
+  allowedHarnesses: z.array(z.string().min(1)).nullable().default(null),
+});
+export type ProjectPolicy = z.infer<typeof ProjectPolicySchema>;
+
+export const ProjectModelPrefsSchema = z.object({
+  /** Overrides the global default initiator for tasks in this project. */
+  initiatorPin: ModelIdSchema.nullable().default(null),
+  /**
+   * Advise-only (locked decision 4): these are rendered into the digest as
+   * hints, not enforced — the initiator still decides.
+   */
+  prefer: z.array(ModelIdSchema).default([]),
+  avoid: z.array(ModelIdSchema).default([]),
+});
+export type ProjectModelPrefs = z.infer<typeof ProjectModelPrefsSchema>;
+
+export const ProjectSchema = z.object({
+  id: ProjectIdSchema,
+  /** Human handle used by the header, model suffix, and skills dir — see ids.ts. */
+  slug: ProjectSlugSchema,
+  name: z.string().min(1),
+  description: z.string().default(""),
+  resources: z.array(ProjectResourceSchema).default([]),
+  policy: ProjectPolicySchema.default({}),
+  modelPrefs: ProjectModelPrefsSchema.default({}),
+  /**
+   * Archived projects are hidden from selection (header/suffix/cwd lookups
+   * refuse them) but never deleted implicitly — their tasks, costs, and skills
+   * remain attributed. Like provider `enabled`, this is configuration, not a
+   * lifecycle: projects have no state machine.
+   */
+  archived: z.boolean().default(false),
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+});
+export type Project = z.infer<typeof ProjectSchema>;
+
 export const TaskSettingsSchema = z.object({
   autoApprove: z.boolean().default(false),
   maxSpendUsd: z.number().positive().nullable().default(null),
@@ -129,6 +204,14 @@ export const TaskSchema = z.object({
   status: TaskStatusSchema,
   title: z.string().min(1),
   initiatorModelId: ModelIdSchema,
+  /**
+   * Phase 2: the project this task runs inside, or null for a bare task that
+   * behaves exactly as phase 1. `.default(null)` is load-bearing, not
+   * convenience — `task.created` events embed the full Task, so the append-only
+   * logs of existing databases hold payloads without this field, and replay
+   * re-parses them through this schema.
+   */
+  projectId: ProjectIdSchema.nullable().default(null),
   /** Fingerprint of the originating conversation prefix, for LiveTaskIndex steering. */
   conversationFingerprint: z.string().nullable(),
   settings: TaskSettingsSchema,

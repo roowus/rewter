@@ -25,9 +25,11 @@ One local daemon process serving:
 
 - **`/v1`** — two client-facing wire formats over one router.
   - `POST /v1/chat/completions` (OpenAI) either **passes through** to a concrete model
-    (plain routing) or, when `model` is the pseudo-model `auto/orchestrator` (also `auto`;
-    `auto/orchestrator:<modelId>` pins the initiator), diverts into the **orchestrator
-    engine**.
+    (plain routing) or, when `model` is the pseudo-model `auto/orchestrator` (also `auto`),
+    diverts into the **orchestrator engine**. The full grammar is
+    `auto[/orchestrator][@<project-slug>][:<modelId>]` — `@` selects a
+    [project](#projects-p2-m1), `:` pins the initiator, in that order because slugs never
+    contain `:`.
   - `POST /v1/messages` (Anthropic-native) is the same thing in Anthropic's dialect. Claude
     Code speaks this and only this, so it is what makes rewter usable as a 9router
     replacement rather than a curl toy.
@@ -178,7 +180,14 @@ Entities (zod-typed in `shared`):
   (tags from a **fixed vocabulary** that doubles as the phase-2 stats key), tierHint, speed,
   `userOverrides` (JSON patch that survives regeneration). Stored in two halves — see
   [Capability cards](#capability-cards).
-- **Task** — one orchestrated request; workspaceDir, autoApprove, settings (maxSpendUsd?, maxParallel?).
+- **Project** (P2-M1) — the Multica-style top-level unit tasks run under; slug (unique,
+  URL/model-string safe), resources[] (`repo|dir|url|note` with optional note), policy
+  (autoApprove, maxSpendUsd, allowedTools/allowedHarnesses — the latter two are phase-2
+  seams, not yet enforced), modelPrefs (initiatorPin, prefer[], avoid[]), archived flag.
+  Projects are **configuration, not lifecycle**: no state machine, no events, no FK from
+  tasks — see [Projects](#projects-p2-m1).
+- **Task** — one orchestrated request; workspaceDir, autoApprove, settings (maxSpendUsd?, maxParallel?),
+  `projectId?` (nullable — pre-projects rows and project-less tasks replay identically).
 - **WorkItem** — subtask; `parentWorkItemId` builds handoff chains.
 - **WorkerRun** — one execution attempt (retry/handoff = new run); `harnessSessionId?` column exists now (phase-2).
 - **Event** — append-only, autoincrement `seq`; **source of truth** for dashboard replay and audit.
@@ -408,6 +417,73 @@ Over budget (~4K tokens, crude 4-chars-per-token guardrail), models are dropped 
 the sorted list and the digest **says so**: `(N further model(s) omitted for space.)` An initiator
 that cannot see a model will not choose it, and it should know that is why.
 
+## Projects (P2-M1)
+
+A project is the persistent thing a task runs *under* — the Multica-style unit that owns
+resources (repos, dirs, URLs, notes), policy caps, model preferences, and (from P2-M4)
+scoped learned state. Schemas live in `@rewter/shared` (`ProjectSchema`,
+`effectiveTaskSettings`, `primaryWorkspace`); storage is a plain `projects` table with a
+UNIQUE slug and **no FK from `tasks.projectId`** — a deleted project must not orphan its
+history, and `Task.projectId` defaults to `null` in the schema so event-log replay of
+pre-projects databases parses unchanged.
+
+Projects are deliberately **configuration, not lifecycle**: no state machine, no events, no
+status column. The one flag, `archived`, is enforced at the selection layer (the repo still
+returns the row; HTTP refuses to *start* under it), so archiving is reversible bookkeeping
+rather than a terminal state.
+
+### Selecting a project
+
+Two equivalent channels, for two kinds of client:
+
+- **Model suffix** — `auto@<slug>` (optionally `auto@<slug>:<pin>`), for clients whose only
+  configurable knob is the model string (Claude Code's model picker).
+- **Header** — `x-rewter-project: <slug>` (`PROJECT_HEADER`), for clients that can set
+  headers but not mangle the model name.
+
+If both are present they must **agree**, or the request is a 400 ("pick one") — guessing
+would silently run the task under the wrong project's policy. An unknown slug is a 404
+(`ProjectNotFoundError` — the project-shaped "unknown model"); an archived project is a 400
+(`ProjectArchivedError` — the server understood and refuses, and "unarchive it" is
+actionable in a way "typo" is not). All of this resolves **before** `live.match`, so a
+steering re-POST is validated the same way, and before any task row exists, so a refused
+request leaves no trace. The suffix parser (`projectSlug` in `router/resolve.ts`) is
+deliberately looser than `ProjectSlugSchema`: existence is the lookup's question, so
+`auto@Bad_Slug` reads as "no such project", not "unknown model".
+
+The engine's boundary is an already-resolved `Project` object, never a name — HTTP owns
+slug lookup and the archived refusal; `/internal/run` carries the project in the model
+string only.
+
+### What a project changes about a task
+
+Three things, all at task creation, none afterwards:
+
+1. **Initiator precedence** — request `:pin` → project `modelPrefs.initiatorPin` →
+   configured `defaultInitiatorModel` → the price heuristic. A project pin resolves through
+   `router.resolve`, so a pin naming a removed model fails loudly before a task row exists.
+2. **Policy fold, tighten-only** — `effectiveTaskSettings(project, requested)`: autoApprove
+   is ANDed (a project can force gates on, never off), maxSpendUsd takes the lower cap
+   (null loses to any number). Folded **once** in `start()`; the task row records the
+   result, so replay never re-derives policy from a project that may since have changed.
+3. **Workspace default** — a task with no `workspaceDir` gets the project's primary
+   workspace (first `dir` resource, else first `repo`). An explicit `workspaceDir` is kept:
+   narrower is not loosening.
+
+`modelPrefs.prefer/avoid` are **hints, not rules** (locked decision: advise-only) — they
+render into the prompt, and enforcement stays the engine's. Policy is deliberately *absent*
+from the prompt: the model has no business knowing the cap it should be trying to respect
+anyway, and enforcement that depends on the model reading a number is not enforcement.
+
+### The prompt block
+
+`renderProjectBlock` renders name, description, resources (with kinds and notes), and the
+prefer/avoid hints. It is spliced into the **per-task region, after the registry digest** —
+the digest is the cacheable region shared across projects, and a project block before it
+would invalidate the prompt cache for every other project's tasks. Empty sections are
+omitted rather than rendered as headers over nothing. `ORCHESTRATOR_PROMPT_VERSION` was
+**not** bumped: the static core is unchanged, and the version guards exactly that constant.
+
 ## Orchestrator engine
 
 Implemented in M5a (the engine) and M5b (the wiring) — `packages/server/src/orchestrator/`.
@@ -435,8 +511,9 @@ place arguments are validated and the one place a refusal is worded.
 
 ### Choosing the initiator
 
-Explicit beats implicit: a `:pin` on the request, then the configured default, then a
-heuristic — *the most expensive enabled model not known to lack tools*. Price is a crude proxy
+Explicit beats implicit: a `:pin` on the request, then the selected project's
+`modelPrefs.initiatorPin` (P2-M1), then the configured default, then a heuristic — *the most
+expensive enabled model not known to lack tools*. Price is a crude proxy
 for capability, but it is the only one available before any card is read, and the initiator
 is exactly where being wrong is most expensive. Ties break on id, so the choice is
 deterministic across restarts. The task row records the **canonical** id, not the alias the
@@ -458,9 +535,11 @@ that is the only case it can now mean.
    stable-sorted for cacheability, ≤ ~4K tokens. Phase-2 stats append inside this same
    renderer. An empty registry says `registry is empty` rather than rendering nothing —
    silence would read as "no models exist".
-3. **Task context** — the client's incoming conversation, **passed through untouched**,
-   including its own system message. A router that quietly rewrote the caller's system prompt
-   would be a bug the caller could never see from the outside.
+3. **Task context** — the [project block](#the-prompt-block) when a project is selected
+   (after the digest, so it never invalidates the shared cache region), then the client's
+   incoming conversation, **passed through untouched**, including its own system message. A
+   router that quietly rewrote the caller's system prompt would be a bug the caller could
+   never see from the outside.
 
 ### Initiator tools
 
@@ -1662,7 +1741,8 @@ done-pattern) so any CLI harness is addable by config.
 
 - `POST /v1/chat/completions` — OpenAI dialect; pass-through or orchestrator; stream +
   non-stream. **Live**, orchestrator included. Sends `x-rewter-task-id` on an orchestration;
-  accepts it back to steer or reattach.
+  accepts it back to steer or reattach. Selects a [project](#selecting-a-project) via
+  `auto@<slug>` or the `x-rewter-project` header (both channels also live on `/v1/messages`).
 - `POST /v1/messages` — Anthropic dialect over the same router; stream + non-stream.
   **Live**, orchestrator included. Named-event SSE, no `[DONE]`; accepts `x-api-key` or
   `Authorization: Bearer`; same `x-rewter-task-id` contract.

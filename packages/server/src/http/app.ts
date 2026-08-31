@@ -31,6 +31,7 @@ import {
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  type Project,
   type Provider,
   type ProviderTestResult,
   REWTER_VERSION,
@@ -82,6 +83,7 @@ import {
   ProviderDisabledError,
   type Resolution,
   isOrchestratorModel,
+  projectSlug,
 } from "../router/resolve.js";
 import type { RouteRequest, Router } from "../router/router.js";
 import { SERVICE_LABEL } from "../service/launchd.js";
@@ -175,6 +177,36 @@ const MAX_EVENT_PAGE = 500;
 /** The header carrying the task id back to the client, and back to us. */
 export const TASK_ID_HEADER = "x-rewter-task-id";
 
+/**
+ * The header naming the project a task should run under — for clients whose
+ * model picker cannot carry an `@<slug>` suffix. The suffix form
+ * (`auto/orchestrator@<slug>`) is equivalent; when both are present they must
+ * agree, because silently preferring either would run the task under a project
+ * the other half of the request explicitly named differently.
+ */
+export const PROJECT_HEADER = "x-rewter-project";
+
+/** A request named a project that does not exist. 404, like an unknown model. */
+export class ProjectNotFoundError extends Error {
+  constructor(readonly slug: string) {
+    super(`unknown project: ${slug}`);
+    this.name = "ProjectNotFoundError";
+  }
+}
+
+/**
+ * A request named a project that exists but is archived. Distinct from
+ * not-found on purpose: "typo" and "this was retired, unarchive it if you mean
+ * it" call for different fixes, and archived-refusal is the selection-layer
+ * teeth behind the `archived` flag (the repo still returns the row).
+ */
+export class ProjectArchivedError extends Error {
+  constructor(readonly slug: string) {
+    super(`project "${slug}" is archived — unarchive it to run tasks under it`);
+    this.name = "ProjectArchivedError";
+  }
+}
+
 export function buildApp(opts: AppOptions): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
   const clock = opts.clock ?? Date.now;
@@ -198,13 +230,43 @@ export function buildApp(opts: AppOptions): FastifyInstance {
    * Returns the task id so the caller can set the header before writing, which
    * is the only moment it can.
    */
+  /**
+   * Resolve the project a request named, if it named one — via the model
+   * suffix (`auto@<slug>`), the `x-rewter-project` header, or both in
+   * agreement. Unknown and archived slugs throw here, before a task row
+   * exists, so the client gets a JSON 4xx rather than a task that dies.
+   */
+  function selectProject(
+    requestedModel: string,
+    projectHeader: string | undefined,
+  ): Project | null {
+    const fromSuffix = projectSlug(requestedModel);
+    const fromHeader = projectHeader === undefined || projectHeader === "" ? null : projectHeader;
+    if (fromSuffix !== null && fromHeader !== null && fromSuffix !== fromHeader) {
+      throw new OrchestratorError(
+        `the model suffix names project "${fromSuffix}" but the ${PROJECT_HEADER} header names "${fromHeader}" — pick one`,
+      );
+    }
+    const slug = fromSuffix ?? fromHeader;
+    if (slug === null) return null;
+    const project = repos.getProjectBySlug(slug);
+    if (project === undefined) throw new ProjectNotFoundError(slug);
+    if (project.archived) throw new ProjectArchivedError(slug);
+    return project;
+  }
+
   function beginOrchestration(
     conversation: ChatMessage[],
     requestedModel: string,
     taskIdHeader: string | undefined,
+    projectHeader: string | undefined,
     clientSignal: AbortSignal,
   ): { taskId: string; stream: AsyncIterable<StreamChunk> } {
     if (orchestrator === null) throw new OrchestratorUnavailable();
+    // Resolved before the live-task match so a bad slug fails the same way on a
+    // reconnect as on a first POST — a steering follow-up cannot move a running
+    // task to another project, but it should not silently accept a typo either.
+    const project = selectProject(requestedModel, projectHeader);
 
     const existing = live.match({ taskIdHeader, conversation });
     if (existing !== null) {
@@ -233,6 +295,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const started = orchestrator.start({
       conversation,
       requestedModel,
+      ...(project !== null && { project }),
       steering: () => box?.drainSteering() ?? [],
     });
     box = live.register({
@@ -357,13 +420,14 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     if (isOrchestratorModel(body.model)) {
       const conversation = toChatMessages(body.messages);
       const header = headerValue(req.headers[TASK_ID_HEADER]);
+      const project = headerValue(req.headers[PROJECT_HEADER]);
       const id = `chatcmpl-${randomSuffix()}`;
       const created = Math.floor(clock() / 1000);
       const ctx = { id, model: body.model, created };
 
       if (body.stream) {
         await streamOrchestration(reply, {
-          begin: (signal) => beginOrchestration(conversation, body.model, header, signal),
+          begin: (signal) => beginOrchestration(conversation, body.model, header, project, signal),
           ctx,
           includeUsage: body.stream_options?.include_usage === true,
           ...(opts.sse !== undefined && { sse: opts.sse }),
@@ -376,7 +440,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       // call gets — the client just waits longer and sees the narration inline.
       const abort = new AbortController();
       try {
-        const begun = beginOrchestration(conversation, body.model, header, abort.signal);
+        const begun = beginOrchestration(conversation, body.model, header, project, abort.signal);
         reply.header(TASK_ID_HEADER, begun.taskId);
         return toCompletion(await collectStream(begun.stream), ctx);
       } catch (err) {
@@ -451,11 +515,12 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     if (isOrchestratorModel(body.model)) {
       const conversation = fromAnthropicMessages(body.messages, body.system);
       const header = headerValue(req.headers[TASK_ID_HEADER]);
+      const project = headerValue(req.headers[PROJECT_HEADER]);
       const id = `msg_${randomSuffix()}`;
 
       if (body.stream) {
         await streamOrchestrationAnthropic(reply, {
-          begin: (signal) => beginOrchestration(conversation, body.model, header, signal),
+          begin: (signal) => beginOrchestration(conversation, body.model, header, project, signal),
           ctx: { id, model: body.model },
           ...(opts.sse !== undefined && { sse: opts.sse }),
         });
@@ -464,7 +529,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
 
       const abort = new AbortController();
       try {
-        const begun = beginOrchestration(conversation, body.model, header, abort.signal);
+        const begun = beginOrchestration(conversation, body.model, header, project, abort.signal);
         reply.header(TASK_ID_HEADER, begun.taskId);
         return toAnthropicResponse(await collectStream(begun.stream), { id, model: body.model });
       } catch (err) {
@@ -903,10 +968,13 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     try {
       // Eager, like the chat route: a pin naming a model that does not exist,
       // or a registry with nothing that can lead, throws here — while a JSON
-      // error is still possible to send.
+      // error is still possible to send. Same for a project slug that names
+      // nothing — the run form carries the project in the model string only.
+      const project = selectProject(model, undefined);
       started = orchestrator.start({
         conversation,
         requestedModel: model,
+        ...(project !== null && { project }),
         // Spread field by field rather than passed whole: under
         // `exactOptionalPropertyTypes` an explicit `autoApprove: undefined` is
         // not the same as an absent one, and only the absent one falls through
@@ -1778,6 +1846,10 @@ class OrchestratorUnavailable extends Error {
 
 function statusForOrchestratorError(err: unknown): number {
   if (err instanceof OrchestratorUnavailable) return 501;
+  // A slug that names nothing is the project-shaped ModelNotFound: 404. An
+  // archived project is a request the server understood and refuses: 400.
+  if (err instanceof ProjectNotFoundError) return 404;
+  if (err instanceof ProjectArchivedError) return 400;
   // Everything the engine throws before its first chunk is about the request:
   // a pin naming a model that does not exist, or a registry with nothing that
   // can lead. Both are 4xx/503 by the same table plain routing uses.

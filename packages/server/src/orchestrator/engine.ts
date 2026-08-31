@@ -25,6 +25,7 @@ import { join } from "node:path";
 import {
   type ChatMessage,
   type ModelId,
+  type Project,
   type StreamChunk,
   type Task,
   type TaskId,
@@ -35,8 +36,10 @@ import {
   type WorkItem,
   type WorkerRunId,
   type WorkerTier,
+  effectiveTaskSettings,
   newTaskId,
   newWorkItemId,
+  primaryWorkspace,
 } from "@rewter/shared";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
@@ -112,6 +115,14 @@ export interface OrchestrationRequest {
   conversation: ChatMessage[];
   /** The model string the client asked for — carries any `:pin`. */
   requestedModel: string;
+  /**
+   * The project this task runs under, already resolved by the caller (HTTP
+   * owns slug lookup and the archived refusal — the engine takes a `Project`,
+   * not a name, so it cannot be handed a project that selection should have
+   * refused). Affects four things: the task row's `projectId`, the effective
+   * settings (tighten-only fold), the default workspace, and the prompt.
+   */
+  project?: Project | undefined;
   settings?: Partial<TaskSettings> | undefined;
   signal?: AbortSignal | undefined;
   /**
@@ -263,7 +274,10 @@ export class Orchestrator {
    * Choose who leads.
    *
    * Precedence is explicit-beats-implicit: a `:pin` on the request, then the
-   * configured default, then a heuristic. The heuristic is "the most expensive
+   * project's `initiatorPin`, then the configured default, then a heuristic.
+   * The request pin outranks the project's because it is the more specific act
+   * — the project pin is standing configuration, the `:pin` is this request
+   * saying otherwise. The heuristic is "the most expensive
    * enabled model that supports tools" — price is a crude proxy for capability,
    * but it is the only one available before any card is read, and the initiator
    * is exactly where being wrong is most expensive. Ties break on id so the
@@ -272,10 +286,15 @@ export class Orchestrator {
    * Returns the *canonical* id, not what the caller typed: `resolve` accepts
    * aliases and bare names, and the task row should record what actually ran.
    */
-  pickInitiator(requestedModel: string): ModelId {
+  pickInitiator(requestedModel: string, project?: Project): ModelId {
     const pinned = pinnedInitiator(requestedModel);
     // Resolving here means a bad pin is a clean error before a task row exists.
     if (pinned !== null) return this.opts.router.resolve(pinned).model.id;
+
+    // Resolved like the others so a project pinning a model that was later
+    // removed fails loudly here, not as a mystery mid-task.
+    const projectPin = project?.modelPrefs.initiatorPin ?? null;
+    if (projectPin !== null) return this.opts.router.resolve(projectPin).model.id;
 
     const configured = this.opts.defaultInitiatorModel;
     if (configured !== undefined && configured !== null && configured !== "") {
@@ -323,12 +342,19 @@ export class Orchestrator {
    * pulled, the only way to report a problem is a text line inside a 200.
    */
   start(req: OrchestrationRequest): StartedOrchestration {
-    const initiatorModel = this.pickInitiator(req.requestedModel);
+    const initiatorModel = this.pickInitiator(req.requestedModel, req.project);
     // Request settings win over configured defaults, which win over the schema's.
-    const settings = TaskSettingsSchema.parse({
+    const requested = TaskSettingsSchema.parse({
       ...stripUndefined(this.opts.defaultSettings ?? {}),
       ...stripUndefined(req.settings ?? {}),
     });
+    // The project fold is tighten-only and happens exactly once, here: the task
+    // row records the *folded* result, so every later reader — the budget guard,
+    // the approval gate, a dashboard settings PATCH — sees settings the project
+    // has already had its say on. A task inside a gated project cannot loosen
+    // the gate by asking nicely in its request.
+    const settings =
+      req.project === undefined ? requested : this.foldProject(req.project, requested);
     const task = this.createTask(req, initiatorModel, settings);
 
     // One controller for the whole task; every worker's controller is chained to
@@ -356,6 +382,7 @@ export class Orchestrator {
       dashboardUrl: this.dashboardUrl,
       conversation: req.conversation,
       steering: req.steering ?? null,
+      project: req.project ?? null,
     });
     this.sessions.set(task.id, session);
     // Also on abort, because a `start()` whose stream is never pulled never runs
@@ -384,6 +411,22 @@ export class Orchestrator {
     return { taskId: task.id, abort: taskAbort, stream: stream() };
   }
 
+  /**
+   * Apply a project to the requested settings: the tighten-only policy fold,
+   * plus the workspace default — a task that did not name a `workspaceDir`
+   * works in the project's primary workspace, because "run this in the
+   * project" is what selecting a project means. A task that *did* name one
+   * keeps it: pointing a project task at a scratch directory is a legitimate
+   * request, and the fold only exists to stop loosening, which a narrower
+   * workspace is not.
+   */
+  private foldProject(project: Project, requested: TaskSettings): TaskSettings {
+    const folded = effectiveTaskSettings(project, requested);
+    if (folded.workspaceDir !== null) return folded;
+    const workspace = primaryWorkspace(project);
+    return workspace === null ? folded : { ...folded, workspaceDir: workspace.location };
+  }
+
   private createTask(
     req: OrchestrationRequest,
     initiatorModel: ModelId,
@@ -395,6 +438,7 @@ export class Orchestrator {
       status: "pending",
       title: titleFor(req.conversation),
       initiatorModelId: initiatorModel,
+      projectId: req.project?.id ?? null,
       conversationFingerprint: fingerprintConversation(req.conversation),
       settings,
       resultSummary: null,
@@ -424,6 +468,7 @@ interface SessionOptions {
   dashboardUrl: string | null;
   conversation: ChatMessage[];
   steering: (() => string[]) | null;
+  project: Project | null;
 }
 
 interface ToolOutcome {
@@ -582,6 +627,7 @@ class Session {
       conversation,
       taskId: this.o.task.id,
       ...(this.o.dashboardUrl !== null && { dashboardUrl: this.o.dashboardUrl }),
+      ...(this.o.project !== null && { project: this.o.project }),
     });
     if (contextSummary === undefined) return base;
     // A successor gets the same core and digest, then its predecessor's summary

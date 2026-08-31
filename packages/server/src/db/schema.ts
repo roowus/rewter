@@ -50,6 +50,26 @@ export const capabilityCards = sqliteTable("capability_cards", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+// Phase-2 projects. Like providers/models these are configuration, not task
+// history: no lifecycle status, no events. `archived` hides a project from
+// selection without orphaning the tasks that reference it.
+export const projects = sqliteTable(
+  "projects",
+  {
+    id: text("id").primaryKey(),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    resourcesJson: text("resources_json").notNull(),
+    policyJson: text("policy_json").notNull(),
+    modelPrefsJson: text("model_prefs_json").notNull(),
+    archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_projects_slug").on(t.slug)],
+);
+
 export const tasks = sqliteTable(
   "tasks",
   {
@@ -57,6 +77,9 @@ export const tasks = sqliteTable(
     status: text("status").notNull(),
     title: text("title").notNull(),
     initiatorModelId: text("initiator_model_id").notNull(),
+    // Nullable on purpose: a project-less task is the phase-1 behaviour.
+    // No FK — a deleted project must not orphan-block its historical tasks.
+    projectId: text("project_id"),
     conversationFingerprint: text("conversation_fingerprint"),
     settingsJson: text("settings_json").notNull(),
     resultSummary: text("result_summary"),

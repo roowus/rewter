@@ -16,6 +16,8 @@ import {
   CostRecordSchema,
   type Model,
   ModelSchema,
+  type Project,
+  ProjectSchema,
   type Provider,
   ProviderSchema,
   TASK_TRANSITIONS,
@@ -46,6 +48,7 @@ import {
   capabilityCards,
   costRecords,
   models,
+  projects,
   providers,
   tasks,
   workItems,
@@ -252,6 +255,68 @@ export class Repos {
     this.db.delete(capabilityCards).where(eq(capabilityCards.modelId, modelId)).run();
   }
 
+  // ── Projects ─────────────────────────────────────────────────────────────
+  //
+  // Configuration like providers/models: no lifecycle, no events. The slug is
+  // UNIQUE at the DB layer because it is the selection key (header, model
+  // suffix, cwd match) — two projects answering to one name would make
+  // selection ambiguous in a way no amount of application code can repair.
+
+  upsertProject(project: Project): Project {
+    const p = ProjectSchema.parse(project);
+    const values = projectToRow(p);
+    this.db
+      .insert(projects)
+      .values(values)
+      .onConflictDoUpdate({
+        target: projects.id,
+        set: {
+          slug: values.slug,
+          name: values.name,
+          description: values.description,
+          resourcesJson: values.resourcesJson,
+          policyJson: values.policyJson,
+          modelPrefsJson: values.modelPrefsJson,
+          archived: values.archived,
+          updatedAt: values.updatedAt,
+        },
+      })
+      .run();
+    return p;
+  }
+
+  getProject(id: string): Project | undefined {
+    const row = this.db.select().from(projects).where(eq(projects.id, id)).get();
+    return row === undefined ? undefined : rowToProject(row);
+  }
+
+  /**
+   * Selection lookup — header, model suffix, and cwd resolution all land here.
+   * Archived projects are refused by selection at the CALLER (routes/engine),
+   * not here: the dashboard still needs to load an archived project to show and
+   * un-archive it.
+   */
+  getProjectBySlug(slug: string): Project | undefined {
+    const row = this.db.select().from(projects).where(eq(projects.slug, slug)).get();
+    return row === undefined ? undefined : rowToProject(row);
+  }
+
+  listProjects(opts: { includeArchived?: boolean } = {}): Project[] {
+    const rows = this.db
+      .select()
+      .from(projects)
+      .orderBy(asc(projects.slug))
+      .all()
+      .map(rowToProject);
+    return opts.includeArchived === true ? rows : rows.filter((p) => !p.archived);
+  }
+
+  deleteProject(id: string): void {
+    // Tasks keep their projectId (no FK on purpose) — history stays attributed
+    // to an id that no longer resolves, which readers already handle as null-ish.
+    this.db.delete(projects).where(eq(projects.id, id)).run();
+  }
+
   // ── Tasks ────────────────────────────────────────────────────────────────
 
   createTask(task: Task): Task {
@@ -263,6 +328,7 @@ export class Repos {
         status: t.status,
         title: t.title,
         initiatorModelId: t.initiatorModelId,
+        projectId: t.projectId,
         conversationFingerprint: t.conversationFingerprint,
         settingsJson: JSON.stringify(t.settings),
         resultSummary: t.resultSummary,
@@ -651,6 +717,30 @@ export function mergeCardOverrides(card: CapabilityCard): CapabilityCard {
 
 function rowToTask(row: typeof tasks.$inferSelect): Task {
   return TaskSchema.parse({ ...row, settings: JSON.parse(row.settingsJson) });
+}
+
+function projectToRow(p: Project): typeof projects.$inferInsert {
+  return {
+    id: p.id,
+    slug: p.slug,
+    name: p.name,
+    description: p.description,
+    resourcesJson: JSON.stringify(p.resources),
+    policyJson: JSON.stringify(p.policy),
+    modelPrefsJson: JSON.stringify(p.modelPrefs),
+    archived: p.archived,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
+function rowToProject(row: typeof projects.$inferSelect): Project {
+  return ProjectSchema.parse({
+    ...row,
+    resources: JSON.parse(row.resourcesJson),
+    policy: JSON.parse(row.policyJson),
+    modelPrefs: JSON.parse(row.modelPrefsJson),
+  });
 }
 
 function rowToApproval(row: typeof approvals.$inferSelect): Approval {
