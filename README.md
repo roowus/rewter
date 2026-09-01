@@ -96,8 +96,10 @@ the first **tier-3 harness** (headless Claude Code) on the seam built in phase 1
 *shipped: `spawn_worker` takes `tier: 3`, one approval gates the spawn ("run Claude Code
 in <dir>"), `send_to_worker` reaches the running session mid-turn, and its self-reported
 cost is metered under `harness/claude-code`; opt-in via `"harnesses": { "claudeCode":
-{ "enabled": true } }` in the config. tmux attach and restart re-adoption come in later
-slices.*
+{ "enabled": true, "binary": "/abs/path/to/claude", "model": "…" } }` in the config —
+`binary` should be absolute (launchd has no user PATH) and `model` pins `--model` past
+the child's own settings, which can otherwise point it at a broken router alias. tmux
+attach and restart re-adoption come in later slices.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and

@@ -249,6 +249,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
           createClaudeCodeAdapter({
             binary: config.harnesses.claudeCode.binary,
             permissionMode: config.harnesses.claudeCode.permissionMode,
+            model: config.harnesses.claudeCode.model,
           }),
         ]
       : [],

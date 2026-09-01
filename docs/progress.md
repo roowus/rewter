@@ -58,6 +58,35 @@ and why in this order.
 
 ## Log
 
+### 2026-09-01 — the live smoke that lied: empty harness success is now a failure (P2-M5 follow-up)
+
+The first live tier-3 run closed **succeeded — "(the harness returned nothing)"** while
+the requested `hello.txt` was never created. The child's transcript showed the
+instructions arrived (right cwd, right permission mode) but the session produced *zero
+assistant output* and a result line with `is_error:false`, empty `result`, zero usage.
+
+Root cause, in two layers:
+
+1. **The env-strip is not a fence.** The adapter strips
+   `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` from the child's env, but Claude Code
+   re-applies the `env` block from its own `~/.claude/settings.json` — which on this
+   machine points at a router and sets `ANTHROPIC_MODEL` to a router alias. That alias's
+   combo upstream had broken (probed directly: `message_start` → `message_stop` with
+   zero content blocks and zero tokens, on every combo alias), so the child streamed
+   nothing, silently. New `model` config option: passed as `--model`, which **beats the
+   child's settings env** — the one lever that reaches past it. Config example and
+   ARCHITECTURE env-sanitization section updated to say "best-effort, not a guarantee".
+2. **The runner believed it.** A turn with `is_error:false` and empty text was scored a
+   success with a placeholder summary. Claude Code's result line always carries the final
+   assistant message when a turn really happened, so an empty one means the model
+   streamed nothing — now a **failed** run ("the harness reported success but returned
+   no output"), which the initiator reads and re-plans around.
+
+Two new tests (empty-success → failed; `--model` in argv when configured, absent when
+not). Also learned and documented: under launchd the daemon has no user PATH, so
+`binary` must be an absolute path (`whence -p claude` — the interactive `claude` is a
+shell function).
+
 ### 2026-09-01 — tier 3 is live: headless Claude Code as a worker (P2-M5, slice 1)
 
 `spawn_worker` now takes `tier: 3`. The initiator can hand a work item to a headless

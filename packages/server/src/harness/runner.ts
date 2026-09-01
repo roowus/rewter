@@ -184,6 +184,19 @@ export async function runHarnessWorker(
     });
   }
 
+  if (!lastResult.isError && lastResult.text.trim() === "") {
+    // "Success" with no text is not a success. Claude Code's result line always
+    // carries the final assistant message when a turn really happened; an empty
+    // one means the model streamed nothing (dead upstream, silently exhausted
+    // quota). Live smoke found exactly this: a broken router returned empty
+    // streams and the run closed "succeeded — (the harness returned nothing)"
+    // while the requested file was never created. Fail loudly instead — the
+    // initiator reads the reason and retries at tier 2 or elsewhere.
+    const error = "the harness reported success but returned no output";
+    ctx.repos.transitionWorkerRun(run.id, "failed", { error });
+    return done("failed", { summary: `failed: ${error}`, fullText: null, error });
+  }
+
   if (lastResult.isError) {
     // The harness completed and *said* it failed — its text is the error, and
     // worth keeping as resultText: "what Claude Code said went wrong" is the

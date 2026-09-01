@@ -321,6 +321,19 @@ describe("failure paths", () => {
     expect(outcome.error).toContain("exited without producing a result");
   });
 
+  it("a 'successful' turn with no output is failed, not silently succeeded", async () => {
+    // The live-smoke defect: a child whose upstream returned empty streams
+    // still emits `result` with is_error:false and result:"" — and the task's
+    // actual work was never done. An empty success is a failure.
+    const { adapter } = fakeAdapter([turnEnd({ resultText: "  \n " })]);
+
+    const outcome = await runHarnessWorker(makeContext(), options(adapter));
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("returned no output");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.status).toBe("failed");
+  });
+
   it("a harness that says it failed is failed, with its text kept as the artifact", async () => {
     const { adapter } = fakeAdapter([
       turnEnd({ resultText: "I could not find the module you named.", isError: true }),

@@ -160,6 +160,15 @@ export const HarnessesConfigSchema = z
          * refuse-and-adapt. The spawn itself is what rewter gates.
          */
         permissionMode: z.string().min(1).default("acceptEdits"),
+        /**
+         * Passed as `--model` when set. The env-strip in the adapter cannot
+         * stop the child re-applying a router URL + model alias from its own
+         * `~/.claude/settings.json` env block, and an alias the router has
+         * broken means a silent, empty session. The flag beats the child's
+         * settings, so this is the one reliable lever. Unset = the child's own
+         * default.
+         */
+        model: z.string().min(1).optional(),
       })
       .default({}),
   })

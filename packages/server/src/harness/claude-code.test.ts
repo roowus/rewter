@@ -303,6 +303,35 @@ process.exit(1);
     expect(events.filter((e) => e.type === "fatal")).toEqual([]);
   });
 
+  it("passes --model through to argv when configured, and omits it when not", async () => {
+    const ARGV_STUB = `
+const say = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+say({ type: "result", is_error: false, result: "argv: " + process.argv.slice(2).join(" ") });
+process.exit(0);
+`;
+    const stub = stubBinary(ARGV_STUB);
+
+    const pinned = createClaudeCodeAdapter({
+      binary: stub,
+      permissionMode: "acceptEdits",
+      model: "claude-sonnet-5",
+    });
+    const pinnedEvents = await collect(
+      pinned.spawn({ instructions: "anything", cwd: tmpdir(), runId: RUN_ID }),
+    );
+    const pinnedEnd = pinnedEvents.find((e) => e.type === "turn_end");
+    if (pinnedEnd?.type !== "turn_end") throw new Error("expected a turn_end event");
+    expect(pinnedEnd.resultText).toContain("--model claude-sonnet-5");
+
+    const unpinned = createClaudeCodeAdapter({ binary: stub, permissionMode: "acceptEdits" });
+    const unpinnedEvents = await collect(
+      unpinned.spawn({ instructions: "anything", cwd: tmpdir(), runId: RUN_ID }),
+    );
+    const unpinnedEnd = unpinnedEvents.find((e) => e.type === "turn_end");
+    if (unpinnedEnd?.type !== "turn_end") throw new Error("expected a turn_end event");
+    expect(unpinnedEnd.resultText).not.toContain("--model");
+  });
+
   it("strips the router env so the harness cannot recurse into the daemon", async () => {
     const stub = stubBinary(`
 const say = (o) => process.stdout.write(JSON.stringify(o) + "\\n");

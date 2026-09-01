@@ -2129,9 +2129,14 @@ recorder knows to skip.
 **Env sanitization**: the child gets the daemon's environment minus `ANTHROPIC_BASE_URL`
 and `ANTHROPIC_AUTH_TOKEN`. Those two are how a machine points Claude Code at a router —
 this daemon, typically — and a harness that routed back through the process that spawned
-it would recurse: task → harness → `/v1` → task. Stripped, the child falls back to its
-own `~/.claude` login, i.e. the subscription the owner installed it with. There is a
-regression test that spawns a real child and inspects what it sees.
+it would recurse: task → harness → `/v1` → task. There is a regression test that spawns a
+real child and inspects what it sees. The strip is **best-effort, not a guarantee**:
+Claude Code re-applies whatever `env` block its own `~/.claude/settings.json` carries,
+which can point the child right back at a router — and at a model alias that router has
+broken or exhausted, which live smoke showed produces a *completely silent* session (the
+child emits `result` with `is_error:false` and an empty `result`). That is why the
+`model` config option exists: the `--model` flag beats the child's settings env, and is
+the one lever that reaches past it.
 
 `permissionMode` defaults to `acceptEdits`: headless has no human to prompt, so
 `default` would park forever on the first gated tool; `acceptEdits` lets it edit inside
@@ -2155,7 +2160,12 @@ transition) only manages the three edges the process cannot:
   `session.send()`. Session end is decided by an `expectAnotherTurn` flag, **not** by
   whether the inbox is empty at the turn boundary: a message forwarded *mid-turn* empties
   the inbox early while still owing the session another turn. Only a turn nothing was
-  sent into triggers `end()`; the last turn's result wins.
+  sent into triggers `end()`; the last turn's result wins. A "successful" last turn whose
+  result text is **empty is a failed run**, not a success: Claude Code's result line
+  always carries the final assistant message when a turn really happened, so an empty one
+  means the model streamed nothing (dead upstream, silently exhausted quota) — live smoke
+  produced exactly this and the run had closed "succeeded" while the requested work was
+  never done.
 - **The money.** Harness spend never touches the router, so without a CostRecord it
   would be invisible to the task's budget cap. Every `turn_end` that reports cost or
   tokens lands a CostRecord under the synthetic model id **`harness/claude-code`**
@@ -2189,11 +2199,13 @@ harness works in the same directory tier-2 workers do (`cwdInWorkspace` is what 
 gate auto-approve a workspace-confined spawn). Config is opt-in and additive:
 
 ```jsonc
-"harnesses": { "claudeCode": { "enabled": false, "binary": "claude", "permissionMode": "acceptEdits" } }
+"harnesses": { "claudeCode": { "enabled": false, "binary": "claude", "permissionMode": "acceptEdits", "model": "(optional — pins --model past the child's own settings)" } }
 ```
 
 `HarnessesConfigSchema` defaults the whole block, so configs written before the feature
 existed still parse. The daemon constructs the adapter only when `enabled` is true.
+Under launchd the daemon has no user PATH, so `binary` should be an **absolute path**
+(`whence -p claude` finds it — the interactive `claude` is often a shell function).
 
 Still to come in later slices: tmux wrapping (`rwtr_<runId>` session names, `tmux attach`
 mirroring), restart re-adoption via the persisted session id, and the generic JSON

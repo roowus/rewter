@@ -20,8 +20,12 @@
  * `ANTHROPIC_AUTH_TOKEN`. Those two are how a machine points Claude Code at a
  * router — this daemon, typically — and a harness that routed back through
  * the process that spawned it would recurse: task → harness → /v1 → task.
- * Stripped, the child falls back to its own login (`~/.claude`), which is the
- * subscription the owner installed it with.
+ * The strip is best-effort, not a guarantee: Claude Code re-applies whatever
+ * `env` block its own `~/.claude/settings.json` carries, which can point it
+ * right back at a router (and at a model alias that router has broken —
+ * live-smoked as a completely silent session). That is why `model` exists as
+ * an option: the `--model` flag beats the settings env, and is the one lever
+ * that reaches past it.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { z } from "zod";
@@ -39,6 +43,14 @@ export interface ClaudeCodeOptions {
    * another program (see runner.ts).
    */
   permissionMode: string;
+  /**
+   * Passed as `--model` when set. Without it the child uses whatever its own
+   * config (`~/.claude/settings.json`) says — which on a machine whose global
+   * Claude Code rides a router alias can be a model the router has broken or
+   * exhausted. Pinning here keeps the harness working when the owner's daily
+   * driver isn't.
+   */
+  model?: string | undefined;
 }
 
 /** What we read from the wire; everything else is skipped, never rejected. */
@@ -217,6 +229,10 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeOptions): HarnessAdapter
             "--verbose",
             "--permission-mode",
             opts.permissionMode,
+            // The flag beats the child's own settings env — the only lever we
+            // have, since ~/.claude/settings.json re-applies whatever env it
+            // wants after our strip.
+            ...(opts.model !== undefined ? ["--model", opts.model] : []),
           ],
           { cwd: spec.cwd, env, stdio: ["pipe", "pipe", "pipe"] },
         );
