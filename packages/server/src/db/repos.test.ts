@@ -4,6 +4,7 @@ import {
   IllegalTransitionError,
   ModelIdSchema,
   ProjectSchema,
+  SkillSchema,
   TaskSettingsSchema,
   newApprovalId,
   newCostRecordId,
@@ -436,6 +437,66 @@ describe("Projects (configuration, not lifecycle)", () => {
     const parsed = EventPayloadSchema.parse(legacy);
     if (parsed.type !== "task.created") throw new Error("wrong branch");
     expect(parsed.task.projectId).toBeNull();
+  });
+});
+
+describe("Skills index (a cache of the SKILL.md tree)", () => {
+  function makeSkill(slug: string, over: Record<string, unknown> = {}) {
+    return SkillSchema.parse({
+      slug,
+      status: "approved",
+      scope: "global",
+      projectSlug: null,
+      path: `/skills/global/${slug}/SKILL.md`,
+      description: `does ${slug}`,
+      learnedFrom: null,
+      uses: 0,
+      updatedAt: tick,
+      ...over,
+    });
+  }
+
+  it("replace → list round-trips, sorted by slug", () => {
+    repos.replaceSkillsIndex([makeSkill("zeta"), makeSkill("alpha")]);
+    expect(repos.listSkills().map((s) => s.slug)).toEqual(["alpha", "zeta"]);
+    expect(repos.listSkills()[0]).toEqual(makeSkill("alpha"));
+  });
+
+  it("replacement is wholesale — a rescan is the whole truth, deletions included", () => {
+    repos.replaceSkillsIndex([makeSkill("keep"), makeSkill("gone")]);
+    repos.replaceSkillsIndex([makeSkill("keep")]);
+    expect(repos.listSkills().map((s) => s.slug)).toEqual(["keep"]);
+  });
+
+  it("the same slug may exist at several paths — path is the key, not slug", () => {
+    // global + project shadow + a pending replacement draft: all legitimate.
+    repos.replaceSkillsIndex([
+      makeSkill("deploy"),
+      makeSkill("deploy", {
+        scope: "project",
+        projectSlug: "clarity",
+        path: "/skills/clarity/deploy/SKILL.md",
+      }),
+      makeSkill("deploy", { status: "pending", path: "/skills/pending/deploy/SKILL.md" }),
+    ]);
+    expect(repos.listSkills()).toHaveLength(3);
+  });
+
+  it("nullable provenance columns survive the round-trip", () => {
+    const learned = makeSkill("learned", {
+      learnedFrom: newTaskId(),
+      uses: 7,
+      status: "pending",
+      path: "/skills/pending/learned/SKILL.md",
+    });
+    repos.replaceSkillsIndex([learned]);
+    expect(repos.listSkills()[0]).toEqual(learned);
+  });
+
+  it("emits NO events — the index is derived state, not history", () => {
+    const before = bus.eventsAfter(0).length;
+    repos.replaceSkillsIndex([makeSkill("quiet")]);
+    expect(bus.eventsAfter(0)).toHaveLength(before);
   });
 });
 

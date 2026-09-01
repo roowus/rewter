@@ -29,6 +29,7 @@ import { LiveTaskIndex } from "./orchestrator/live.js";
 import { type ReconcileResult, reconcileOnBoot, reconcileSummary } from "./reconcile.js";
 import { Router } from "./router/router.js";
 import { removePidfile, writePidfile } from "./service/pidfile.js";
+import { reindexSkills } from "./skills/reindex.js";
 
 export interface StartDaemonOptions {
   /** Explicit config path (`--config`); otherwise `~/.rewter/config.json`. */
@@ -204,6 +205,13 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   // nothing behind it.
   const reconciled = reconcileOnBoot(repos);
 
+  // The skills index is a cache of the SKILL.md tree; every boot rebuilds it,
+  // so files added/edited/removed while the daemon was down are simply picked
+  // up. Problems (malformed imports, name/dir mismatches) are logged per file
+  // after `listen`, never fatal — one bad import must not stop the daemon.
+  const skillsDir = expandPath(config.skillsDir, home);
+  const skillsIndex = reindexSkills(skillsDir, repos);
+
   const router = new Router({ repos, env });
   // The bearer token is read from the environment by *name*, like every other
   // secret here — the config file holds the variable name, never the value.
@@ -342,6 +350,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   for (const warning of seeded.warnings) app.log.warn({ warning }, "config");
   for (const { slug, env: name } of seeded.missingKeys) {
     app.log.warn({ provider: slug, envVar: name }, "provider disabled: key env var is unset");
+  }
+  for (const { path, reason } of skillsIndex.problems) {
+    app.log.warn({ path, reason }, "skill not indexed");
   }
 
   return {

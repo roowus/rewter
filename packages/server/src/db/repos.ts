@@ -20,6 +20,8 @@ import {
   ProjectSchema,
   type Provider,
   ProviderSchema,
+  type Skill,
+  SkillSchema,
   TASK_TRANSITIONS,
   type Task,
   TaskSchema,
@@ -50,6 +52,7 @@ import {
   models,
   projects,
   providers,
+  skills,
   tasks,
   workItems,
   workerRuns,
@@ -315,6 +318,32 @@ export class Repos {
     // Tasks keep their projectId (no FK on purpose) — history stays attributed
     // to an id that no longer resolves, which readers already handle as null-ish.
     this.db.delete(projects).where(eq(projects.id, id)).run();
+  }
+
+  // ── Skills index ─────────────────────────────────────────────────────────
+  //
+  // The SKILL.md files are the source of truth; these rows are a rebuildable
+  // cache of their frontmatter (phase-2 M4). Hence no upsert/patch surface —
+  // the only write is wholesale replacement from a fresh tree scan, inside one
+  // transaction so no reader ever sees a half-rebuilt index.
+
+  replaceSkillsIndex(all: Skill[]): void {
+    const parsed = all.map((s) => SkillSchema.parse(s));
+    this.db.transaction((tx) => {
+      tx.delete(skills).run();
+      for (const s of parsed) {
+        tx.insert(skills).values(s).run();
+      }
+    });
+  }
+
+  listSkills(): Skill[] {
+    return this.db
+      .select()
+      .from(skills)
+      .orderBy(asc(skills.slug), asc(skills.path))
+      .all()
+      .map((r) => SkillSchema.parse(r));
   }
 
   // ── Tasks ────────────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ export * from "./lifecycle.js";
 export * from "./entities.js";
 export * from "./events.js";
 export * from "./projects.js";
+export * from "./skills.js";
 export * from "./fold.js";
 export * from "./costs.js";
 export * from "./registry.js";

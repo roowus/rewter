@@ -121,6 +121,11 @@ export const ConfigSchema = z.object({
    * into the database file.
    */
   workspacesDir: z.string().min(1).default("~/.rewter/workspaces"),
+  /**
+   * The SKILL.md tree (phase-2 M4): `global/`, `<project-slug>/`, `pending/`
+   * under here. Files are the source of truth; the DB only indexes them.
+   */
+  skillsDir: z.string().min(1).default("~/.rewter/skills"),
   /** Env var NAME holding the bearer token clients must send to `/v1`. */
   apiKeyEnv: z.string().min(1).default("REWTER_API_KEY"),
   /**

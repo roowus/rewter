@@ -84,3 +84,18 @@ export const ProjectSlugSchema = z
   .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
   .brand("projectSlug");
 export type ProjectSlug = z.infer<typeof ProjectSlugSchema>;
+
+/**
+ * Skill slugs follow the agentskills.io `name` rules — lowercase, digits,
+ * single hyphens, ≤64 chars — which is deliberately the same shape as project
+ * slugs: both are dirnames, digest-line tokens, and things humans type at a
+ * prompt (`load_skill deploy-checklist`). The slug doubles as the skill's
+ * directory name on disk; the two are required to agree at index time.
+ */
+export const SkillSlugSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+  .brand("skillSlug");
+export type SkillSlug = z.infer<typeof SkillSlugSchema>;

@@ -196,6 +196,26 @@ export const costRecords = sqliteTable(
   (t) => [index("idx_cost_records_task").on(t.taskId)],
 );
 
+// Phase-2 skills index. One row per SKILL.md on disk; the FILE is the source
+// of truth and this table is rebuilt from the tree (reindex on boot and after
+// every store write). Keyed by path — the same slug can exist approved in two
+// scopes and again as a pending draft, and path is the only true uniqueness.
+export const skills = sqliteTable(
+  "skills",
+  {
+    path: text("path").primaryKey(),
+    slug: text("slug").notNull(),
+    status: text("status").notNull(),
+    scope: text("scope").notNull(),
+    projectSlug: text("project_slug"),
+    description: text("description").notNull(),
+    learnedFrom: text("learned_from"),
+    uses: integer("uses").notNull().default(0),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_skills_slug").on(t.slug), index("idx_skills_status").on(t.status)],
+);
+
 // Phase-2 learned stats — schema present from day one per the plan.
 export const modelStats = sqliteTable(
   "model_stats",

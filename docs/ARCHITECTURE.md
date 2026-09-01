@@ -535,6 +535,65 @@ The run panel gains a project picker that excludes archived projects (they refus
 a 400) and encodes the choice as `auto/orchestrator@<slug>[:<pin>]` — project before pin,
 because slugs never contain `:`.
 
+## Skills (P2-M4): the SKILL.md store and index
+
+The learning loop's substrate (design: `docs/design/phase2-direction.md` §2). A skill is one
+directory holding one `SKILL.md` — the agentskills.io format verbatim: YAML frontmatter with
+`name` + `description` (≤1024 chars), markdown body. rewter adds three **optional** provenance
+keys other tools ignore: `learned_from: task_…`, `uses: n`, `project: <slug>`. Frontmatter is
+`.passthrough()` — an imported Claude Code skill carries `license`, `allowed-tools`, `metadata`
+and must not be refused for them — while the known keys are still hard-validated, because the
+same schema gates LLM output in the distill path.
+
+**Files are the source of truth; the DB only indexes them.** A skill you can't open in an
+editor is a skill you can't fix. The tree (default `~/.rewter/skills`, config `skillsDir`):
+
+```
+global/<slug>/SKILL.md          approved — every task sees it
+<project-slug>/<slug>/SKILL.md  approved — tasks under that project see it
+pending/<slug>/SKILL.md         staged drafts — NEVER retrieved
+```
+
+Consequences of that layout, each load-bearing:
+
+- **Scope is read off the directory** for approved skills. Where the owner put the file *is*
+  the approval act, and outranks anything the frontmatter claims — a skill moved to `global/`
+  that still says `project: clarity` is global; the move was the decision. Pending drafts live
+  in `pending/` by definition, so for them the frontmatter `project` key carries the *target*
+  scope instead: where the file will go on approval.
+- **`global` and `pending` are reserved project slugs** (`RESERVED_PROJECT_SLUGS`), refused by
+  `ProjectCreateSchema` — a project named `pending` would collide with a scope directory on
+  disk. The refine lives on *create*, not in `ProjectSlugSchema` itself: refusing to read
+  existing data is never the right failure mode for a rule about creating it.
+- The frontmatter `name` must equal the directory name, enforced at index time — the slug is
+  the address (`load_skill <slug>`, the digest line) and the directory is what the owner sees;
+  silence about a mismatch would advertise a slug that can't be loaded.
+
+The scanner (`server/src/skills/store.ts`) faces an **untrusted tree** — owner-edited,
+owner-imported — so its contract is: parse what's valid, *name* what isn't, never throw. Every
+unreadable file becomes a `SkillProblem {path, reason}` in the scan result ("frontmatter is not
+valid YAML: …", "name X != directory Y"), logged per file at boot, never fatal: one malformed
+import must not take down retrieval for the forty skills next to it. A missing root is an empty
+result — a daemon that has never learned anything has no skills directory, and that is normal.
+
+The index (`skills` table, keyed by **path** — the same slug legitimately exists in `global/`,
+as a project shadow, and again as a pending replacement draft) is a cache with exactly one
+write: `replaceSkillsIndex` swaps the whole table in one transaction, so no reader ever sees a
+half-rebuilt index. Rebuilt at boot (`reindexSkills` in `daemon.ts`) and — in the coming slices
+— after every store mutation. It emits **no events**: derived state, not history.
+
+Retrieval visibility is one shared pure function, `visibleSkills(all, projectSlug)`
+(`shared/src/skills.ts`), which every retrieval path must go through. It pins the two
+invariants the loop is safe by: **nothing pending is ever returned**, whatever the scope
+arguments say, and a project task sees global ∪ project with **project shadowing global** on a
+slug collision (the `CLAUDE.md` precedence rule). Stable-sorted by slug for digest
+cacheability.
+
+Still to come in this milestone: the distiller job (post-success, ≥5-tool-call heuristic, cheap
+model, zod-parsed), the stage/approve pipeline (`/internal/skills` routes; approve = move the
+file into its scoped directory + reindex), and the skills digest + `load_skill` tool (metered
+by the same `estimateTokens` as the registry digest).
+
 ## Orchestrator engine
 
 Implemented in M5a (the engine) and M5b (the wiring) — `packages/server/src/orchestrator/`.
@@ -1302,6 +1361,7 @@ while opening another's database. It failed silently for exactly as long as no r
   "host": "127.0.0.1",
   "dbPath": "~/.rewter/rewter.db",  // a leading ~ is expanded; ":memory:" works for throwaway runs
   "workspacesDir": "~/.rewter/workspaces",  // one dir per task; NOT under dbPath, on purpose
+  "skillsDir": "~/.rewter/skills",  // the SKILL.md tree (P2-M4); files are truth, DB indexes
   "apiKeyEnv": "REWTER_API_KEY",    // env var NAME holding the bearer token /v1 requires
   "providers": [
     { "preset": "anthropic" },

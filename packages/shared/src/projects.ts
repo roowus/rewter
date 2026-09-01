@@ -16,6 +16,7 @@ import {
   type TaskSettings,
 } from "./entities.js";
 import { ProjectSlugSchema } from "./ids.js";
+import { RESERVED_PROJECT_SLUGS } from "./skills.js";
 
 /**
  * Fold a project's policy into a task's requested settings. The rule is
@@ -72,7 +73,13 @@ export function primaryWorkspace(project: Project): ProjectResource | null {
  */
 export const ProjectCreateSchema = z
   .object({
-    slug: ProjectSlugSchema,
+    // "global" and "pending" are directory names inside the skills root — a
+    // project by either name would collide with them on disk. Refused at
+    // creation, not in the slug schema, so existing rows always parse.
+    slug: ProjectSlugSchema.refine(
+      (s) => !(RESERVED_PROJECT_SLUGS as readonly string[]).includes(s),
+      { message: `reserved slug — ${RESERVED_PROJECT_SLUGS.join(", ")} name skills directories` },
+    ),
     name: z.string().min(1),
     description: z.string().default(""),
     resources: z.array(ProjectResourceSchema).default([]),

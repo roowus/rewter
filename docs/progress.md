@@ -53,10 +53,43 @@ and why in this order.
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
-| P2-M4 | Skills loop: SKILL.md store, distiller, stage/approve pipeline, digest + `load_skill` | ⬜ |
+| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ⬜ · stage/approve pipeline ⬜ · digest + `load_skill` ⬜ | 🔶 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-09-01 — the SKILL.md store and index (P2-M4, first slice)
+
+The substrate the learning loop stands on: skills are directories of agentskills.io
+`SKILL.md` files under `~/.rewter/skills` (`skillsDir`), and **the files are the source of
+truth** — the DB `skills` table (migration `0002_skills`) is a rebuildable cache, keyed by
+path because the same slug legitimately exists as a global skill, a project shadow, and a
+pending replacement draft all at once.
+
+- **Shared contract** (`shared/src/skills.ts`): `SkillFrontmatterSchema` — passthrough for
+  imported skills' unknown keys, hard validation on the known ones (the same schema gates
+  LLM output in the distill path); `SkillSchema` for index rows; `SkillSlugSchema` in
+  `ids.ts`. `RESERVED_PROJECT_SLUGS` (`global`, `pending`) now refused by
+  `ProjectCreateSchema` — they name scope directories on disk. Refused at *create* only, so
+  pre-existing rows still parse.
+- **`visibleSkills(all, projectSlug)`** — the one pure function every retrieval path must
+  go through, pinning the loop's two safety invariants: **nothing pending is ever
+  returned**, and project shadows global on a slug collision (`CLAUDE.md` precedence).
+  Stable-sorted by slug for digest cacheability.
+- **The scanner** (`server/src/skills/store.ts`) faces an owner-edited, owner-imported
+  tree, so its contract is parse-what's-valid, *name*-what-isn't, never throw: each bad
+  file becomes a `SkillProblem {path, reason}`, logged per file at boot, never fatal. Scope
+  is read off the directory for approved skills (placement *is* the approval act and
+  outranks frontmatter claims); pending drafts carry their target scope in frontmatter
+  `project`. Frontmatter `name` must equal the directory name — a mismatch would advertise
+  a slug `load_skill` can't resolve.
+- **The index** has exactly one write, `replaceSkillsIndex` — wholesale swap in one
+  transaction, so no reader sees a half-rebuilt index; no events (derived state, not
+  history). Rebuilt at boot via `reindexSkills`.
+
+29 new tests (frontmatter validation, visibility invariants, scanner against a real temp
+tree, index round-trips). Next slices: distiller job, stage/approve pipeline
+(`/internal/skills`), skills digest + `load_skill` tool on the `estimateTokens` meter.
 
 ### 2026-09-01 — the digest budget counts tokens, not characters (closes #8)
 
