@@ -54,9 +54,50 @@ and why in this order.
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
-| P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
+| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach + restart re-adoption in later slices | 🔶 |
 
 ## Log
+
+### 2026-09-01 — tier 3 is live: headless Claude Code as a worker (P2-M5, slice 1)
+
+`spawn_worker` now takes `tier: 3`. The initiator can hand a work item to a headless
+Claude Code session — an external agent that brings its own model, tools, and judgment —
+and everything rewter promises about workers still holds: one approval gate before the
+process exists, mid-run `send_to_worker` reaching the session as a stdin frame, cost
+visible to the budget guard, and a run row that always closes. Three new files under
+`server/src/harness/`, each with its own test surface:
+
+- **`claude-code.ts`** — the adapter. `claude -p --input-format stream-json
+  --output-format stream-json --verbose` turns the CLI into exactly the shape
+  `HarnessSession` wants. The wire format is parsed *defensively* (loose zod, skip never
+  throw — it belongs to another program's release cycle); missing cost/usage degrades to
+  null, never zero ("the harness did not say" vs. "this turn was free"). The child's env
+  is stripped of `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` so a harness cannot recurse
+  into the daemon that spawned it — regression-tested by spawning a real child that echoes
+  its env. The `EventQueue` seam guarantees a fatal event is always the last event.
+- **`runner.ts`** — the tier-3 `WorkerRunner`. One honest gate (`spawn_harness`, "run
+  Claude Code in <dir>") on the *same* `Approvals` object as tier 2 — per-action gating
+  cannot reach inside another program, so the spawn is what you approve. The inbox drains
+  at every event; a turn that was sent a follow-up keeps stdin open
+  (`expectAnotherTurn`), a turn nothing was sent into ends the conversation — mid-run
+  prompting, the hard requirement, at tier 3. Cost lands under the synthetic
+  `harness/claude-code` model id with an all-null pricing snapshot (the harness computed
+  it; there is no per-token price to snapshot).
+- **`types.ts`** — the contract, rewritten from the phase-1 speculative seam to what got
+  built: synchronous `spawn`, foreseeable failures as fatal events rather than throws.
+
+Engine wiring: `openTier3()` opens lazily on tier 2's workspace + approvals; a tier-3
+spawn on a daemon with no harness configured (or one the project's `allowedHarnesses` —
+now enforced — excludes) comes back as a tool *result* pointing at tier 2, not an error.
+Config is opt-in: `"harnesses": { "claudeCode": { "enabled": true } }`; old configs parse
+unchanged. `ORCHESTRATOR_TOOLS_VERSION` and `ORCHESTRATOR_PROMPT_VERSION` are 5.
+
+30 new tests (adapter against real stub processes including a missing binary and an
+env-echo child; runner against a scripted session and a real in-memory DB — gate denial,
+every close path, inbox, money). 1260 server tests green. Out of slice 1, by design: tmux
+attach/mirror (`tmux` is not even installed here), restart re-adoption of live sessions
+(the `harnessSessionId` column is written, which is the seam), aider/codex/generic
+adapters. The board row stays 🔶 until those land.
 
 ### 2026-09-01 — digest + `load_skill`: approved skills reach the prompts (P2-M4, slice 4 — milestone complete)
 

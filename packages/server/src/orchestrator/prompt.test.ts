@@ -31,7 +31,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(4);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(5);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {
@@ -44,6 +44,21 @@ describe("the core prompt", () => {
     );
     expect(ladder).not.toContain("Not yet available");
     expect(ladder).toContain("approval");
+  });
+
+  it("offers tier 3 as a harness the model can spawn, with the fallback spelled out", () => {
+    // Same trap one tier up (P2-M5): a ladder that still calls tier 3
+    // unavailable makes every configured harness dead code. The fallback
+    // matters because a daemon *without* a harness refuses the spawn at the
+    // tool boundary, and the model needs to know what to do with that.
+    const ladder = ORCHESTRATOR_CORE_PROMPT.slice(
+      ORCHESTRATOR_CORE_PROMPT.indexOf("**tier 3**"),
+      ORCHESTRATOR_CORE_PROMPT.indexOf("# Steering"),
+    );
+    expect(ladder).not.toContain("Not yet available");
+    expect(ladder).toContain("approval");
+    expect(ladder).toContain("fall back to tier 2");
+    expect(ladder).toContain("send_to_worker");
   });
 
   it("teaches every behaviour the engine relies on the model knowing", () => {

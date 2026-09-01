@@ -430,7 +430,8 @@ function closeCancelled(
   return done("cancelled", { summary: "cancelled", fullText: null, error: "cancelled" });
 }
 
-function createRun(ctx: WorkerContext): WorkerRun {
+/** A fresh attempt-1 run row. Shared with the tier-3 runner: one definition of "created". */
+export function createRun(ctx: WorkerContext): WorkerRun {
   const now = ctx.clock();
   return ctx.repos.createWorkerRun({
     id: newWorkerRunId(),

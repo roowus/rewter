@@ -44,6 +44,8 @@ import {
 } from "@rewter/shared";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
+import { HARNESS_COST_MODEL_ID, createHarnessRunner } from "../harness/runner.js";
+import type { HarnessAdapter } from "../harness/types.js";
 import { renderDigest } from "../registry/digest.js";
 import { pinnedInitiator } from "../router/resolve.js";
 import type { Router } from "../router/router.js";
@@ -96,6 +98,12 @@ export interface OrchestratorOptions {
    * home; the daemon passes the configured path.
    */
   workspacesDir?: string | undefined;
+  /**
+   * External coding harnesses tier 3 can run, in preference order. Empty (the
+   * default) keeps tier 3 a tool-result refusal, exactly as before the feature
+   * existed — the daemon only passes adapters when the config enables them.
+   */
+  harnesses?: HarnessAdapter[] | undefined;
   /** Model that leads when nothing is pinned or configured. */
   defaultInitiatorModel?: string | null;
   /** Printed at the top of the feed so the user can open the task. */
@@ -378,6 +386,7 @@ export class Orchestrator {
       clock: this.clock,
       runWorker: this.runWorker,
       workspacesDir: this.workspacesDir,
+      harnesses: this.opts.harnesses ?? [],
       abort: taskAbort,
       maxTurns: this.opts.maxTurns ?? DEFAULT_MAX_TURNS,
       maxHandoffs: this.opts.maxHandoffs ?? DEFAULT_MAX_HANDOFFS,
@@ -464,6 +473,7 @@ interface SessionOptions {
   /** Null means "use the tier dispatcher"; a value overrides every tier. */
   runWorker: WorkerRunner | null;
   workspacesDir: string;
+  harnesses: HarnessAdapter[];
   abort: AbortController;
   maxTurns: number;
   maxHandoffs: number;
@@ -511,6 +521,8 @@ class Session {
    * fan-outs that would leave an empty directory behind for every one.
    */
   private tier2: { workspace: Workspace; approvals: Approvals; runner: WorkerRunner } | null = null;
+  /** Built on the first tier-3 spawn, on top of tier2 (shared workspace + gate). */
+  private tier3: WorkerRunner | null = null;
   private disposed = false;
 
   constructor(opts: SessionOptions) {
@@ -556,6 +568,7 @@ class Session {
   private runnerFor(tier: WorkerTier): WorkerRunner {
     if (this.o.runWorker !== null) return this.o.runWorker;
     if (tier === 1) return runTier1Worker;
+    if (tier === 3) return this.openTier3();
     return this.openTier2().runner;
   }
 
@@ -610,6 +623,69 @@ class Session {
     // gate that refuses rather than one that waits.
     if (this.disposed || this.o.abort.signal.aborted) approvals.cancel();
     return opened;
+  }
+
+  /**
+   * The harness tier 3 runs under, or a refusal string when it cannot run.
+   *
+   * Two independent gates, answered before a work item exists so the initiator
+   * gets a tool result it can act on rather than an instantly-failed worker:
+   * the daemon must have a harness configured at all, and the task's project
+   * policy must allow it (`allowedHarnesses: null` allows everything, a list
+   * is a whitelist of adapter ids — same tighten-only shape as the rest of
+   * `ProjectPolicy`). First allowed adapter wins; the daemon's list is
+   * preference order.
+   */
+  private pickHarness(): { adapter: HarnessAdapter } | { refusal: string } {
+    if (this.o.harnesses.length === 0) {
+      return {
+        refusal:
+          "tier 3 workers (external coding harnesses) are not enabled on this daemon. " +
+          "Use tier 2 for anything that needs files or a shell, or do this part yourself.",
+      };
+    }
+    const allowed = this.o.project?.policy.allowedHarnesses ?? null;
+    const adapter = this.o.harnesses.find((h) => allowed === null || allowed.includes(h.id));
+    if (adapter === undefined) {
+      return {
+        refusal: `this task's project does not allow any of the configured harnesses (allowed: ${
+          (allowed ?? []).join(", ") || "none"
+        }). Use tier 2 instead.`,
+      };
+    }
+    return { adapter };
+  }
+
+  /**
+   * The tier-3 runner, built once per task on top of `openTier2()`: the harness
+   * works in the same directory tier-2 workers do and its spawn parks on the
+   * same `Approvals` — a denial either tier collected, auto-approve, and
+   * `cancel()` on dispose all apply to both without a second gate to forget.
+   *
+   * Only called after `pickHarness()` said yes, so the non-null assertion on
+   * the adapter is the caller's contract, checked here.
+   */
+  private openTier3(): WorkerRunner {
+    if (this.tier3 !== null) return this.tier3;
+    const picked = this.pickHarness();
+    if ("refusal" in picked) throw new Error("openTier3 called without a pickHarness check");
+    const { workspace, approvals } = this.openTier2();
+    this.tier3 = createHarnessRunner({
+      adapter: picked.adapter,
+      approvals,
+      cwd: workspace.cwd,
+      // `cwd` differs from `root` exactly when the task pointed at a real
+      // project directory — the case that must gate, same rule as tier-2 writes.
+      cwdInWorkspace: workspace.cwd === workspace.root,
+      onProgress: (note, workItem, workerRunId) => {
+        this.lines.push(workerNoteLine({ label: this.labelOf(workItem.id), note }));
+        this.o.bus.append({
+          taskId: this.o.task.id,
+          payload: { type: "worker_run.progress", workerRunId, text: note },
+        });
+      },
+    });
+    return this.tier3;
   }
 
   /** `w2` for a work item id, so a worker's own notes carry the feed's name. */
@@ -854,12 +930,11 @@ class Session {
           tier: WorkerTier;
         };
         if (args.tier === 3) {
-          return {
-            result: [
-              "tier 3 workers (external coding harnesses) are not available yet.",
-              "Use tier 2 for anything that needs files or a shell, or do this part yourself.",
-            ].join(" "),
-          };
+          // Answered before the work item exists: a refusal here is a tool
+          // result the initiator can route around (use tier 2), not a worker
+          // that spawns and instantly fails.
+          const picked = this.pickHarness();
+          if ("refusal" in picked) return { result: picked.refusal };
         }
         if (this.overBudget()) {
           return {
@@ -871,16 +946,22 @@ class Session {
         // Resolve before spawning so a hallucinated model id is a tool result
         // the initiator can correct, not a worker that fails a second later —
         // and so the work item records the canonical id rather than an alias.
+        // Tier 3 skips the registry: the harness brings its own model, and the
+        // work item records the synthetic id its costs are billed under.
         let modelId: ModelId;
-        try {
-          modelId = this.o.router.resolve(args.model).model.id;
-        } catch (err) {
-          return {
-            result: [
-              `cannot use "${args.model}": ${err instanceof Error ? err.message : String(err)}.`,
-              "Choose a model id listed in the registry.",
-            ].join(" "),
-          };
+        if (args.tier === 3) {
+          modelId = HARNESS_COST_MODEL_ID;
+        } else {
+          try {
+            modelId = this.o.router.resolve(args.model).model.id;
+          } catch (err) {
+            return {
+              result: [
+                `cannot use "${args.model}": ${err instanceof Error ? err.message : String(err)}.`,
+                "Choose a model id listed in the registry.",
+              ].join(" "),
+            };
+          }
         }
 
         const worker = this.spawn({ ...args, model: modelId });

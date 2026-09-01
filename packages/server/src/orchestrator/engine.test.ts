@@ -38,6 +38,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { type Db, openDb } from "../db/connection.js";
 import { Repos } from "../db/repos.js";
 import { EventBus } from "../events/bus.js";
+import { HARNESS_COST_MODEL_ID } from "../harness/runner.js";
+import type { HarnessAdapter } from "../harness/types.js";
 import { Router } from "../router/router.js";
 import { FakeAdapter, end, text } from "../testing/fake-adapter.js";
 import { PRV_A, model, provider } from "../testing/registry.js";
@@ -159,6 +161,21 @@ function makeHarness(
       runWorker,
       ...over,
     }),
+  };
+}
+
+/**
+ * A harness adapter that exists but is never reached: `makeHarness` overrides
+ * `runWorker` for every tier, so these tests exercise the engine's gating
+ * (is a harness configured? does the policy allow it?) without a process.
+ */
+function stubHarnessAdapter(id: string): HarnessAdapter {
+  return {
+    id,
+    displayName: id,
+    spawn: () => {
+      throw new Error("the stub harness must never be spawned — runWorker intercepts tier 3");
+    },
   };
 }
 
@@ -579,7 +596,7 @@ describe("failures the initiator can recover from", () => {
     expect(repos.listWorkItems(only(tasks())?.id ?? "")[0]?.tier).toBe(2);
   });
 
-  it("explains that tier 3 has not arrived yet, and points at tier 2", async () => {
+  it("refuses tier 3 when no harness is configured, and points at tier 2", async () => {
     const h = makeHarness([
       turn({
         name: "spawn_worker",
@@ -593,6 +610,57 @@ describe("failures the initiator can recover from", () => {
     const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
     expect(sent).toContain("tier 3 workers");
     expect(sent).toContain("Use tier 2");
+  });
+
+  it("spawns a tier-3 worker under the synthetic harness model id when a harness is configured", async () => {
+    const h = makeHarness(
+      [
+        turn({
+          name: "spawn_worker",
+          // `model` is deliberately garbage: tier 3 must skip the registry —
+          // the harness brings its own model, and a resolve here would refuse
+          // every spawn whose initiator took "pass any string" at its word.
+          args: { title: "build the feature", model: "whatever", instructions: "x", tier: 3 },
+        }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "finish", args: { answer: "built" } }),
+      ],
+      { harnesses: [stubHarnessAdapter("claude-code")] },
+    );
+
+    const { feed } = await drive(h);
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]?.workItem.tier).toBe(3);
+    expect(h.spawned[0]?.workItem.modelId).toBe(HARNESS_COST_MODEL_ID);
+    expect(feed).toContain(`[w1 · ${HARNESS_COST_MODEL_ID} · tier3]`);
+  });
+
+  it("refuses tier 3 when the project's allowedHarnesses excludes every configured adapter", async () => {
+    const h = makeHarness(
+      [
+        turn({
+          name: "spawn_worker",
+          args: { title: "x", model: SMALL, instructions: "x", tier: 3 },
+        }),
+        turn({ name: "finish", args: { answer: "did it at tier 2 instead" } }),
+      ],
+      { harnesses: [stubHarnessAdapter("claude-code")] },
+    );
+
+    await drive(h, {
+      project: ProjectSchema.parse({
+        id: newProjectId(),
+        slug: "rewter",
+        name: "Rewter",
+        policy: { allowedHarnesses: ["aider"] },
+        createdAt: tick,
+        updatedAt: tick,
+      }),
+    });
+    expect(h.spawned).toHaveLength(0);
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("does not allow");
+    expect(sent).toContain("tier 2");
   });
 
   it("nudges a model that answered in prose, then accepts the prose", async () => {

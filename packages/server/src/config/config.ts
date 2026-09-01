@@ -138,6 +138,34 @@ export const SkillsConfigSchema = z
   .default({});
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
+/**
+ * Tier-3 harness knobs (phase-2 M5). Off by default: a harness is another
+ * program with the owner's login and its own spend, and enabling it should be
+ * a decision someone made in a file, not a default they discover on the bill.
+ * With everything disabled the engine receives an empty adapter list and
+ * `spawn_worker(tier: 3)` stays the same tool-result refusal it was before the
+ * feature existed.
+ */
+export const HarnessesConfigSchema = z
+  .object({
+    claudeCode: z
+      .object({
+        enabled: z.boolean().default(false),
+        /** Binary name or absolute path; resolved through PATH like any spawn. */
+        binary: z.string().min(1).default("claude"),
+        /**
+         * Claude Code's own `--permission-mode`. Headless has no human to
+         * prompt, so "default" would park forever on the first gated tool;
+         * "acceptEdits" lets it edit inside its cwd while shell commands still
+         * refuse-and-adapt. The spawn itself is what rewter gates.
+         */
+        permissionMode: z.string().min(1).default("acceptEdits"),
+      })
+      .default({}),
+  })
+  .default({});
+export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+
 export const ConfigSchema = z.object({
   /** Loopback by default: the daemon holds provider keys and gates nothing else. */
   host: z.string().min(1).default("127.0.0.1"),
@@ -170,6 +198,7 @@ export const ConfigSchema = z.object({
   models: z.array(ModelConfigSchema).default([]),
   orchestrator: OrchestratorConfigSchema,
   skills: SkillsConfigSchema,
+  harnesses: HarnessesConfigSchema,
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

@@ -20,7 +20,7 @@ your client (Claude Code, curl, any OpenAI or Anthropic client)
 │  initiator AI plans, then fans out:               │
 │    ├─▶ cheap model   · tier 1: bare call          │
 │    ├─▶ agent worker  · tier 2: files/shell/web    │
-│    └─▶ harness       · tier 3: Claude Code, aider │ (phase 2)
+│    └─▶ harness       · tier 3: headless Claude Code│ (aider, codex: later)
 │  approval gates ⏸ · live task tree · cost tracking│
 └───────────────────────────────────────────────────┘
          ▲ web dashboard: watch, approve, steer, kill
@@ -92,7 +92,12 @@ support — *shipped: `tailscale serve` works against the loopback daemon as-is,
 direct non-loopback bind fails closed until `REWTER_INTERNAL_KEY` is set, which then
 gates `/internal` and the dashboard (see
 [Reaching it from another device](#reaching-it-from-another-device-tailscale))* — and
-the first tier-3 harness (headless Claude Code) on the seam built in phase 1.
+the first **tier-3 harness** (headless Claude Code) on the seam built in phase 1 —
+*shipped: `spawn_worker` takes `tier: 3`, one approval gates the spawn ("run Claude Code
+in <dir>"), `send_to_worker` reaches the running session mid-turn, and its self-reported
+cost is metered under `harness/claude-code`; opt-in via `"harnesses": { "claudeCode":
+{ "enabled": true } }` in the config. tmux attach and restart re-adoption come in later
+slices.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
@@ -160,8 +165,9 @@ is walked against a real database, because the lifecycle has no shortcut edge an
 transition would surface as a crashed task rather than a failed test.
 
 And as of M6e the initiator can actually **ask** for one. `spawn_worker` takes `tier: 2`, and
-the engine picks the runner by tier — only tier 3 still refuses, worded to point at tier 2
-rather than to say "not yet". The workspace and approval gate open on the first tier-2 spawn
+the engine picks the runner by tier (as of P2-M5 that includes `tier: 3` — a headless Claude
+Code session, on a daemon that has one configured; without one the refusal points at tier 2
+rather than saying "not yet"). The workspace and approval gate open on the first tier-2 spawn
 (most tasks are pure tier-1 fan-outs and would otherwise each leave an empty directory behind)
 and are shared by every tier-2 worker on the task, because two of them write to the same place
 and a denial one collected should not be put in front of you twice. Workers narrate into the

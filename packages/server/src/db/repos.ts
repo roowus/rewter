@@ -570,6 +570,26 @@ export class Repos {
     return this.getWorkerRun(id) as WorkerRun;
   }
 
+  /**
+   * Attach a harness's resumable session handle to its run.
+   *
+   * Not a transition — the run is already `streaming` when the harness
+   * announces itself, and `streaming → streaming` is rightly not an edge the
+   * lifecycle allows. This is bookkeeping for the next slice's boot
+   * reconciliation (re-adopting a session that survived a daemon restart), so
+   * it also emits no event: nothing user-visible changed.
+   */
+  setHarnessSessionId(id: string, harnessSessionId: string): WorkerRun {
+    const current = this.getWorkerRun(id);
+    if (current === undefined) throw new Error(`worker run not found: ${id}`);
+    this.db
+      .update(workerRuns)
+      .set({ harnessSessionId, updatedAt: this.clock() })
+      .where(eq(workerRuns.id, id))
+      .run();
+    return this.getWorkerRun(id) as WorkerRun;
+  }
+
   // ── Approvals ────────────────────────────────────────────────────────────
 
   createApproval(approval: Approval): Approval {

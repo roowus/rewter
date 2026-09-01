@@ -13,18 +13,18 @@
  * the same "unreliable narrator" discipline `registry/cards.ts` applies to card
  * generation, applied to arguments instead of output.
  *
- * `send_to_worker` is declared here even though it works for only one of the two
- * tiers that can be spawned: a tier-1 worker is a single model call with no turn
- * boundary to deliver a message at, and the engine refuses the call for one,
- * naming tier 2 as the alternative. Offering the tool and refusing the case
- * beats withholding it — the model can read a refusal, and a tool it never sees
- * is a capability it cannot ask about.
+ * `send_to_worker` is declared here even though it works for only two of the
+ * three tiers that can be spawned: a tier-1 worker is a single model call with
+ * no turn boundary to deliver a message at, and the engine refuses the call for
+ * one, naming tier 2 as the alternative. Offering the tool and refusing the
+ * case beats withholding it — the model can read a refusal, and a tool it never
+ * sees is a capability it cannot ask about.
  */
 import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 4;
+export const ORCHESTRATOR_TOOLS_VERSION = 5;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -140,7 +140,9 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
               "1 = one model call, no tools (default) — use it for anything that is just " +
               "thinking, writing or summarizing. 2 = agent loop with file, shell and web " +
               "tools in a workspace — use it when the subtask has to read or change something. " +
-              "3 = external coding harness, not available yet.",
+              "3 = external coding harness (brings its own model; `model` is ignored) — " +
+              "reserve it for substantial multi-file coding work; starting one may pause " +
+              "for the user's approval.",
           },
         },
         required: ["title", "model", "instructions"],
@@ -194,7 +196,7 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
     definition: {
       name: "send_to_worker",
       description:
-        "Send a running tier-2 worker a message — a correction, a constraint you forgot, " +
+        "Send a running tier-2 or tier-3 worker a message — a correction, a constraint you forgot, " +
         "an answer it needs. Returns immediately; the worker reads it at its next step, " +
         "so it does not interrupt work already in flight. Tier-1 workers cannot receive " +
         "messages: cancel and respawn one instead.",

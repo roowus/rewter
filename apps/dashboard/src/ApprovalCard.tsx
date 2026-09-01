@@ -19,6 +19,7 @@ import { clockTime } from "./format.js";
 const KIND_LABEL: Record<Approval["kind"], string> = {
   shell: "shell command",
   write_outside_workspace: "write outside the workspace",
+  spawn_harness: "start an external coding agent",
   budget: "budget",
   other: "action",
 };

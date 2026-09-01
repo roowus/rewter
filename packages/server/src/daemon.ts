@@ -23,6 +23,7 @@ import { type SeedResult, seedRegistry } from "./config/seed.js";
 import { type Db, openDb } from "./db/connection.js";
 import { Repos } from "./db/repos.js";
 import { EventBus } from "./events/bus.js";
+import { createClaudeCodeAdapter } from "./harness/claude-code.js";
 import { buildApp } from "./http/app.js";
 import { Orchestrator } from "./orchestrator/engine.js";
 import { LiveTaskIndex } from "./orchestrator/live.js";
@@ -241,6 +242,16 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // parents) on the first tier-2 spawn, so a daemon that never orchestrates
     // never makes the directory.
     workspacesDir: expandPath(config.workspacesDir, home),
+    // Empty unless the config opts in — tier 3 stays a tool-result refusal on
+    // a daemon whose owner never enabled a harness.
+    harnesses: config.harnesses.claudeCode.enabled
+      ? [
+          createClaudeCodeAdapter({
+            binary: config.harnesses.claudeCode.binary,
+            permissionMode: config.harnesses.claudeCode.permissionMode,
+          }),
+        ]
+      : [],
     maxTurns: config.orchestrator.maxTurns,
     maxHandoffs: config.orchestrator.maxHandoffs,
     defaultSettings: {

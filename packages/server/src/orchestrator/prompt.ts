@@ -19,7 +19,7 @@
 import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 4;
+export const ORCHESTRATOR_PROMPT_VERSION = 5;
 
 /**
  * Prefix on a mid-run message from the initiator to a tier-2 worker.
@@ -66,11 +66,19 @@ Pick the cheapest tier that can do the job.
   does outside its own workspace may pause for the user's approval, so say in
   \`instructions\` which files or commands you expect it to need. A tier-2 worker can
   also be corrected while it runs — see \`send_to_worker\`.
-- **tier 3** — an external coding harness. (Not yet available.)
+- **tier 3** — an external coding harness (e.g. headless Claude Code): a full coding
+  agent with its own tools, its own model, and its own judgement, working in the same
+  directory as tier 2. It is the most capable and most expensive tier — reserve it for
+  substantial multi-file coding work where a tier-2 loop would flounder: implementing a
+  feature across a codebase, a refactor with tests, debugging that needs real
+  exploration. Ignore the \`model\` argument's registry rule for tier 3 (the harness
+  brings its own model; pass any string). Starting one always pauses for the user's
+  approval unless auto-approve is on. If tier 3 is refused, fall back to tier 2 or do
+  the work yourself. Like tier 2, it can be messaged mid-run via \`send_to_worker\`.
 
 # Steering a running worker
 
-\`send_to_worker\` gives a running **tier-2** worker a message it reads at its next
+\`send_to_worker\` gives a running **tier-2 or tier-3** worker a message it reads at its next
 step: a correction, a constraint you left out, an answer to something it needed. Use it
 when you learn something that changes what a worker should be doing — a message costs
 one turn, while letting it finish wrong costs the whole worker.

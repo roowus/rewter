@@ -262,7 +262,13 @@ export const WorkerRunSchema = z.object({
 });
 export type WorkerRun = z.infer<typeof WorkerRunSchema>;
 
-export const ApprovalKindSchema = z.enum(["shell", "write_outside_workspace", "budget", "other"]);
+export const ApprovalKindSchema = z.enum([
+  "shell",
+  "write_outside_workspace",
+  "spawn_harness",
+  "budget",
+  "other",
+]);
 export type ApprovalKind = z.infer<typeof ApprovalKindSchema>;
 
 export const ApprovalSchema = z.object({

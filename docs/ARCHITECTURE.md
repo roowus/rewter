@@ -49,7 +49,7 @@ The initiator picks the *cheapest sufficient* tier per subtask:
 |---|---|---|
 | 1 | Bare LLM call (text/vision in → text out) | Phase 1 |
 | 2 | rewter's own agent loop with tools (file r/w, shell, web) in a task workspace | Phase 1 |
-| 3 | External harness session (Claude Code headless, aider, codex, generic adapter spec), interactive, headless in tmux with user attach/mirror | Phase 2 (seams built in phase 1) |
+| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility); tmux attach/mirror, restart re-adoption, and more adapters (aider, codex, generic spec) in later slices | Phase 2 (slice 1 shipped) |
 
 ## Control model
 
@@ -186,16 +186,17 @@ Entities (zod-typed in `shared`):
   [Capability cards](#capability-cards).
 - **Project** (P2-M1) — the Multica-style top-level unit tasks run under; slug (unique,
   URL/model-string safe), resources[] (`repo|dir|url|note` with optional note), policy
-  (autoApprove, maxSpendUsd, allowedTools/allowedHarnesses — the latter two are phase-2
-  seams, not yet enforced), modelPrefs (initiatorPin, prefer[], avoid[]), archived flag.
+  (autoApprove, maxSpendUsd, allowedTools — a phase-2 seam, not yet enforced — and
+  allowedHarnesses, enforced since P2-M5: null = all configured harnesses, a list =
+  whitelist by adapter id), modelPrefs (initiatorPin, prefer[], avoid[]), archived flag.
   Projects are **configuration, not lifecycle**: no state machine, no events, no FK from
   tasks — see [Projects](#projects-p2-m1).
 - **Task** — one orchestrated request; workspaceDir, autoApprove, settings (maxSpendUsd?, maxParallel?),
   `projectId?` (nullable — pre-projects rows and project-less tasks replay identically).
 - **WorkItem** — subtask; `parentWorkItemId` builds handoff chains.
-- **WorkerRun** — one execution attempt (retry/handoff = new run); `harnessSessionId?` column exists now (phase-2).
+- **WorkerRun** — one execution attempt (retry/handoff = new run); `harnessSessionId?` is written by the tier-3 runner (the restart re-adoption seam).
 - **Event** — append-only, autoincrement `seq`; **source of truth** for dashboard replay and audit.
-- **Approval** — kind (shell|write_outside_workspace|network|spawn_harness), status, resolvedBy.
+- **Approval** — kind (shell|write_outside_workspace|spawn_harness|budget|other), status, resolvedBy.
 - **CostRecord** — token counts incl. cache read/write; costUsd computed at write time from a pricing snapshot.
 - **ModelStat** — (modelId, taskTag) → attempts/successes/avgCost/avgLatency. Phase-2 data, phase-1 schema.
 
@@ -760,12 +761,14 @@ spawns in one turn onto a p-limit scheduler, default concurrency 4), `wait({labe
 mode:"all"|"any"})`, `get_result`, `send_to_worker({label, message})`, `cancel_worker`,
 `ask_user`, `handoff({to_model, reason, context_summary})`, `finish({summary})`.
 
-`spawn_worker`'s `tier` accepts **1 or 2**; 3 comes back as a tool *result* explaining that
-external harnesses are not available and pointing at tier 2, because a refusal the model can
-read and re-spawn from costs one turn where a thrown error costs the task. The description the
-model sees says what each tier is *for* — tier 1 for thinking, writing, summarizing; tier 2
-when the subtask has to read or change something — since the initiator picks the cheapest
-sufficient tier and cannot do that from a bare number. `ORCHESTRATOR_TOOLS_VERSION` is 3.
+`spawn_worker`'s `tier` accepts **1, 2 or 3**; a tier-3 spawn on a daemon with no harness
+configured (or one the project's `allowedHarnesses` excludes) comes back as a tool *result*
+pointing at tier 2, because a refusal the model can read and re-spawn from costs one turn
+where a thrown error costs the task. The description the model sees says what each tier is
+*for* — tier 1 for thinking, writing, summarizing; tier 2 when the subtask has to read or
+change something; tier 3 an external coding agent that brings its own model — since the
+initiator picks the cheapest sufficient tier and cannot do that from a bare number.
+`ORCHESTRATOR_TOOLS_VERSION` is 5. (See [Tier 3](#tier-3-external-harnesses-p2-m5).)
 
 Now that tier 2 exists, `concurrency` (default 4) bounds **agent loops**, not just single
 calls. The same number that used to cap four simultaneous one-shot completions now caps four
@@ -2077,21 +2080,125 @@ not be able to walk into the database file. The engine's own fallback, used when
 or a test never configures one, is under `tmpdir()` rather than `~/.rewter`, so an omission
 cannot put a worker's writes in a real home directory.
 
-## Tier-3 seam (phase 2, types committed in phase 1)
+## Tier 3: external harnesses (P2-M5)
+
+Tier 3 delegates a work item to another agent program — the first adapter is **headless
+Claude Code** — instead of rewter's own loop. Three files under `server/src/harness/`:
+`types.ts` (the contract), `claude-code.ts` (the adapter), `runner.ts` (the
+`WorkerRunner` that wears a session).
+
+### The contract
 
 ```ts
-interface HarnessAdapter { id: string; spawn(spec): Promise<HarnessSession>; }
+interface HarnessAdapter {
+  id: string;                 // what a project's allowedHarnesses lists ("claude-code")
+  displayName: string;        // what the approval card says ("Claude Code")
+  spawn(spec: HarnessSpec): HarnessSession;  // must not throw for foreseeable failures
+}
 interface HarnessSession {
-  sessionId: string;                    // persisted → survives daemon restart (tmux name)
-  events: AsyncIterable<HarnessEvent>;  // normalized: text|toolUse|approvalNeeded|done
-  send(message: string): Promise<void>; // interactive follow-ups from the initiator
-  kill(): Promise<void>;
-  attachInfo(): { tmuxSession: string };  // sessions named rwtr_<runId>
+  events: AsyncIterable<HarnessEvent>;  // session|text|tool_use|turn_end|fatal; fatal is always last
+  send(message: string): void;          // mid-run follow-up; drops silently to a dead process
+  end(): void;                          // close stdin → the process finishes and exits on its own
+  kill(): void;                         // SIGTERM; idempotent
 }
 ```
 
-Plus a generic JSON adapter spec (command template, output-parse mode `jsonl|plain`,
-done-pattern) so any CLI harness is addable by config.
+Everything synchronous by design (a single-process daemon), everything terminal by
+convention: a missing binary, a crash, a bad flag all arrive as a `fatal` event on the
+stream, never as a throw from `spawn` — the runner has exactly one exit staircase.
+
+### The Claude Code adapter
+
+`claude -p --output-format stream-json --input-format stream-json --verbose
+--permission-mode acceptEdits` turns the CLI into exactly the shape `HarnessSession`
+wants: NDJSON events on stdout, user frames accepted on stdin at any time (Claude Code
+queues one that arrives mid-turn and reads it at the next turn boundary — the semantics
+`send_to_worker` promises), and a process that exits when stdin closes after its last
+turn. `--verbose` is required by the CLI for stream-json with `-p` and is also what makes
+the init line (and with it the session id) appear.
+
+The wire format is parsed **defensively**: every line goes through loose zod schemas and
+anything unrecognized is skipped, because the format belongs to another program's release
+cycle. Four shapes are read — `system/init` (session id), `assistant` (text + tool_use
+blocks, everything else passed through and rendered as nothing), `result` (turn end with
+`is_error`, cost, usage), and a line that refuses to parse — and all degrade to "skip",
+never to a throw. Missing cost/usage fields degrade to **null, not zero**: zeros would be
+recorded as "this turn was free"; nulls are "the harness did not say", which the cost
+recorder knows to skip.
+
+**Env sanitization**: the child gets the daemon's environment minus `ANTHROPIC_BASE_URL`
+and `ANTHROPIC_AUTH_TOKEN`. Those two are how a machine points Claude Code at a router —
+this daemon, typically — and a harness that routed back through the process that spawned
+it would recurse: task → harness → `/v1` → task. Stripped, the child falls back to its
+own `~/.claude` login, i.e. the subscription the owner installed it with. There is a
+regression test that spawns a real child and inspects what it sees.
+
+`permissionMode` defaults to `acceptEdits`: headless has no human to prompt, so
+`default` would park forever on the first gated tool; `acceptEdits` lets it edit inside
+its cwd while shell commands still refuse-and-adapt. The **spawn** is what rewter gates.
+
+### The runner: three edges around a self-driving process
+
+Tier 2 *drives* a model and decides when to call tools; a harness drives itself. The
+runner (same lifecycle spine — created → streaming → terminal, every exit a repo
+transition) only manages the three edges the process cannot:
+
+- **The gate.** Per-action approval cannot reach inside another program — Claude Code
+  prompts nobody in headless mode and rewter cannot intercept its tool calls. So the
+  honest gate is **one approval, before the process exists**, kind `spawn_harness`, whose
+  summary names the binary and the directory it will own (`run Claude Code in <cwd>`).
+  It parks on the *same* `Approvals` object as the task's tier-2 workers, so
+  auto-approve, the in-workspace short-circuit, and `cancel()` on dispose all apply
+  without a second gate to forget. A denial is a failed worker with the reason in its
+  summary — the initiator reads it and re-plans at tier 2.
+- **The inbox.** `send_to_worker` messages are drained at every event and forwarded via
+  `session.send()`. Session end is decided by an `expectAnotherTurn` flag, **not** by
+  whether the inbox is empty at the turn boundary: a message forwarded *mid-turn* empties
+  the inbox early while still owing the session another turn. Only a turn nothing was
+  sent into triggers `end()`; the last turn's result wins.
+- **The money.** Harness spend never touches the router, so without a CostRecord it
+  would be invisible to the task's budget cap. Every `turn_end` that reports cost or
+  tokens lands a CostRecord under the synthetic model id **`harness/claude-code`**
+  (`HARNESS_COST_MODEL_ID`, checked against `ModelIdSchema` at module load) with an
+  all-null pricing snapshot — "the harness said so" is the snapshot — and `overBudget()`
+  sees it at the next spawn. A turn that reports nothing lands nothing.
+
+The `session` event's id is persisted to `WorkerRun.harnessSessionId` (a data patch, not
+a lifecycle transition — it emits no event), which is the seam a later slice uses to
+re-adopt sessions across a daemon restart.
+
+### Engine wiring and config
+
+`spawn_worker` now accepts `tier: 3` (`ORCHESTRATOR_TOOLS_VERSION 5`,
+`ORCHESTRATOR_PROMPT_VERSION 5`: the ladder describes tier 3 as an external coding agent
+that brings its own model — `model` is ignored, the work item is recorded under
+`harness/claude-code` and the registry resolve is skipped — and always pauses for
+approval unless auto-approve is on; if refused, fall back to tier 2). Two pre-spawn gates
+return tool-*result* refusals rather than throws, so the initiator can re-plan in one
+turn:
+
+1. the daemon has no harness adapters configured → "tier 3 workers … are not enabled on
+   this daemon";
+2. the task's project sets `allowedHarnesses` (null = all; a list = whitelist by adapter
+   id) and none of the configured adapters match → "this task's project does not allow
+   any of the configured harnesses". This makes `ProjectPolicy.allowedHarnesses`
+   **enforced**, no longer a dormant seam.
+
+`openTier3()` is built lazily on top of `openTier2()`'s workspace and approvals — the
+harness works in the same directory tier-2 workers do (`cwdInWorkspace` is what lets the
+gate auto-approve a workspace-confined spawn). Config is opt-in and additive:
+
+```jsonc
+"harnesses": { "claudeCode": { "enabled": false, "binary": "claude", "permissionMode": "acceptEdits" } }
+```
+
+`HarnessesConfigSchema` defaults the whole block, so configs written before the feature
+existed still parse. The daemon constructs the adapter only when `enabled` is true.
+
+Still to come in later slices: tmux wrapping (`rwtr_<runId>` session names, `tmux attach`
+mirroring), restart re-adoption via the persisted session id, and the generic JSON
+adapter spec (command template, output-parse mode `jsonl|plain`, done-pattern) so any CLI
+harness is addable by config.
 
 ## API surface
 
