@@ -403,6 +403,26 @@ describe("the inbox", () => {
     expect(outcome.status).toBe("succeeded");
     expect(outcome.summary).toBe("applied the correction");
   });
+
+  it("ends the session after the grace when a steered follow-up never starts a new turn", async () => {
+    // Claude Code can steer a mid-turn message into the turn already running
+    // and answer both in one result. The stream then goes quiet with stdin
+    // still open — only the grace timer ends it. closeAfterScript:false means
+    // this test hangs (and times out) if the timer doesn't fire.
+    const { adapter, calls } = fakeAdapter(
+      [turnEnd({ resultText: "did the task and the follow-up.\nSUMMARY: both done in one turn" })],
+      { closeAfterScript: false },
+    );
+    inboxMessages = ["also create extra.txt"];
+
+    const outcome = await runHarnessWorker(makeContext(), options(adapter, { steerGraceMs: 20 }));
+
+    expect(calls.sent).toEqual(["also create extra.txt"]);
+    expect(calls.ended).toBe(1);
+    expect(outcome.status).toBe("succeeded");
+    expect(outcome.summary).toBe("both done in one turn");
+    expect(repos.getWorkerRun(outcome.workerRunId)?.status).toBe("succeeded");
+  });
 });
 
 describe("money", () => {

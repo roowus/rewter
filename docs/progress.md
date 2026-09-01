@@ -58,6 +58,27 @@ and why in this order.
 
 ## Log
 
+### 2026-09-01 — steered follow-ups: a bounded grace instead of waiting forever (P2-M5 follow-up 2)
+
+With the model pinned, the tier-3 live smokes came alive: `hello.txt` created and
+verified on disk, and the mid-run `send_to_worker` exercise showed the `⇄ [w1] told:`
+line, the injected `extra.txt` written *in the same session* — the hard requirement,
+working. But that same smoke exposed the next defect: Claude Code **steered** the
+mid-turn message into the turn that was already running and answered both in one
+`result`. The runner's `expectAnotherTurn` flag then waited for a second turn that would
+never start — child idle on stdin, runner idle on events — and the task sat `running`
+forever with both files already on disk.
+
+Fix: a message forwarded into a turn no longer guarantees another turn, it only *may*
+start one. At that boundary the runner now arms a grace timer (`steerGraceMs`, default
+15 s, disarmed by any subsequent event); if no next turn begins, it ends the session.
+Firing early is harmless — `end()` only closes stdin, and a turn in flight still
+completes and reports. New test: a steered follow-up with a never-closing stream
+succeeds via the grace instead of hanging (the test itself would time out otherwise).
+
+Live verification of the whole slice: single tier-3 run ✅ ($0.14, 10.9 s, file
+verified), mid-run send ✅ (injected file created mid-session).
+
 ### 2026-09-01 — the live smoke that lied: empty harness success is now a failure (P2-M5 follow-up)
 
 The first live tier-3 run closed **succeeded — "(the harness returned nothing)"** while

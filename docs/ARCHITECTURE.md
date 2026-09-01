@@ -2159,8 +2159,16 @@ transition) only manages the three edges the process cannot:
 - **The inbox.** `send_to_worker` messages are drained at every event and forwarded via
   `session.send()`. Session end is decided by an `expectAnotherTurn` flag, **not** by
   whether the inbox is empty at the turn boundary: a message forwarded *mid-turn* empties
-  the inbox early while still owing the session another turn. Only a turn nothing was
-  sent into triggers `end()`; the last turn's result wins. A "successful" last turn whose
+  the inbox early while possibly owing the session another turn. Only a turn nothing was
+  sent into triggers `end()` immediately; a turn a follow-up *was* sent into keeps stdin
+  open under a **bounded grace** (`steerGraceMs`, default 15 s), because "another turn is
+  coming" is a maybe, not a promise: Claude Code sometimes steers a mid-turn message into
+  the turn already running and answers both in one result — live smoke did exactly this
+  (both files created, one `result` line) and the pre-grace runner then waited forever
+  for a second turn that would never start, leaving the task stuck `running`. The grace
+  timer is disarmed by any subsequent event and firing it early is harmless — `end()`
+  only closes stdin, and a turn in flight still completes and reports. The last turn's
+  result wins. A "successful" last turn whose
   result text is **empty is a failed run**, not a success: Claude Code's result line
   always carries the final assistant message when a turn really happened, so an empty one
   means the model streamed nothing (dead upstream, silently exhausted quota) — live smoke

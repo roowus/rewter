@@ -14,12 +14,14 @@
  *    they do for a tier-2 shell command, because it *is* the same gate object
  *    (the engine passes openTier2's Approvals in).
  *  - **The inbox.** `send_to_worker` pushes strings; this runner drains them at
- *    every event and forwards through `session.send()` — Claude Code queues a
- *    mid-turn message and reads it at its next turn boundary, which is the
- *    exact promise `send_to_worker` makes. A turn that nothing was sent into
- *    ends the conversation: `end()` closes stdin and the process exits on its
- *    own. (Not "inbox empty at the boundary" — a message forwarded mid-turn
- *    empties the inbox early while still owing the session another turn.)
+ *    every event and forwards through `session.send()`. A turn that nothing
+ *    was sent into ends the conversation: `end()` closes stdin and the process
+ *    exits on its own. A turn a message *was* forwarded into may owe another
+ *    turn (the harness queued it for the next boundary) — or may not: Claude
+ *    Code sometimes steers a mid-turn message into the turn already running,
+ *    answering both in one result. Which happened is invisible from outside,
+ *    so the runner waits a bounded grace for the next turn to start and ends
+ *    the session if it never does (see `steerGraceMs`).
  *  - **The money.** Harness spend never touches the router, so without a
  *    CostRecord it would be invisible to the task's cap. Every turn_end that
  *    reports a cost is written under the synthetic model id
@@ -49,6 +51,17 @@ export interface HarnessRunnerOptions {
   cwdInWorkspace: boolean;
   /** Feed line + durable progress event; same seam as Tier2Options. */
   onProgress?: ((note: string, workItem: WorkItem, workerRunId: WorkerRunId) => void) | undefined;
+  /**
+   * How long to wait, after a turn that a follow-up was forwarded into ends,
+   * before concluding the harness *steered* the message into that turn rather
+   * than queuing it for a new one — and ending the session. Claude Code does
+   * exactly this (live-smoked: one result covering both the task and the
+   * mid-run follow-up), and a runner that waits for the queued-turn that never
+   * comes deadlocks: the child idles on stdin, the runner idles on events.
+   * Ending early is harmless — closing stdin cancels nothing the harness has
+   * already read — so this only trades a few idle seconds against a hang.
+   */
+  steerGraceMs?: number | undefined;
 }
 
 const SUMMARY_MAX_CHARS = 300;
@@ -117,10 +130,11 @@ export async function runHarnessWorker(
   ctx.signal.addEventListener("abort", onAbort, { once: true });
 
   const progress = (note: string): void => opts.onProgress?.(note, ctx.workItem, run.id);
-  // A message forwarded since the last turn boundary means another turn is
-  // coming: the harness queues mid-turn input and reads it at the boundary, so
-  // this flag — not the inbox's state *at* the boundary — is what says whether
-  // the session must outlive the turn that just ended.
+  // A message forwarded since the last turn boundary *may* mean another turn
+  // is coming — the harness may have queued it for the next boundary, or may
+  // have steered it into the turn that was already running and answered both
+  // in one result. This flag says the session must outlive the turn that just
+  // ended; the grace timer below says for how long.
   let expectAnotherTurn = false;
   const drainInbox = (): void => {
     const pending = ctx.inbox?.() ?? [];
@@ -128,11 +142,27 @@ export async function runHarnessWorker(
     if (pending.length > 0) expectAnotherTurn = true;
   };
 
+  // Armed at a turn boundary we stayed open past; disarmed by the next event.
+  // If the harness steered the follow-up into the finished turn, no next event
+  // ever comes and only this timer ends the session — live-smoked as a task
+  // stuck `running` forever with both files already on disk. Firing early is
+  // safe: `end()` only closes stdin, and a turn already in flight (or queued
+  // input already read) still completes and reports before the process exits.
+  const steerGraceMs = opts.steerGraceMs ?? 15_000;
+  let graceTimer: NodeJS.Timeout | null = null;
+  const disarmGrace = (): void => {
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer);
+      graceTimer = null;
+    }
+  };
+
   let lastResult: { text: string; isError: boolean } | null = null;
   let fatalError: string | null = null;
 
   try {
     for await (const event of session.events) {
+      disarmGrace();
       drainInbox();
       switch (event.type) {
         case "session":
@@ -148,12 +178,14 @@ export async function runHarnessWorker(
           lastResult = { text: event.resultText, isError: event.isError };
           recordTurnCost(ctx, run.id, event);
           drainInbox();
-          // Anything forwarded during or at the end of this turn starts the
-          // next one, so stdin must stay open — closing it now would orphan a
-          // follow-up the harness has already queued. Only a turn nothing was
-          // sent into means the conversation is over.
+          // Anything forwarded during or at the end of this turn *may* start
+          // the next one, so stdin stays open — but only under the grace
+          // timer: if the harness already answered the follow-up inside this
+          // turn, nothing more is coming and waiting unbounded is a deadlock.
           if (expectAnotherTurn) {
             expectAnotherTurn = false;
+            disarmGrace();
+            graceTimer = setTimeout(() => session.end(), steerGraceMs);
           } else {
             session.end();
           }
@@ -165,6 +197,7 @@ export async function runHarnessWorker(
       }
     }
   } finally {
+    disarmGrace();
     ctx.signal.removeEventListener("abort", onAbort);
     session.kill();
   }
