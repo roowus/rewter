@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConfigError, DEFAULT_PORT, expandPath, loadConfig } from "./config.js";
+import { ConfigError, DEFAULT_PORT, expandPath, isLoopbackHost, loadConfig } from "./config.js";
 
 let dir: string;
 
@@ -30,6 +30,7 @@ describe("loadConfig", () => {
     expect(config.port).toBe(DEFAULT_PORT);
     expect(config.providers).toEqual([]);
     expect(config.models).toEqual([]);
+    expect(config.internalKeyEnv).toBe("REWTER_INTERNAL_KEY");
   });
 
   it("resolves the default path against the passed HOME, not the process's", () => {
@@ -190,6 +191,26 @@ describe("loadConfig", () => {
   it("rejects an out-of-range port", () => {
     const path = writeConfig({ port: 70_000 });
     expect(() => loadConfig({ path, env: {} })).toThrow(ConfigError);
+  });
+});
+
+describe("isLoopbackHost", () => {
+  it("recognizes the loopback spellings", () => {
+    expect(isLoopbackHost("127.0.0.1")).toBe(true);
+    expect(isLoopbackHost("127.1.2.3")).toBe(true);
+    expect(isLoopbackHost("localhost")).toBe(true);
+    expect(isLoopbackHost("::1")).toBe(true);
+  });
+
+  it("treats everything else — including nonsense — as non-loopback", () => {
+    // The answer gates the fail-closed boot check; an unrecognized string that
+    // slipped through as "loopback" would be the incident the check prevents.
+    expect(isLoopbackHost("0.0.0.0")).toBe(false);
+    expect(isLoopbackHost("100.71.4.20")).toBe(false); // a tailnet address
+    expect(isLoopbackHost("::")).toBe(false);
+    expect(isLoopbackHost("my-mac.tail1234.ts.net")).toBe(false);
+    expect(isLoopbackHost("localhostx")).toBe(false);
+    expect(isLoopbackHost("")).toBe(false);
   });
 });
 

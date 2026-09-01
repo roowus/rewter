@@ -1111,15 +1111,71 @@ generic 502 would hide the one thing they can fix.
 
 ### Auth
 
-`/v1` takes an optional bearer token (`apiKey`); absent means open, which is the normal
-localhost-daemon case. `/internal` is never gated — it is localhost-bound and the dashboard
-holds no key.
+Two doors, two optional keys, one check. `/v1` takes `apiKey` (env var named by
+`apiKeyEnv`, default `REWTER_API_KEY`); `/internal` takes `internalKey` (env var named by
+`internalKeyEnv`, default `REWTER_INTERNAL_KEY`). Either absent means that door is open —
+which is the normal loopback-daemon case, and is phase 1 unchanged. The keys are not
+interchangeable: an ops credential must not stand in for the API key on the model-serving
+surface, or vice versa.
 
 **Two header conventions, one token.** OpenAI clients send `Authorization: Bearer …`;
 Anthropic clients (Claude Code among them) send `x-api-key` and never set `Authorization`
 at all. Both are accepted against the same configured key, so one value works for both
 surfaces instead of forcing the user to configure two. The rejection is shaped to match the
-surface being called: Anthropic's error envelope on `/v1/messages`, OpenAI's elsewhere.
+surface being called: Anthropic's error envelope on `/v1/messages`, OpenAI's elsewhere;
+`/internal` rejects with a plain `{error: {message}}`.
+
+**`/internal` accepts a third credential: a cookie** (`rewter_internal_key`, the constant
+`INTERNAL_KEY_COOKIE` in `shared`). It exists for exactly one caller — the dashboard
+bundle, whose `new WebSocket()` cannot carry a header but whose browser sends cookies on
+the upgrade for free, and on every same-origin fetch, which is why none of the dashboard's
+client modules know the feature exists. The bundle's `main.tsx` sets the cookie from a
+one-time `?key=` bootstrap in the URL and immediately scrubs the parameter via
+`history.replaceState`, so the secret never sits in the address bar or browser history.
+The daemon never sets the cookie itself.
+
+**The guard covers the WS upgrade.** The hook is registered at the Fastify root, and root
+`onRequest` hooks run for routes in child scopes — including `/internal/ws`, on the upgrade
+request, before any socket exists. A refused upgrade is an HTTP 401, not a socket that
+opens and then closes (which would let a subscribe frame through first). Pinned by a
+raw-`node:http` upgrade test, since browser `WebSocket` can't show the contrast.
+
+**`GET /internal/health` stays open even with a key configured.** It is the liveness probe
+`rewter status`/`stop` and the pidfile contract depend on, it performs nothing, and a
+`stop` that cannot tell "down" from "locked out" would hang on both.
+
+**Non-loopback binds fail closed.** `startDaemon` refuses to boot when `config.host` is not
+loopback (`isLoopbackHost`: `localhost`, `::1`, `127.*` — unrecognized strings are
+non-loopback *by construction*) and the internal key env var is unset. `/internal` is
+approve/deny/kill/shutdown/registry-writes; binding it open to a network is a remote kill
+switch, and a warning log would be the kind that is only read after the incident. The
+`ConfigError` names the env var, because setting it is the whole fix. See
+[Sharing the daemon over Tailscale](#sharing-the-daemon-over-tailscale) for the two
+supported remote-access modes.
+
+### Sharing the daemon over Tailscale
+
+Two modes, and the first needs no rewter configuration at all:
+
+1. **`tailscale serve` (recommended).** The daemon stays loopback-bound; Tailscale
+   terminates TLS and proxies to `127.0.0.1`. Identity and transport security are
+   Tailscale's, the bind never leaves the machine, and no key is needed:
+
+   ```sh
+   tailscale serve --bg https / http://127.0.0.1:20130
+   ```
+
+   The dashboard, `/v1`, and `/internal` are then reachable at
+   `https://<machine>.<tailnet>.ts.net/` from any tailnet device, same-origin, no
+   further setup.
+
+2. **Direct bind, fail-closed.** Set `host` to the tailnet IP (or `0.0.0.0`) in
+   `~/.rewter/config.json`, and set `REWTER_INTERNAL_KEY` in `~/.rewter/env` — without it
+   the daemon refuses to boot, by design. Ops clients send the key as a bearer or
+   `x-api-key` header; the dashboard is bootstrapped once by visiting
+   `http://<host>:<port>/?key=<the key>`, which moves the key into a session cookie and
+   scrubs the URL. `/v1` should get `REWTER_API_KEY` too on a shared bind — otherwise the
+   models surface is open to the same network the bind exposed.
 
 ## Configuration and boot
 

@@ -51,12 +51,44 @@ and why in this order.
 | # | Milestone | Status |
 |---|---|---|
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
-| P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ⬜ |
+| P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: WS client + shared fold, always-live input, mid-run steer, approvals | ⬜ |
 | P2-M4 | Skills loop: SKILL.md store, distiller, stage/approve pipeline, digest + `load_skill` | ⬜ |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-08-31 — the daemon is shareable over a tailnet (P2-M2)
+
+Two supported modes, per the design doc. `tailscale serve` needed zero code — the daemon
+stays loopback and the README now says exactly that first. The direct bind got the
+hardening: **a non-loopback `host` refuses to boot** unless the env var named by
+`internalKeyEnv` (default `REWTER_INTERNAL_KEY`) is set — `/internal` is
+approve/deny/kill/shutdown, and refusing before the port opens beats a warning log that
+is only read after the incident. `isLoopbackHost` treats unrecognized strings as
+non-loopback by construction, and the `ConfigError` names the exact env var plus the
+`tailscale serve` alternative.
+
+With the key set, `/internal` is gated by the same one-guard/two-headers convention `/v1`
+uses (`Bearer` + `x-api-key`) **plus a third credential: the `rewter_internal_key` cookie**
+(`INTERNAL_KEY_COOKIE` in `shared`). The cookie exists for exactly one caller — a browser's
+`new WebSocket()` cannot carry headers but sends cookies on the upgrade for free — which is
+why no dashboard client module had to learn auth exists. `main.tsx` bootstraps it from a
+one-time `?key=` URL param and scrubs the param with `replaceState`. The two keys gate
+different doors: the internal key never opens `/v1`, nor vice versa. `GET /internal/health`
+stays open by name — it is the probe `rewter status`/`stop` and the pidfile contract
+depend on, and a `stop` that cannot tell "down" from "locked out" would hang on both.
+
+The guard is a root `onRequest` hook, which is what covers `/internal/ws`: root hooks run
+for child scopes, on the HTTP upgrade request, before any socket exists. Pinned with a
+raw-`node:http` upgrade test (401 arrives as a `response` event, 101 as `upgrade`) for the
+no-credential, bearer, and cookie cases — a socket that opened and then closed would let
+one subscribe frame through first. Boot refusal (default + custom env var name), gating,
+health exemption, `isLoopbackHost` truth table, and the `?key=` bootstrap (scrub keeps
+other params + hash; `;`/`=` in a key survives encodeURIComponent) all have tests.
+
+Remaining acceptance — dashboard + endpoint from a second tailnet device — needs the other
+device; everything up to the network boundary is pinned by tests.
 
 ### 2026-08-31 — projects are editable (P2-M1, part 2 — milestone done)
 

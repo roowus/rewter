@@ -7,7 +7,13 @@
  * for an event appended *during* the replay — the one moment where getting it
  * wrong is invisible in a quiet test and corrupts a real dashboard's fold.
  */
-import { type EventEnvelope, type SocketServerMessage, foldEvents } from "@rewter/shared";
+import { request } from "node:http";
+import {
+  type EventEnvelope,
+  INTERNAL_KEY_COOKIE,
+  type SocketServerMessage,
+  foldEvents,
+} from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Db, openDb } from "../db/connection.js";
@@ -45,7 +51,7 @@ afterEach(async () => {
   await app?.close();
 });
 
-async function listen(): Promise<string> {
+async function listen(opts: { internalKey?: string } = {}): Promise<string> {
   app = buildApp({
     router: new Router({
       repos,
@@ -55,6 +61,7 @@ async function listen(): Promise<string> {
     repos,
     bus,
     sse: { heartbeatMs: 0 },
+    ...(opts.internalKey !== undefined && { internalKey: opts.internalKey }),
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const addr = app.server.address();
@@ -233,6 +240,48 @@ describe("WS /internal/ws", () => {
     expect(socket.readyState).toBe(socket.OPEN);
     subscribe(socket);
     await vi.waitFor(() => expect(readyOf(seen)).toBeDefined());
+  });
+
+  it("refuses the upgrade without the internal key, before any socket exists", async () => {
+    // A hand-rolled upgrade request, because the browser `WebSocket` cannot
+    // carry headers and therefore cannot show the contrast this test is: the
+    // same handshake, with and without a credential. The root `onRequest` hook
+    // must answer 401 to the *HTTP* request — a socket that opens and then
+    // closes would let one subscribe frame through first.
+    const url = new URL(await listen({ internalKey: "ik-test" }));
+    const upgrade = (headers: Record<string, string>) =>
+      new Promise<number>((resolve, reject) => {
+        const req = request(
+          {
+            host: url.hostname,
+            port: url.port,
+            path: "/internal/ws",
+            headers: {
+              connection: "Upgrade",
+              upgrade: "websocket",
+              "sec-websocket-version": "13",
+              "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+              ...headers,
+            },
+          },
+          (res) => {
+            resolve(res.statusCode ?? 0);
+            res.destroy();
+          },
+        );
+        // A granted upgrade never emits `response` — it emits `upgrade`.
+        req.on("upgrade", (res, socket) => {
+          socket.destroy();
+          resolve(res.statusCode ?? 101);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+
+    expect(await upgrade({})).toBe(401);
+    expect(await upgrade({ authorization: "Bearer ik-test" })).toBe(101);
+    // The cookie path — the only credential a real browser dashboard can send.
+    expect(await upgrade({ cookie: `${INTERNAL_KEY_COOKIE}=ik-test` })).toBe(101);
   });
 
   it("drops its listener when the client goes away", async () => {

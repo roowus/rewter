@@ -110,9 +110,38 @@ describe("startDaemon", () => {
     expect((await fetch(`${d.url}/v1/models`)).status).toBe(200);
   });
 
-  it("never gates /internal, even with a token configured", async () => {
-    // The dashboard is same-origin and holds no key; /internal is loopback-only.
+  it("does not gate /internal on the /v1 token — the two keys gate different doors", async () => {
     const d = await boot({ apiKeyEnv: "MY_REWTER_TOKEN" }, { MY_REWTER_TOKEN: "s3cret" });
+    expect((await fetch(`${d.url}/internal/health`)).status).toBe(200);
+    expect((await fetch(`${d.url}/internal/models`)).status).toBe(200);
+  });
+
+  it("refuses to boot on a non-loopback host without the internal key", async () => {
+    // Fail closed, before the port opens: `/internal` is approve/deny/kill/
+    // shutdown, and an open bind would hand the network a kill switch. The
+    // error must name the env var, because setting it is the whole fix.
+    await expect(boot({ host: "0.0.0.0" })).rejects.toThrow(/REWTER_INTERNAL_KEY/);
+    daemon = undefined;
+  });
+
+  it("names a custom internalKeyEnv in the refusal, not the default", async () => {
+    await expect(boot({ host: "100.71.4.20", internalKeyEnv: "MY_OPS_TOKEN" })).rejects.toThrow(
+      /MY_OPS_TOKEN/,
+    );
+    daemon = undefined;
+  });
+
+  it("gates /internal when the internal key env var is set, health excepted", async () => {
+    // Loopback here — the gating is the same code path on any host, and a test
+    // that binds 0.0.0.0 buys nothing but a macOS firewall prompt.
+    const d = await boot({ internalKeyEnv: "MY_OPS_TOKEN" }, { MY_OPS_TOKEN: "ik-s3cret" });
+
+    expect((await fetch(`${d.url}/internal/models`)).status).toBe(401);
+    const allowed = await fetch(`${d.url}/internal/models`, {
+      headers: { authorization: "Bearer ik-s3cret" },
+    });
+    expect(allowed.status).toBe(200);
+    // `rewter status`/`stop` probe health with no key; locked out = a hang.
     expect((await fetch(`${d.url}/internal/health`)).status).toBe(200);
   });
 

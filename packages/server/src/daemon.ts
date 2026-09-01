@@ -11,7 +11,13 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REWTER_VERSION } from "@rewter/shared";
 import type { FastifyInstance } from "fastify";
-import { type Config, expandPath, loadConfig } from "./config/config.js";
+import {
+  type Config,
+  ConfigError,
+  expandPath,
+  isLoopbackHost,
+  loadConfig,
+} from "./config/config.js";
 import { DEFAULT_ENV_FILE, loadEnvFile, mergeEnv } from "./config/envfile.js";
 import { type SeedResult, seedRegistry } from "./config/seed.js";
 import { type Db, openDb } from "./db/connection.js";
@@ -202,6 +208,20 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   // The bearer token is read from the environment by *name*, like every other
   // secret here — the config file holds the variable name, never the value.
   const apiKey = env[config.apiKeyEnv] ?? null;
+  const internalKey = env[config.internalKeyEnv] ?? null;
+
+  // Fail closed, before the port opens: a non-loopback bind exposes
+  // `/internal` — approve, deny, kill, shutdown, registry writes — to whatever
+  // network that host is on, and without a key that is a remote kill switch.
+  // Refusing to boot is the design; a warning log is the kind of line that is
+  // only read after the incident. (`tailscale serve` needs none of this: the
+  // daemon stays on loopback and Tailscale carries identity and TLS.)
+  if (!isLoopbackHost(config.host) && (internalKey === null || internalKey === "")) {
+    db.$client.close();
+    throw new ConfigError(
+      `host ${config.host} is not loopback and ${config.internalKeyEnv} is not set — refusing to expose /internal unauthenticated. Set ${config.internalKeyEnv} (in ~/.rewter/env or the environment), or keep host 127.0.0.1 and use \`tailscale serve\` to share the daemon.`,
+    );
+  }
 
   const orchestrator = new Orchestrator({
     router,
@@ -274,6 +294,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     repos,
     bus,
     apiKey,
+    internalKey,
     logger: config.logger,
     orchestrator,
     live,

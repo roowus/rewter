@@ -23,6 +23,7 @@ import {
   type DaemonHealth,
   EVENT_TYPES,
   type EventType,
+  INTERNAL_KEY_COOKIE,
   ModelCreateSchema,
   ModelPatchSchema,
   type NormalizedRequest,
@@ -102,6 +103,14 @@ export interface AppOptions {
   bus: EventBus;
   /** Optional bearer token for `/v1`. Absent = open (localhost-only daemon). */
   apiKey?: string | null;
+  /**
+   * Optional token for `/internal` (and the WS upgrade). Absent = open, which
+   * is safe only because the daemon refuses to bind a non-loopback host
+   * without one — see `startDaemon`. `GET /internal/health` stays open either
+   * way: it is the liveness probe `rewter status`/`stop` and the pidfile
+   * contract depend on, and it performs nothing.
+   */
+  internalKey?: string | null;
   logger?: boolean;
   clock?: () => number;
   sse?: SseWriterOptions;
@@ -386,6 +395,49 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       await (req.url.startsWith("/v1/messages")
         ? reply.code(401).send(anthropicError("authentication_error", "invalid api key"))
         : reply.code(401).send({ error: { message: "invalid api key", type: "auth_error" } }));
+    });
+  }
+
+  // Same check for `/internal`, same two headers — one convention, not a second
+  // one. The hook is registered at the root, which is what covers the WS route
+  // too: `/internal/ws` lives in a child scope (the plugin's `onRoute` needs
+  // it), and root `onRequest` hooks run for child scopes, on the upgrade
+  // request, before the socket exists.
+  //
+  // The third acceptance, a cookie, exists for the dashboard: a browser cannot
+  // put a header on `new WebSocket()`, but it sends cookies on the upgrade for
+  // free — and on every same-origin fetch, which is why none of the dashboard's
+  // client modules know this feature exists. `main.tsx` sets the cookie from a
+  // one-time `?key=` bootstrap and scrubs it from the URL.
+  //
+  // `/internal/health` stays open by name: it is the liveness probe `rewter
+  // status`/`stop` and the pidfile contract depend on, it performs nothing, and
+  // a `stop` that cannot tell "down" from "locked out" would hang on both.
+  if (opts.internalKey !== undefined && opts.internalKey !== null && opts.internalKey !== "") {
+    const key = opts.internalKey;
+    const expected = `Bearer ${key}`;
+    const cookieOk = (header: string | undefined): boolean => {
+      if (header === undefined) return false;
+      return header.split(";").some((part) => {
+        const eq = part.indexOf("=");
+        if (eq === -1) return false;
+        if (part.slice(0, eq).trim() !== INTERNAL_KEY_COOKIE) return false;
+        try {
+          return decodeURIComponent(part.slice(eq + 1).trim()) === key;
+        } catch {
+          return false;
+        }
+      });
+    };
+    app.addHook("onRequest", async (req, reply) => {
+      if (!req.url.startsWith("/internal/")) return;
+      if (req.url === "/internal/health") return;
+      const bearerOk = req.headers.authorization === expected;
+      const apiKeyOk = req.headers["x-api-key"] === key;
+      if (bearerOk || apiKeyOk || cookieOk(req.headers.cookie)) return;
+      await reply
+        .code(401)
+        .send({ error: { message: "invalid internal key", type: "auth_error" } });
     });
   }
 

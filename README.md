@@ -81,8 +81,11 @@ runs a task under a project today, and the dashboard has a projects panel (creat
 policy, archive) plus a project picker on the run box* — a **skills learning loop** (agentskills.io `SKILL.md`
 distilled from what the system actually did, gated behind your approval), a **native
 `rewt` terminal client** where you can keep typing while a task runs, **Tailscale**
-support so the daemon is usable from any device on your tailnet, and the first tier-3
-harness (headless Claude Code) on the seam built in phase 1.
+support — *shipped: `tailscale serve` works against the loopback daemon as-is, and a
+direct non-loopback bind fails closed until `REWTER_INTERNAL_KEY` is set, which then
+gates `/internal` and the dashboard (see
+[Reaching it from another device](#reaching-it-from-another-device-tailscale))* — and
+the first tier-3 harness (headless Claude Code) on the seam built in phase 1.
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and
@@ -533,6 +536,40 @@ both surfaces. Leave it unset and the local daemon is open.
 Other knobs: `--config <path>` / `REWTER_CONFIG`, `REWTER_PORT`, `REWTER_HOST`, `REWTER_DB`,
 `--pidfile <path>` / `REWTER_PIDFILE`, `REWTER_ENV_FILE` (default `~/.rewter/env` — see
 [Running it at login](#running-it-at-login-macos)).
+
+### Reaching it from another device (Tailscale)
+
+The easy way needs no rewter configuration at all. Leave the daemon on loopback and let
+Tailscale carry it:
+
+```sh
+tailscale serve --bg https / http://127.0.0.1:20130
+```
+
+Dashboard, `/v1`, and `/internal` are now at `https://<machine>.<tailnet>.ts.net/` from
+every device on your tailnet — TLS and identity are Tailscale's problem, and the port never
+leaves the machine.
+
+The direct way is binding the tailnet address yourself — and it **fails closed**. `/internal`
+is approve/deny/kill/shutdown, so a non-loopback `host` refuses to boot until the internal
+key is set:
+
+```sh
+echo 'REWTER_INTERNAL_KEY=<something long and random>' >> ~/.rewter/env
+REWTER_HOST=100.x.y.z rewter start
+```
+
+Ops clients send it as `Authorization: Bearer …` or `x-api-key`. For the dashboard, visit
+once with `?key=`:
+
+```
+http://100.x.y.z:20130/?key=<the key>
+```
+
+The page moves the key into a session cookie (which also rides the live-updates WebSocket)
+and scrubs it from the URL. `GET /internal/health` stays open so `rewter status`/`stop`
+keep working without the key. The internal key and `REWTER_API_KEY` gate different doors —
+on a shared bind you likely want both set, or `/v1` is open to the same network.
 
 From another terminal — or a script — ask whether one is up, and ask it to stop:
 

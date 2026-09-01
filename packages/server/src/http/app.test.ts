@@ -48,7 +48,7 @@ afterEach(async () => {
 /** Builds the app around a scripted adapter. Returns both for assertions. */
 function setup(
   scripts: ConstructorParameters<typeof FakeAdapter>[0],
-  opts: { apiKey?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { apiKey?: string; internalKey?: string; env?: NodeJS.ProcessEnv } = {},
 ) {
   const adapter = new FakeAdapter(scripts);
   const router = new Router({
@@ -64,6 +64,7 @@ function setup(
     // Heartbeats would inject `: ping` lines into byte-exact assertions.
     sse: { heartbeatMs: 0 },
     ...(opts.apiKey !== undefined && { apiKey: opts.apiKey }),
+    ...(opts.internalKey !== undefined && { internalKey: opts.internalKey }),
     // Empty by default, so nothing here can read the developer's real keys.
     env: opts.env ?? {},
   });
@@ -461,6 +462,71 @@ describe("bearer auth", () => {
   it("is open when no key is configured", async () => {
     setup([[text("x"), end()]]);
     expect((await app.inject({ method: "GET", url: "/v1/models" })).statusCode).toBe(200);
+  });
+});
+
+describe("internal key", () => {
+  it("rejects /internal without the configured key", async () => {
+    setup([[]], { internalKey: "ik-test" });
+    const res = await app.inject({ method: "GET", url: "/internal/models" });
+    expect(res.statusCode).toBe(401);
+    expect(res.json<{ error: { message: string } }>().error.message).toBe("invalid internal key");
+  });
+
+  it("accepts either header convention, like /v1", async () => {
+    setup([[]], { internalKey: "ik-test" });
+    const bearer = await app.inject({
+      method: "GET",
+      url: "/internal/models",
+      headers: { authorization: "Bearer ik-test" },
+    });
+    expect(bearer.statusCode).toBe(200);
+    const xApiKey = await app.inject({
+      method: "GET",
+      url: "/internal/models",
+      headers: { "x-api-key": "ik-test" },
+    });
+    expect(xApiKey.statusCode).toBe(200);
+  });
+
+  it("accepts the bootstrap cookie — the dashboard's only way onto the WS", async () => {
+    setup([[]], { internalKey: "ik-test" });
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/models",
+      headers: { cookie: "other=1; rewter_internal_key=ik-test" },
+    });
+    expect(res.statusCode).toBe(200);
+    // The wrong value in the right cookie is still a 401, not a fallthrough.
+    const wrong = await app.inject({
+      method: "GET",
+      url: "/internal/models",
+      headers: { cookie: "rewter_internal_key=nope" },
+    });
+    expect(wrong.statusCode).toBe(401);
+  });
+
+  it("keeps /internal/health open — `rewter stop` must tell 'down' from 'locked out'", async () => {
+    setup([[]], { internalKey: "ik-test" });
+    const res = await app.inject({ method: "GET", url: "/internal/health" });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("does not open /v1 — the two keys gate different doors", async () => {
+    // An internal key is an ops credential; configuring it must not stand in
+    // for the API key on the model-serving surface.
+    setup([[text("x"), end()]], { apiKey: "sk-test", internalKey: "ik-test" });
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: { authorization: "Bearer ik-test" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("leaves /internal open when no internal key is configured (loopback default)", async () => {
+    setup([[]]);
+    expect((await app.inject({ method: "GET", url: "/internal/models" })).statusCode).toBe(200);
   });
 });
 

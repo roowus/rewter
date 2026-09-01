@@ -123,6 +123,13 @@ export const ConfigSchema = z.object({
   workspacesDir: z.string().min(1).default("~/.rewter/workspaces"),
   /** Env var NAME holding the bearer token clients must send to `/v1`. */
   apiKeyEnv: z.string().min(1).default("REWTER_API_KEY"),
+  /**
+   * Env var NAME holding the token `/internal` requires. Unset on loopback =
+   * open, which is phase 1 unchanged; unset on any other host = the daemon
+   * refuses to boot, because `/internal` is approve/deny/kill/shutdown and an
+   * unauthenticated bind would hand the network a kill switch.
+   */
+  internalKeyEnv: z.string().min(1).default("REWTER_INTERNAL_KEY"),
   logger: z.boolean().default(true),
   providers: z.array(ProviderConfigSchema).default([]),
   models: z.array(ModelConfigSchema).default([]),
@@ -278,6 +285,20 @@ function applyEnvOverrides(
     out.port = port;
   }
   return out;
+}
+
+/**
+ * Is this bind host reachable only from this machine?
+ *
+ * The answer gates the fail-closed boot check: loopback needs no `/internal`
+ * auth because the kernel already restricts callers; anything else — a tailnet
+ * IP, `0.0.0.0`, a LAN address — makes approve/deny/kill/shutdown reachable
+ * from other machines and must not boot without a key. Unrecognized strings
+ * are non-loopback by construction: a typo'd host that skipped the check would
+ * be exactly the incident the check exists to prevent.
+ */
+export function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || host.startsWith("127.");
 }
 
 /** Expand a leading `~` and make the result absolute. */
