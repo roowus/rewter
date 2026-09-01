@@ -53,10 +53,44 @@ and why in this order.
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
-| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ⬜ · stage/approve pipeline ⬜ · digest + `load_skill` ⬜ | 🔶 |
+| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ⬜ · digest + `load_skill` ⬜ | 🔶 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-09-01 — the distiller: every success is offered up for learning (P2-M4, slice 2)
+
+The loop's front half. When a task reaches `succeeded`, a bus subscriber
+(`server/src/skills/watch.ts`) hands its event log to the distiller
+(`server/src/skills/distill.ts`), which asks a cheap model whether the run contains a
+reusable procedure — and if so, lands a draft in `pending/`. **That destination is the whole
+safety story**: retrieval never reads `pending/` (slice-1 invariant), so the distiller ships
+on by default with no gate of its own; its output is inert until the owner approves it.
+
+- **Trigger**: the spec's "≥5 tool calls" measured in what the log actually carries —
+  `cost.recorded` events with a non-null `workerRunId` (worker LLM turns). Floor
+  `skills.minWorkerTurns`, default 6; initiator-only tasks never qualify.
+- **Condenser**: one line per meaningful event (plan, spawns, results, approvals, outcome),
+  bookkeeping dropped; over ~6K tokens the *middle* is elided — openings state intent,
+  endings state what worked.
+- **Drafting**: `skills.distillModel`, else the cheapest enabled model with a *known* output
+  price — the initiator heuristic inverted, since the expensive judgement already happened.
+  Spend is booked against the task it learned from. The reply is zod-parsed defensively
+  (JSON dug out of prose/fences, name slugified with repair); `{"skip": true}` is a
+  first-class verdict. `composeSkillMd` round-trips through the store's own parser before
+  writing.
+- **Discipline at the bus**: never throws (the bus swallows subscriber errors), never
+  blocks `append`, queues distillations on a promise chain (racing drafts would defeat the
+  duplicate check), refuses to overwrite a slug already pending review, reindexes after each
+  draft so the dashboard sees it without a new event type. Shutdown unsubscribes first.
+
+Also extracted `extractJsonObject` (and friends) into `server/src/llm/text.ts` — the card
+generator and the distiller both dig JSON out of LLM prose, and one implementation should.
+Config grows a `skills` block (`distill`, `distillModel`, `minWorkerTurns`), every field
+defaulted so a config that predates skills still boots a daemon that learns. 31 new tests
+(24 job, 7 wiring — the wiring suite runs a real in-memory bus + repos, because the
+distiller's whole job is reacting to the bus and reindexing through the repos; only the LLM
+is scripted). Next: stage/approve pipeline (`/internal/skills`), then digest + `load_skill`.
 
 ### 2026-09-01 — the SKILL.md store and index (P2-M4, first slice)
 

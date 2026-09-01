@@ -28,6 +28,7 @@ import {
   ModelIdSchema,
 } from "@rewter/shared";
 import { z } from "zod";
+import { clamp, collapse, extractJsonObject } from "../llm/text.js";
 
 /** Bumped when the prompt changes shape; snapshot-tested for stability. */
 export const CARD_PROMPT_VERSION = 2;
@@ -241,48 +242,6 @@ function tags(values: string[], unknown: string[]): CapabilityTag[] {
     if (!kept.includes(parsed.data)) kept.push(parsed.data);
   }
   return kept;
-}
-
-/**
- * Find the JSON object in a reply that may be fenced, prefaced, or both.
- * Braces are counted rather than matched to the last `}` in the string, so
- * trailing prose containing a brace does not swallow the parse.
- */
-function extractJsonObject(raw: string): string | undefined {
-  const start = raw.indexOf("{");
-  if (start === -1) return undefined;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < raw.length; i++) {
-    const ch = raw[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') inString = !inString;
-    if (inString) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}" && --depth === 0) return raw.slice(start, i + 1);
-  }
-  return undefined;
-}
-
-/** The digest is one line per model; a newline in a summary would break the format. */
-function collapse(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
-
-function clamp(s: string, max: number): string {
-  if (s.length <= max) return s;
-  const cut = s.slice(0, max);
-  const space = cut.lastIndexOf(" ");
-  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
 // ── Generation ──────────────────────────────────────────────────────────────

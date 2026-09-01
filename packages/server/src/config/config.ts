@@ -108,6 +108,36 @@ export const OrchestratorConfigSchema = z
   .default({});
 export type OrchestratorConfig = z.infer<typeof OrchestratorConfigSchema>;
 
+/**
+ * Skills knobs (phase-2 M4). Same contract as the orchestrator block: every
+ * field has a default, so a config that predates skills still boots a daemon
+ * that learns.
+ */
+export const SkillsConfigSchema = z
+  .object({
+    /**
+     * Draft a pending skill after each qualifying successful task. On by
+     * default because the output is inert until approved — nothing in
+     * `pending/` is ever retrieved — and off is one line for anyone who would
+     * rather not spend the (cheap-model) tokens.
+     */
+    distill: z.boolean().default(true),
+    /**
+     * Who drafts. Left null, the daemon picks the cheapest enabled model with
+     * a known price — the initiator heuristic inverted, because distillation
+     * is summarization and the expensive judgement already happened.
+     */
+    distillModel: z.string().min(1).nullable().default(null),
+    /**
+     * Distill floor: worker LLM turns a task must have burned before its log
+     * is considered worth learning from. The spec's "≥5 tool calls" measured
+     * in the signal the event log actually carries (see skills/distill.ts).
+     */
+    minWorkerTurns: z.number().int().positive().max(1_000).default(6),
+  })
+  .default({});
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
+
 export const ConfigSchema = z.object({
   /** Loopback by default: the daemon holds provider keys and gates nothing else. */
   host: z.string().min(1).default("127.0.0.1"),
@@ -139,6 +169,7 @@ export const ConfigSchema = z.object({
   providers: z.array(ProviderConfigSchema).default([]),
   models: z.array(ModelConfigSchema).default([]),
   orchestrator: OrchestratorConfigSchema,
+  skills: SkillsConfigSchema,
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

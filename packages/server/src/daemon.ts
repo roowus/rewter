@@ -30,6 +30,7 @@ import { type ReconcileResult, reconcileOnBoot, reconcileSummary } from "./recon
 import { Router } from "./router/router.js";
 import { removePidfile, writePidfile } from "./service/pidfile.js";
 import { reindexSkills } from "./skills/reindex.js";
+import { wireDistiller } from "./skills/watch.js";
 
 export interface StartDaemonOptions {
   /** Explicit config path (`--config`); otherwise `~/.rewter/config.json`. */
@@ -249,6 +250,32 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   });
   const live = new LiveTaskIndex();
 
+  // The learning loop's front half (phase-2 M4): every task that succeeds is
+  // offered to the distiller, which may land a draft in `pending/` — inert
+  // until a human approves it, which is why this needs no gate of its own.
+  const distiller = wireDistiller({
+    bus,
+    generator: router,
+    // The job's reads span both stores: the log lives on the bus, everything
+    // else on the repos. Composed here so neither grows a method it doesn't own.
+    source: {
+      eventsAfter: (afterSeq, taskId) => bus.eventsAfter(afterSeq, taskId),
+      listWorkItems: (taskId) => repos.listWorkItems(taskId),
+      getProject: (id) => repos.getProject(id),
+      listSkills: () => repos.listSkills(),
+      getTask: (id) => repos.getTask(id),
+    },
+    repos,
+    listModels: () => repos.listModels({ enabledOnly: true }),
+    skillsRoot: skillsDir,
+    config: config.skills,
+    // `app` doesn't exist yet; defer each call so the logger is the real one.
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+    },
+  });
+
   // ── The stop sequence, defined before the app so the app can call it ───────
   //
   // `POST /internal/shutdown` needs a handle on this, and the app is built
@@ -270,6 +297,11 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       // socket that is closing. A `stop` waiting on us sees the health probe
       // stop answering either way.
       if (opts.pidfilePath !== undefined) removePidfile(opts.pidfilePath);
+      // No new distillations once we've decided to stop. One already in
+      // flight isn't waited for — its draft file still lands, and if the
+      // reindex then finds the DB closed, that's a caught warn and the next
+      // boot's reindex picks the file up anyway.
+      distiller.unsubscribe();
       // Tasks next: a running orchestration holds upstream calls open, and
       // closing the socket out from under it would leave them billing with
       // nobody left to read the answer.

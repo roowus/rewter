@@ -589,10 +589,45 @@ arguments say, and a project task sees global ∪ project with **project shadowi
 slug collision (the `CLAUDE.md` precedence rule). Stable-sorted by slug for digest
 cacheability.
 
-Still to come in this milestone: the distiller job (post-success, ≥5-tool-call heuristic, cheap
-model, zod-parsed), the stage/approve pipeline (`/internal/skills` routes; approve = move the
-file into its scoped directory + reindex), and the skills digest + `load_skill` tool (metered
-by the same `estimateTokens` as the registry digest).
+### The distiller (slice 2)
+
+Every task that reaches `succeeded` is offered to the distiller
+(`server/src/skills/distill.ts` — the job; `watch.ts` — the trigger), which may land a draft
+in `pending/`. That destination is the whole safety argument: **nothing in `pending/` is ever
+retrieved**, so the distiller needs no approval gate, no config ceremony, no event type of its
+own — its output is inert until a human moves the file. It is on by default (`skills.distill`)
+for exactly that reason, and off is one config line.
+
+- **Trigger** (`shouldDistill`): the spec's "≥5 tool calls" measured in the signal the event
+  log actually carries — `cost.recorded` events with a non-null `workerRunId`, i.e. worker LLM
+  turns. Initiator turns (`workerRunId: null`) don't count; a task the initiator answered
+  alone has no procedure worth writing down. Floor: `skills.minWorkerTurns`, default 6.
+- **Condenser** (`condenseTaskLog`): the event log rendered one line per *meaningful* event —
+  plan notes, worker spawn/finish with result summaries, approvals, steering, the outcome —
+  bookkeeping (costs, deltas) dropped. Over a ~6K-token budget it elides the middle, keeping
+  head and tail: openings state intent, endings state what worked.
+- **The draft is LLM output, so it is zod-parsed defensively** (`parseSkillDraft`): JSON
+  extracted from prose/fences, schema-gated, the `name` slugified with repair (a near-miss
+  like "Compare Three Sources!" becomes a slug; garbage becomes a named `DistillError`). The
+  model may return `{"skip": true, "reason"}` — "this task teaches nothing" is a first-class
+  verdict, not a failure. `composeSkillMd` round-trips the result through the store's own
+  parser before writing, so the scanner can never be handed a file the composer thought valid.
+- **Who drafts** (`pickDistillModel`): `skills.distillModel`, or the cheapest enabled model
+  with a *known* output price — the initiator heuristic inverted, because distillation is
+  summarization and the expensive judgement already happened. Known-cheap beats
+  unknown-priced. The spend is booked against the task it learned from.
+- **The trigger never throws and never blocks** (`wireDistiller`): the bus swallows subscriber
+  errors to protect the write path, so everything here catches and logs. Distillations queue
+  on a promise chain rather than interleave — two drafts racing the same slug would defeat the
+  exists-check — and a draft whose slug is already pending is skipped, never overwritten: the
+  owner may be mid-review of the first one. After a draft lands, `reindexSkills` runs, so the
+  pending skill is immediately visible to `/internal` and the dashboard without a new event
+  type. Shutdown unsubscribes the distiller first; an in-flight draft still lands, and the
+  next boot's reindex picks it up.
+
+Still to come in this milestone: the stage/approve pipeline (`/internal/skills` routes;
+approve = move the file into its scoped directory + reindex), and the skills digest +
+`load_skill` tool (metered by the same `estimateTokens` as the registry digest).
 
 ## Orchestrator engine
 
@@ -1362,6 +1397,11 @@ while opening another's database. It failed silently for exactly as long as no r
   "dbPath": "~/.rewter/rewter.db",  // a leading ~ is expanded; ":memory:" works for throwaway runs
   "workspacesDir": "~/.rewter/workspaces",  // one dir per task; NOT under dbPath, on purpose
   "skillsDir": "~/.rewter/skills",  // the SKILL.md tree (P2-M4); files are truth, DB indexes
+  "skills": {
+    "distill": true,                // draft a pending skill after each qualifying success
+    "distillModel": null,           // null = cheapest enabled model with a known price
+    "minWorkerTurns": 6             // worker LLM turns a task must burn to be worth learning from
+  },
   "apiKeyEnv": "REWTER_API_KEY",    // env var NAME holding the bearer token /v1 requires
   "providers": [
     { "preset": "anthropic" },
