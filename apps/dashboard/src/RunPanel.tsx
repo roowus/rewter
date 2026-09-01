@@ -27,8 +27,9 @@
  * prompt box permanently open above a live task tree invites typing into it by
  * reflex.
  */
-import type { Model } from "@rewter/shared";
+import type { Model, Project } from "@rewter/shared";
 import { useEffect, useState } from "react";
+import { fetchProjects } from "./projects.js";
 import { fetchRegistry } from "./registry.js";
 import { type RunInput, parseBudget, runTask } from "./run.js";
 
@@ -43,24 +44,33 @@ export function RunPanel(): JSX.Element {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [initiator, setInitiator] = useState("");
+  const [project, setProject] = useState("");
   const [budget, setBudget] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
   const [models, setModels] = useState<Model[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [busy, setBusy] = useState(false);
   const [started, setStarted] = useState<Started | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Only once the panel is opened: the model list is for the pin dropdown, and
-  // a closed panel has no dropdown to fill.
+  // Only once the panel is opened: the lists are for the two dropdowns, and a
+  // closed panel has no dropdowns to fill.
   useEffect(() => {
     if (!open || models.length > 0) return;
     const controller = new AbortController();
     void (async () => {
-      const out = await fetchRegistry(fetch, controller.signal);
+      const [reg, projs] = await Promise.all([
+        fetchRegistry(fetch, controller.signal),
+        fetchProjects(fetch, controller.signal),
+      ]);
       if (controller.signal.aborted) return;
       // A registry that will not load is not a reason to block the form — the
-      // empty pin is the common case and needs no list at all.
-      if (out.ok) setModels(out.value.models);
+      // empty pin is the common case and needs no list at all. Same for
+      // projects: project-less is the default run.
+      if (reg.ok) setModels(reg.value.models);
+      // Archived projects refuse a run with a 400, so they don't belong in a
+      // picker of things to run under.
+      if (projs.ok) setProjects(projs.value.filter((p) => !p.archived));
     })();
     return () => controller.abort();
   }, [open, models.length]);
@@ -79,6 +89,7 @@ export function RunPanel(): JSX.Element {
       // configured default, and sending the field at all would overwrite it.
       if (parsedBudget.value !== undefined) input.maxSpendUsd = parsedBudget.value;
       if (initiator !== "") input.initiator = initiator;
+      if (project !== "") input.project = project;
 
       const out = await runTask(input, fetch);
       setBusy(false);
@@ -136,6 +147,19 @@ export function RunPanel(): JSX.Element {
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.id}
+                  </option>
+                ))}
+              </select>
+
+              <label htmlFor="run-project">project</label>
+              <select id="run-project" value={project} onChange={(e) => setProject(e.target.value)}>
+                {/* Project-less is the default run and needs no row to exist.
+                    A chosen project folds its policy in tighten-only — the
+                    budget field below can lower its cap, never raise it. */}
+                <option value="">none</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.slug}>
+                    {p.slug}
                   </option>
                 ))}
               </select>

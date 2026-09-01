@@ -37,6 +37,8 @@ export interface RunInput {
   prompt: string;
   /** A model id to lead with, or `null` for the registry's own choice. */
   initiator?: string | null;
+  /** A project slug to run under, or `null`/blank for a project-less task. */
+  project?: string | null;
   maxSpendUsd?: number | null;
   autoApprove?: boolean;
 }
@@ -49,14 +51,16 @@ export async function runTask(
   if (input.maxSpendUsd !== undefined) settings.maxSpendUsd = input.maxSpendUsd;
   if (input.autoApprove !== undefined) settings.autoApprove = input.autoApprove;
 
+  // The grammar is `auto/orchestrator[@<slug>][:<pin>]` — project before pin,
+  // because slugs never contain `:` and the parser splits in that order.
+  // `/internal/run` takes the project in the model string only, same as any
+  // other client; a blank slug is no project, same as a blank pin is no pin.
+  const project = input.project == null || input.project === "" ? "" : `@${input.project}`;
+  const pin = input.initiator == null || input.initiator === "" ? "" : `:${input.initiator}`;
+
   const payload = {
     prompt: input.prompt,
-    // A blank pin is not a pin. The bare pseudo-model lets the registry choose,
-    // which is the same thing a client that never heard of pinning would send.
-    model:
-      input.initiator == null || input.initiator === ""
-        ? "auto/orchestrator"
-        : `auto/orchestrator:${input.initiator}`,
+    model: `auto/orchestrator${project}${pin}`,
     ...(Object.keys(settings).length > 0 && { settings }),
   };
 

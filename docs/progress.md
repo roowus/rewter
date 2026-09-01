@@ -50,13 +50,42 @@ and why in this order.
 
 | # | Milestone | Status |
 |---|---|---|
-| P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection | 🟨 server side done 2026-08-31; dashboard panel + CRUD routes remain |
+| P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ⬜ |
 | P2-M3 | `rewt` TUI: WS client + shared fold, always-live input, mid-run steer, approvals | ⬜ |
 | P2-M4 | Skills loop: SKILL.md store, distiller, stage/approve pipeline, digest + `load_skill` | ⬜ |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-08-31 — projects are editable (P2-M1, part 2 — milestone done)
+
+The CRUD and the panel land, closing P2-M1. Four routes on `/internal/projects`, addressed
+by **slug** (the same name `auto@<slug>` uses; no `/` in slugs, so plain `:slug` params
+where the models routes need wildcards): GET hides archived by default
+(`?includeArchived=true` shows all), POST takes the new strict `ProjectCreateSchema`
+(server mints id/timestamps/archived — a project born archived is a contradiction; taken
+slug is a 409, not an upsert), PATCH takes `ProjectPatchSchema` (slug deliberately **not**
+patchable — it is the project's address; a no-change patch returns `{changed: false}`
+without writing, so `updatedAt` stays honest), DELETE removes the row and leaves every
+task's `projectId` alone. `applyProjectPatch` in `shared` carries the same
+undefined-on-no-change contract as `applyModelPatch`.
+
+Dashboard: a `ProjectsPanel` between the registry and the run box (a project is what a run
+*uses*), collapsed by default — create form (slug/name/optional workspace dir, which
+becomes the first `dir` resource; everything else starts at schema defaults), live and
+archived rows in separate tables (unarchive has to find its target), in-place auto-approve
+toggle, archive/unarchive, and a two-click delete offered only on archived rows. The run
+panel gains a project picker (archived excluded — they refuse a run with a 400) and
+`run.ts` encodes the choice as `auto/orchestrator@<slug>[:<pin>]`, project before pin
+because slugs never contain `:`.
+
+Tests pin each seam: create/patch strictness tables + patch honesty in
+`projects.test.ts` (shared, 44), the four routes against real SQLite in
+`app.projects.test.ts` (11), slug addressing + envelope handling in the dashboard client
+(8), panel behaviour incl. the archived split and armed delete (10), and the model-string
+encoding in `run.test.ts` + the picker in `RunPanel.test.tsx`. Curl-territory on purpose:
+prefer/avoid lists, extra resources, description edits.
 
 ### 2026-08-31 — projects exist, server-side (P2-M1, part 1)
 

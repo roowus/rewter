@@ -32,6 +32,8 @@ import {
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
   type Project,
+  ProjectCreateSchema,
+  ProjectPatchSchema,
   type Provider,
   type ProviderTestResult,
   REWTER_VERSION,
@@ -49,10 +51,12 @@ import {
   TranslateRequestSchema,
   type TranslateResponse,
   applyModelPatch,
+  applyProjectPatch,
   buildBundle,
   fromAnthropicMessages,
   fromAnthropicTools,
   isTerminal,
+  newProjectId,
   restartAdvice,
   summarizeCosts,
   toAnthropicStopReason,
@@ -1174,6 +1178,80 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     }
     const { bundle, onConflict, dryRun } = parsed.data;
     return applyImport(repos, bundle, { onConflict, dryRun, now: clock() });
+  });
+
+  // ── Projects ──────────────────────────────────────────────────────────────
+  //
+  // Same editor shape as the models CRUD, with two differences worth naming.
+  //
+  // Routes address a project by **slug**, not id: the slug is what every other
+  // channel uses (`auto@<slug>`, the `x-rewter-project` header), so making the
+  // URL a third spelling of the same address keeps one name for one thing.
+  // Slugs contain no `/`, so a plain `:slug` param works where models needed a
+  // trailing wildcard. The id stays a storage key the dashboard never types.
+  //
+  // And DELETE is honest about what it doesn't do: tasks keep their
+  // `projectId` (no FK, on purpose), so history keeps naming a project that is
+  // gone — same reasoning as cost records naming retired models. Archiving is
+  // the everyday off-switch; delete is for rows created by mistake.
+
+  app.get("/internal/projects", async (req) => {
+    const q = req.query as { includeArchived?: string };
+    // Archived rows list only on request: the run-picker wants live projects,
+    // the settings screen wants everything (unarchive has to find its target).
+    return { projects: repos.listProjects({ includeArchived: q.includeArchived === "true" }) };
+  });
+
+  app.post("/internal/projects", async (req, reply) => {
+    const parsed = ProjectCreateSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+    const body = parsed.data;
+
+    if (repos.getProjectBySlug(body.slug) !== undefined) {
+      // Not an upsert: the slug is an address, and a POST that silently took
+      // over an existing one would repoint every stored reference at once.
+      return reply.code(409).send({ error: { message: `project ${body.slug} already exists` } });
+    }
+
+    const now = clock();
+    // id, timestamps, and `archived: false` are minted here, not taken from
+    // the body — ProjectCreateSchema is `.strict()` so a body carrying them is
+    // a 400 above, never a silent ignore.
+    const project = repos.upsertProject({
+      ...body,
+      id: newProjectId(),
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return reply.code(201).send({ project });
+  });
+
+  app.patch("/internal/projects/:slug", async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const existing = repos.getProjectBySlug(slug);
+    if (existing === undefined) {
+      return reply.code(404).send({ error: { message: `no such project: ${slug}` } });
+    }
+
+    const parsed = ProjectPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+
+    const next = applyProjectPatch(existing, parsed.data, clock());
+    // `undefined` means nothing actually changed — return the row unwritten so
+    // `updatedAt` keeps meaning "when a human last edited this".
+    if (next === undefined) return { project: existing, changed: false };
+    return { project: repos.upsertProject(next), changed: true };
+  });
+
+  app.delete("/internal/projects/:slug", async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const existing = repos.getProjectBySlug(slug);
+    if (existing === undefined) {
+      return reply.code(404).send({ error: { message: `no such project: ${slug}` } });
+    }
+    repos.deleteProject(existing.id);
+    return { deleted: slug };
   });
 
   // ── Approvals ─────────────────────────────────────────────────────────────

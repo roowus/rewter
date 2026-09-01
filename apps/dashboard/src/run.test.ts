@@ -52,6 +52,40 @@ describe("runTask", () => {
     expect(sent(fetchImpl).model).toBe("auto/orchestrator:zai/glm-5.3");
   });
 
+  it("encodes a project into the model string, before any pin", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json(ACCEPTED));
+    await runTask(
+      { prompt: "do a thing", project: "my-proj" },
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    expect(sent(fetchImpl).model).toBe("auto/orchestrator@my-proj");
+  });
+
+  it("orders project before pin — the daemon splits on ':' after '@'", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json(ACCEPTED));
+    await runTask(
+      { prompt: "do a thing", project: "my-proj", initiator: "zai/glm-5.3" },
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    // `@` first because slugs never contain `:` and model ids may — the
+    // reversed order would leave the parser unable to tell them apart.
+    expect(sent(fetchImpl).model).toBe("auto/orchestrator@my-proj:zai/glm-5.3");
+  });
+
+  it("treats a blank project like a blank pin: absent, not an empty suffix", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json(ACCEPTED));
+    await runTask(
+      { prompt: "do a thing", project: "", initiator: "" },
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    // Not `auto/orchestrator@` — an empty slug would 404 as a project named
+    // the empty string, when the caller meant "no project".
+    expect(sent(fetchImpl).model).toBe("auto/orchestrator");
+  });
+
   it("omits settings entirely when none were chosen", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json(ACCEPTED));
     await runTask({ prompt: "do a thing" }, fetchImpl as unknown as typeof fetch);

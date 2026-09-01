@@ -1,10 +1,21 @@
 /**
  * Project semantics that must not fork between server and dashboard: how a
- * project's policy folds into a task's settings, and which resource is the
- * workspace. Both are pure — the server applies them at task creation, the
- * dashboard uses them to preview what a run inside a project will do.
+ * project's policy folds into a task's settings, which resource is the
+ * workspace, and the shapes of the `/internal/projects` CRUD bodies. All pure —
+ * the server applies them at task creation / route handling, the dashboard uses
+ * them to preview what a run inside a project will do.
  */
-import type { Project, ProjectResource, TaskSettings } from "./entities.js";
+import { z } from "zod";
+import {
+  type Project,
+  ProjectModelPrefsSchema,
+  ProjectPolicySchema,
+  type ProjectResource,
+  ProjectResourceSchema,
+  ProjectSchema,
+  type TaskSettings,
+} from "./entities.js";
+import { ProjectSlugSchema } from "./ids.js";
 
 /**
  * Fold a project's policy into a task's requested settings. The rule is
@@ -51,4 +62,70 @@ export function primaryWorkspace(project: Project): ProjectResource | null {
     project.resources.find((r) => r.kind === "repo") ??
     null
   );
+}
+
+/**
+ * Creating a project over `/internal/projects`. The id, timestamps, and
+ * `archived` are not fields here: the server mints the id and the clock, and a
+ * project born archived is a contradiction — archiving is a later, explicit
+ * act on something that existed.
+ */
+export const ProjectCreateSchema = z
+  .object({
+    slug: ProjectSlugSchema,
+    name: z.string().min(1),
+    description: z.string().default(""),
+    resources: z.array(ProjectResourceSchema).default([]),
+    policy: ProjectPolicySchema.default({}),
+    modelPrefs: ProjectModelPrefsSchema.default({}),
+  })
+  .strict();
+export type ProjectCreate = z.infer<typeof ProjectCreateSchema>;
+
+/**
+ * A partial update. `.strict()` for the same reason as `ModelPatchSchema`: a
+ * misspelled field in a PATCH body is the failure mode that looks like success.
+ * The slug is deliberately NOT patchable — it is the project's address (model
+ * suffix, header, skills dir), and a rename would strand every client config
+ * and stored reference pointing at the old one. Archiving rides here as a
+ * plain boolean in both directions: unarchive is the same edit.
+ */
+export const ProjectPatchSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    description: z.string().optional(),
+    resources: z.array(ProjectResourceSchema).optional(),
+    policy: ProjectPolicySchema.optional(),
+    modelPrefs: ProjectModelPrefsSchema.optional(),
+    archived: z.boolean().optional(),
+  })
+  .strict();
+export type ProjectPatch = z.infer<typeof ProjectPatchSchema>;
+
+const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Apply a patch, or return `undefined` when nothing changed — same contract as
+ * `applyModelPatch`, for the same reason: a save that changed nothing must not
+ * bump `updatedAt` into claiming an edit that never happened.
+ */
+export function applyProjectPatch(
+  existing: Project,
+  patch: ProjectPatch,
+  now: number,
+): Project | undefined {
+  const keys = ["name", "description", "resources", "policy", "modelPrefs", "archived"] as const;
+  const changed = keys.some((key) => patch[key] !== undefined && !same(existing[key], patch[key]));
+  if (!changed) return undefined;
+
+  return ProjectSchema.parse({
+    ...existing,
+    ...(patch.name !== undefined && { name: patch.name }),
+    ...(patch.description !== undefined && { description: patch.description }),
+    ...(patch.resources !== undefined && { resources: patch.resources }),
+    ...(patch.policy !== undefined && { policy: patch.policy }),
+    ...(patch.modelPrefs !== undefined && { modelPrefs: patch.modelPrefs }),
+    ...(patch.archived !== undefined && { archived: patch.archived }),
+    updatedAt: now,
+  });
 }

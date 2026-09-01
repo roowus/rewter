@@ -54,11 +54,29 @@ const REGISTRY = {
   cards: [],
 };
 
-/** Route the two URLs this panel touches; default to an empty registry. */
+// Minimal rows; ProjectSchema's defaults fill the rest on parse. One live and
+// one archived, so the picker's filtering is observable rather than vacuous.
+const PROJECTS = {
+  projects: [
+    { id: "proj_aaaaaaaaaaaa", slug: "my-proj", name: "My Project", createdAt: 1, updatedAt: 1 },
+    {
+      id: "proj_bbbbbbbbbbbb",
+      slug: "old-proj",
+      name: "Old Project",
+      archived: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ],
+};
+
+/** Route the three URLs this panel touches; default to an empty registry. */
 function stubFetch(runResponse: Response): ReturnType<typeof vi.fn> {
-  return vi.fn((url: string) =>
-    Promise.resolve(url === "/internal/run" ? runResponse : json(REGISTRY)),
-  );
+  return vi.fn((url: string) => {
+    if (url === "/internal/run") return Promise.resolve(runResponse);
+    if (url.startsWith("/internal/projects")) return Promise.resolve(json(PROJECTS));
+    return Promise.resolve(json(REGISTRY));
+  });
 }
 
 const open = () => fireEvent.click(screen.getByRole("button", { name: "start a task" }));
@@ -156,6 +174,27 @@ describe("RunPanel", () => {
     const call = fetchImpl.mock.calls.find(([url]) => url === "/internal/run");
     const body = JSON.parse((call?.[1] as RequestInit).body as string) as { model: string };
     expect(body.model).toBe("auto/orchestrator:zai/glm-5.3");
+  });
+
+  it("sends the chosen project as an @suffix, and hides archived ones from the picker", async () => {
+    const fetchImpl = stubFetch(json(ACCEPTED, 202));
+    vi.stubGlobal("fetch", fetchImpl);
+    render(<RunPanel />);
+    open();
+
+    await waitFor(() => expect(screen.getByRole("option", { name: "my-proj" })).toBeTruthy());
+    // Archived projects refuse a run with a 400, so offering one would be
+    // offering an error.
+    expect(screen.queryByRole("option", { name: "old-proj" })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("project"), { target: { value: "my-proj" } });
+    fireEvent.change(screen.getByLabelText("task"), { target: { value: "run under the project" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => expect(screen.getByText(/started/)).toBeTruthy());
+    const call = fetchImpl.mock.calls.find(([url]) => url === "/internal/run");
+    const body = JSON.parse((call?.[1] as RequestInit).body as string) as { model: string };
+    expect(body.model).toBe("auto/orchestrator@my-proj");
   });
 
   it("still starts tasks when the model list will not load", async () => {

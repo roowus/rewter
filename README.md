@@ -76,8 +76,9 @@ board and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 **Phase 2 is decided and underway** — see the
 [direction doc](docs/design/phase2-direction.md): **projects** as the top-level unit
 (pinned repos/dirs/docs, per-project policy and model prefs, learned state scoped global
-vs. project like `CLAUDE.md`) — *the server side of this shipped: `auto@<slug>` or an
-`x-rewter-project` header runs a task under a project today* — a **skills learning loop** (agentskills.io `SKILL.md`
+vs. project like `CLAUDE.md`) — *shipped: `auto@<slug>` or an `x-rewter-project` header
+runs a task under a project today, and the dashboard has a projects panel (create, edit
+policy, archive) plus a project picker on the run box* — a **skills learning loop** (agentskills.io `SKILL.md`
 distilled from what the system actually did, gated behind your approval), a **native
 `rewt` terminal client** where you can keep typing while a task runs, **Tailscale**
 support so the daemon is usable from any device on your tailnet, and the first tier-3

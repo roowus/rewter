@@ -9,7 +9,14 @@
 import { describe, expect, it } from "vitest";
 import { type Project, ProjectSchema, type TaskSettings, TaskSettingsSchema } from "./entities.js";
 import { ModelIdSchema, ProjectSlugSchema, newProjectId } from "./ids.js";
-import { effectiveTaskSettings, minCap, primaryWorkspace } from "./projects.js";
+import {
+  ProjectCreateSchema,
+  ProjectPatchSchema,
+  applyProjectPatch,
+  effectiveTaskSettings,
+  minCap,
+  primaryWorkspace,
+} from "./projects.js";
 
 function project(over: Record<string, unknown> = {}): Project {
   return ProjectSchema.parse({
@@ -178,5 +185,108 @@ describe("primaryWorkspace", () => {
       ],
     });
     expect(primaryWorkspace(p)?.location).toBe("/repo-a");
+  });
+});
+
+describe("ProjectCreateSchema", () => {
+  it("fills the same safe defaults as ProjectSchema from just slug + name", () => {
+    const c = ProjectCreateSchema.parse({ slug: "new-proj", name: "New" });
+    expect(c.description).toBe("");
+    expect(c.resources).toEqual([]);
+    expect(c.policy.autoApprove).toBe(false);
+    expect(c.policy.maxSpendUsd).toBeNull();
+    expect(c.modelPrefs).toEqual({ initiatorPin: null, prefer: [], avoid: [] });
+  });
+
+  // The server mints id and timestamps; a project born archived is a
+  // contradiction. A body that tries to supply them should fail loudly, not
+  // be silently ignored — that's what .strict() buys.
+  it.each(["id", "createdAt", "updatedAt", "archived", "nope"])(
+    "rejects a body carrying %j",
+    (key) => {
+      const parsed = ProjectCreateSchema.safeParse({ slug: "s", name: "n", [key]: 1 });
+      expect(parsed.success).toBe(false);
+    },
+  );
+
+  it("requires a valid slug and a non-empty name", () => {
+    expect(ProjectCreateSchema.safeParse({ slug: "Bad Slug", name: "n" }).success).toBe(false);
+    expect(ProjectCreateSchema.safeParse({ slug: "ok", name: "" }).success).toBe(false);
+  });
+});
+
+describe("ProjectPatchSchema", () => {
+  it("accepts an empty patch (no-op is the route's problem, not the schema's)", () => {
+    expect(ProjectPatchSchema.safeParse({}).success).toBe(true);
+  });
+
+  // The slug is the project's address (model suffix, header, skills dir) —
+  // renaming it would strand every stored reference, so the schema refuses.
+  it("rejects a slug change", () => {
+    expect(ProjectPatchSchema.safeParse({ slug: "new-name" }).success).toBe(false);
+  });
+
+  it("rejects unknown fields — a misspelled PATCH field must not look like success", () => {
+    expect(ProjectPatchSchema.safeParse({ nmae: "typo" }).success).toBe(false);
+  });
+
+  it("archived rides as a plain boolean in both directions", () => {
+    expect(ProjectPatchSchema.safeParse({ archived: true }).success).toBe(true);
+    expect(ProjectPatchSchema.safeParse({ archived: false }).success).toBe(true);
+  });
+});
+
+describe("applyProjectPatch", () => {
+  const NOW = 2000;
+
+  it("returns undefined for an empty patch", () => {
+    expect(applyProjectPatch(project(), {}, NOW)).toBeUndefined();
+  });
+
+  it("returns undefined when the patch restates current values — updatedAt stays honest", () => {
+    const p = project({ description: "same" });
+    expect(
+      applyProjectPatch(p, { name: p.name, description: "same", archived: false }, NOW),
+    ).toBeUndefined();
+  });
+
+  it("applies each field and bumps updatedAt", () => {
+    const p = project();
+    const next = applyProjectPatch(
+      p,
+      {
+        name: "Renamed",
+        description: "d",
+        resources: [{ kind: "dir", location: "/w", note: null }],
+        policy: { autoApprove: true, maxSpendUsd: 4, allowedTools: null, allowedHarnesses: null },
+        modelPrefs: { initiatorPin: null, prefer: [], avoid: [] },
+      },
+      NOW,
+    );
+    expect(next).toBeDefined();
+    expect(next?.name).toBe("Renamed");
+    expect(next?.description).toBe("d");
+    expect(next?.resources[0]?.location).toBe("/w");
+    expect(next?.policy.maxSpendUsd).toBe(4);
+    expect(next?.updatedAt).toBe(NOW);
+    // Identity survives the patch — the address and the id never move.
+    expect(next?.id).toBe(p.id);
+    expect(next?.slug).toBe(p.slug);
+    expect(next?.createdAt).toBe(p.createdAt);
+  });
+
+  it("archive and unarchive are the same edit", () => {
+    const live = project();
+    const archived = applyProjectPatch(live, { archived: true }, NOW);
+    expect(archived?.archived).toBe(true);
+    const revived = applyProjectPatch(archived as Project, { archived: false }, NOW + 1);
+    expect(revived?.archived).toBe(false);
+    expect(revived?.updatedAt).toBe(NOW + 1);
+  });
+
+  it("an untouched field keeps its value", () => {
+    const p = project({ description: "keep me" });
+    const next = applyProjectPatch(p, { name: "Only Name" }, NOW);
+    expect(next?.description).toBe("keep me");
   });
 });

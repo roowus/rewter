@@ -12,6 +12,7 @@ import { CostsPanel } from "./CostsPanel.js";
 import { DaemonFooter } from "./DaemonFooter.js";
 import { EventsPanel } from "./EventsPanel.js";
 import { HealthPanel } from "./HealthPanel.js";
+import { ProjectsPanel } from "./ProjectsPanel.js";
 import { ProvidersPanel } from "./ProvidersPanel.js";
 import { ReadinessCard } from "./ReadinessCard.js";
 import { RegistryPanel } from "./RegistryPanel.js";
@@ -102,6 +103,11 @@ export function App(): JSX.Element {
       {/* Collapsed by default and below the spend: what a model costs is the
           question that sends you looking for the editor in the first place. */}
       <RegistryPanel />
+
+      {/* Below the registry, above the run box: a project is what a run *uses*
+          — policy, workspace, pin — so it sits between the catalog and the
+          control that starts work under it. */}
+      <ProjectsPanel />
 
       {/* Collapsed, and next to the log for the same reason: both are opened
           when something has gone wrong. This one answers the question the log

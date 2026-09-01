@@ -484,6 +484,43 @@ would invalidate the prompt cache for every other project's tasks. Empty section
 omitted rather than rendered as headers over nothing. `ORCHESTRATOR_PROMPT_VERSION` was
 **not** bumped: the static core is unchanged, and the version guards exactly that constant.
 
+### Editing projects: the CRUD and the panel
+
+Four routes on `/internal`, addressed by **slug** — the same name `auto@<slug>` and the
+header use, and unlike model ids a slug carries no `/`, so plain `:slug` params work where
+the models routes need trailing wildcards.
+
+- `GET /internal/projects` hides archived rows by default; `?includeArchived=true` shows
+  everything. The dashboard client always asks for everything and splits in render — an
+  unarchive button cannot exist on a list that hides its target.
+- `POST /internal/projects` takes `ProjectCreateSchema` (strict): slug + name required,
+  description/resources/policy/modelPrefs default. The id, timestamps, and `archived` are
+  **not** fields — the server mints them, and a project born archived is a contradiction. A
+  taken slug is a **409**, not an upsert: creating over an existing project would silently
+  adopt its history.
+- `PATCH /internal/projects/:slug` takes `ProjectPatchSchema` (strict — a misspelled field
+  is the failure that looks like success). The **slug is not patchable**: it is the
+  project's address, and a rename would strand every client config pointing at the old one.
+  Archive/unarchive ride here as a plain `archived` boolean. A patch that changes nothing
+  returns `{project, changed: false}` **without writing** — `updatedAt` stays honest, same
+  contract as the model editor.
+- `DELETE /internal/projects/:slug` removes the row and deliberately leaves every task's
+  `projectId` alone (no FK, same reasoning as cost records naming retired models). Archive
+  is the everyday off-switch; delete is for rows created by mistake, and the dashboard only
+  offers it on rows that are already archived.
+
+The shared halves (`ProjectCreateSchema`, `ProjectPatchSchema`, `applyProjectPatch`) live in
+`shared/src/projects.ts` next to the fold they configure. The dashboard's `ProjectsPanel`
+(collapsed by default, like the registry) shows the three things the daemon reads at task
+creation — workspace, policy, pin — with in-place toggles for auto-approve and
+archive/unarchive; create takes slug, name, and an optional workspace dir (which becomes the
+first `dir` resource), and everything else starts at the schema's safe defaults.
+Prefer/avoid lists, extra resources, and the description stay curl-territory for now.
+Archived rows keep their own dimmer table, and delete (two-click, armed) only appears there.
+The run panel gains a project picker that excludes archived projects (they refuse a run with
+a 400) and encodes the choice as `auto/orchestrator@<slug>[:<pin>]` — project before pin,
+because slugs never contain `:`.
+
 ## Orchestrator engine
 
 Implemented in M5a (the engine) and M5b (the wiring) — `packages/server/src/orchestrator/`.
@@ -1777,7 +1814,11 @@ done-pattern) so any CLI harness is addable by config.
   without a shutdown hook — see [Stopping the daemon from its own UI](#stopping-the-daemon-from-its-own-ui-m7i)),
   `GET /internal/registry/export[?note=]` and `POST /internal/registry/import`
   (`{bundle, onConflict?, dryRun?}` → a per-row report; 400 names the field that failed —
-  see [Moving a registry](#moving-a-registry-between-machines-m7j))
+  see [Moving a registry](#moving-a-registry-between-machines-m7j)),
+  the projects CRUD — `GET /internal/projects[?includeArchived=true]`,
+  `POST /internal/projects` (201; 409 on a taken slug),
+  `PATCH|DELETE /internal/projects/:slug` (see
+  [Editing projects](#editing-projects-the-crud-and-the-panel))
   — and `WS /internal/ws` (see below). `run` and `chat-test` are the two routes on
   `/internal` that spend, and each refuses the other's model string.
   Providers are safe to serve as-is: only the env var *name* is ever stored.
