@@ -761,6 +761,63 @@ describe("mid-run messages from the orchestrator", () => {
   });
 });
 
+describe("load_skill", () => {
+  it("hands the slug to the injected lookup and the result back as a tool turn", async () => {
+    const asked: string[] = [];
+    const router = scriptedRouter([
+      toolCall("load_skill", { slug: "deploy-checklist" }),
+      report("success", "followed the checklist"),
+    ]);
+
+    const outcome = await runTier2Worker(
+      makeContext(router),
+      options({
+        loadSkill: (slug) => {
+          asked.push(slug);
+          return "Skill: deploy-checklist\n1. run tests";
+        },
+      }),
+    );
+
+    expect(outcome.status).toBe("succeeded");
+    expect(asked).toEqual(["deploy-checklist"]);
+    const toolTurn = (router.requests[1]?.messages ?? []).find((m) => m.role === "tool");
+    expect(toolTurn?.content).toContain("1. run tests");
+  });
+
+  it("says the library is not configured rather than erroring, when it is not", async () => {
+    const router = scriptedRouter([
+      toolCall("load_skill", { slug: "anything" }),
+      report("success", "did it unaided"),
+    ]);
+
+    const outcome = await runTier2Worker(makeContext(router), options());
+
+    expect(outcome.status).toBe("succeeded");
+    const toolTurn = (router.requests[1]?.messages ?? []).find((m) => m.role === "tool");
+    expect(toolTurn?.content).toContain("not configured");
+    expect(toolTurn?.content).toContain("proceed without it");
+  });
+
+  it("never consults the approval gate, because it reads the library, not the disk", async () => {
+    // The one behavioural promise both tool descriptions make. If this ever
+    // parks on an approval, a skill lookup blocks on a human for a read the
+    // user cannot even see the point of.
+    const router = scriptedRouter([
+      toolCall("load_skill", { slug: "deploy-checklist" }),
+      report("success", "ok"),
+    ]);
+
+    const outcome = await runTier2Worker(
+      makeContext(router),
+      options({ loadSkill: () => "the body" }),
+    );
+
+    expect(outcome.status).toBe("succeeded");
+    expect(timesAsked()).toBe(0);
+  });
+});
+
 describe("createTier2Runner", () => {
   it("produces a WorkerRunner the engine can call with nothing extra", async () => {
     // The whole reason the factory exists: workspace and approvals are per-task,

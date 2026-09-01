@@ -53,10 +53,40 @@ and why in this order.
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
-| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ⬜ | 🔶 |
+| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-09-01 — digest + `load_skill`: approved skills reach the prompts (P2-M4, slice 4 — milestone complete)
+
+The closing slice: the library becomes visible. Two doors, both filtered through
+`visibleSkills` and nothing else:
+
+- **Digest** (`server/src/skills/digest.ts`): one line per visible skill
+  (`<slug>[ (project)] — <description>`), metered by the same `estimateTokens` as the
+  registry digest on a 1000-token budget, drop-from-end with an honest omission note.
+  Rendered in the **per-task** prompt region (after the project block — visibility is
+  project-dependent, so it must not sit in the cacheable region); an empty library renders
+  nothing at all.
+- **`load_skill`**: one tool on both surfaces (initiator `ORCHESTRATOR_TOOLS_VERSION 4`,
+  tier-2 `WORKER_TOOLS_VERSION 2`), one implementation — `loadSkillResult`
+  (`server/src/skills/lookup.ts`), so "a pending draft is never retrieved" cannot fork
+  between callers. Always a tool-result string, never a throw: unknown slug names what *is*
+  available, vanished file becomes "Proceed without it." Body read fresh from disk, so an
+  owner edit lands without a reindex.
+- **Tier-2 wiring**: the loop takes `Tier2Options.loadSkill` as an injected function (only
+  the engine knows the task's project); absent means "not configured", said plainly. The
+  lookup reads the library, not the workspace, so it never consults the approval gate —
+  pinned by test (`timesAsked() === 0`).
+- **Prompt** (`ORCHESTRATOR_PROMPT_VERSION 4`): a `# Skills` core section — scan before
+  planning, follow a matching skill's model/tier suggestions, never load speculatively or
+  invent a slug; delegate a worker-shaped skill by naming the slug in its instructions.
+  Handoff successors rebuild through `buildMessages`, so they inherit the digest for free.
+
+16 new tests (7 lookup, 5 engine, 3 tier-2, 1 prompt) + 5 version/parity updates; 1227
+green. **P2-M4 is complete** — the full loop now runs: a distilled draft lands in
+`pending/`, the owner approves it, and the next task sees it in its digest and can load it.
 
 ### 2026-09-01 — stage/approve: the human half of the loop (P2-M4, slice 3)
 

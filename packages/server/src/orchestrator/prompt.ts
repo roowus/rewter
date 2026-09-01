@@ -19,7 +19,7 @@
 import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 3;
+export const ORCHESTRATOR_PROMPT_VERSION = 4;
 
 /**
  * Prefix on a mid-run message from the initiator to a tier-2 worker.
@@ -96,6 +96,19 @@ capability card. Read it before you choose; do not name a model that is not list
 - A subtask that only needs a long document read and condensed wants long context and
   a low price, not a reasoning model.
 
+# Skills
+
+The task header may include a Skills list: learned procedures, one line each, written
+down because doing this kind of task the hard way already cost someone real money once.
+Before you plan, scan the list. If a skill plainly matches the task, call \`load_skill\`
+with its slug and follow the procedure it describes — including its model and tier
+suggestions, which encode what actually worked. If nothing matches, plan as normal; do
+not load skills speculatively, and never invent a slug that is not listed.
+
+A tier-2 worker can also call \`load_skill\` itself. When a skill mostly concerns the
+worker's part of the job, name the slug in its \`instructions\` and tell it to load it,
+rather than pasting the whole body.
+
 # Cost discipline
 
 Every call is billed to the user. Concretely:
@@ -147,6 +160,14 @@ export interface InitiatorPromptOptions {
    * invalidate the prompt cache for every other project's tasks.
    */
   project?: Project | undefined;
+  /**
+   * Rendered skills digest (`skills/digest.ts`) — the approved skills this task
+   * can see. Per-task for the same reason the project block is: visibility is
+   * project-dependent, so these bytes differ between projects. Empty or absent
+   * renders nothing at all — a "Skills: (none)" header would spend tokens
+   * telling the model about a feature it cannot use.
+   */
+  skillsDigest?: string | undefined;
 }
 
 /**
@@ -201,6 +222,14 @@ export function buildInitiatorMessages(opts: InitiatorPromptOptions): ChatMessag
     `Task id: ${opts.taskId}`,
     ...(opts.dashboardUrl === undefined ? [] : [`Dashboard: ${opts.dashboardUrl}`]),
     ...(opts.project === undefined ? [] : ["", renderProjectBlock(opts.project)]),
+    ...(opts.skillsDigest === undefined || opts.skillsDigest === ""
+      ? []
+      : [
+          "",
+          "Skills available to this task (load one with `load_skill` if it matches):",
+          "",
+          opts.skillsDigest,
+        ]),
     "",
     "The conversation below is the user's request. Begin.",
   ].join("\n");
@@ -288,6 +317,9 @@ Files and commands act on your working directory unless you give an absolute pat
   already skip \`node_modules\`, \`.git\` and build output.
 - \`report_progress\` writes one line to the user's live feed. Use it before something
   slow, not after every step.
+- \`load_skill\` fetches a learned procedure by slug from the skill library. If your
+  instructions name a skill, load it before starting and follow it. It reads the
+  library, not your workspace, so it never needs approval.
 
 # Approvals
 

@@ -40,12 +40,15 @@ import {
   newTaskId,
   newWorkItemId,
   primaryWorkspace,
+  visibleSkills,
 } from "@rewter/shared";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
 import { renderDigest } from "../registry/digest.js";
 import { pinnedInitiator } from "../router/resolve.js";
 import type { Router } from "../router/router.js";
+import { renderSkillsDigest } from "../skills/digest.js";
+import { loadSkillResult } from "../skills/lookup.js";
 import { Approvals } from "../workers/approvals.js";
 import { createTier2Runner } from "../workers/tier2.js";
 import { type Workspace, openWorkspace } from "../workers/workspace.js";
@@ -586,6 +589,9 @@ class Session {
     const runner = createTier2Runner({
       workspace,
       approvals,
+      // Bound here because only the engine knows the task's project, and skill
+      // visibility is project-scoped.
+      loadSkill: (slug) => this.loadSkill(slug),
       onProgress: (note, workItem, workerRunId) => {
         this.lines.push(workerNoteLine({ label: this.labelOf(workItem.id), note }));
         // Also durable: the feed line dies with the stream, and a worker's notes
@@ -614,6 +620,15 @@ class Session {
     return "w?";
   }
 
+  /**
+   * `load_skill` for this task — the initiator's tool case and every tier-2
+   * worker's injected lookup both land here, so there is exactly one place
+   * where a slug becomes a body and visibility is applied.
+   */
+  private loadSkill(slug: string): string {
+    return loadSkillResult(this.o.repos.listSkills(), this.o.project?.slug ?? null, slug);
+  }
+
   private buildMessages(conversation: ChatMessage[], contextSummary?: string): ChatMessage[] {
     const digest = renderDigest(
       this.o.repos.listModels({ enabledOnly: true }).map((model) => {
@@ -622,12 +637,16 @@ class Session {
       }),
       { maxTokens: this.o.digestMaxTokens },
     );
+    const skillsDigest = renderSkillsDigest(
+      visibleSkills(this.o.repos.listSkills(), this.o.project?.slug ?? null),
+    );
     const base = buildInitiatorMessages({
       digest,
       conversation,
       taskId: this.o.task.id,
       ...(this.o.dashboardUrl !== null && { dashboardUrl: this.o.dashboardUrl }),
       ...(this.o.project !== null && { project: this.o.project }),
+      ...(skillsDigest !== "" && { skillsDigest }),
     });
     if (contextSummary === undefined) return base;
     // A successor gets the same core and digest, then its predecessor's summary
@@ -940,6 +959,13 @@ class Session {
         worker.abort.abort();
         yield chunk(workerCancelledLine({ label, reason }));
         return { result: `${label} cancelled.` };
+      }
+
+      case "load_skill": {
+        const { slug } = parsed.args as { slug: string };
+        // One shared implementation with the tier-2 tool, so visibility (and
+        // with it "pending is never retrieved") cannot fork between the two.
+        return { result: this.loadSkill(slug) };
       }
 
       case "ask_user": {

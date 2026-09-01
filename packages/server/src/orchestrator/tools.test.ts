@@ -56,6 +56,7 @@ describe("the tool surface", () => {
         "finish",
         "get_result",
         "handoff",
+        "load_skill",
         "plan_note",
         "send_to_worker",
         "spawn_worker",
@@ -65,7 +66,7 @@ describe("the tool surface", () => {
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(3);
+    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(4);
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {

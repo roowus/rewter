@@ -16,11 +16,17 @@
  *    results*, and the task carries on. A task that dies because a model guessed
  *    wrong would be the worst possible trade.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type ChatMessage,
   ModelIdSchema,
   type Project,
   ProjectSchema,
+  type Skill,
+  SkillSchema,
+  SkillSlugSchema,
   type StreamChunk,
   type TaskId,
   newCostRecordId,
@@ -1168,6 +1174,86 @@ describe("projects", () => {
     expect(task?.projectId).toBeNull();
     // No project fold: the request's own settings stand.
     expect(task?.settings.autoApprove).toBe(true);
+  });
+});
+
+describe("skills", () => {
+  const finishTurn = (): StreamChunk[] => turn({ name: "finish", args: { answer: "ok" } });
+
+  function indexSkill(slug: string, over: Record<string, unknown> = {}): Skill {
+    return SkillSchema.parse({
+      slug: SkillSlugSchema.parse(slug),
+      status: "approved",
+      scope: "global",
+      projectSlug: null,
+      path: `/nowhere/${slug}/SKILL.md`,
+      description: `does ${slug}`,
+      learnedFrom: null,
+      uses: 0,
+      updatedAt: tick,
+      ...over,
+    });
+  }
+
+  it("renders visible skills into the system prompt, and pending drafts never", async () => {
+    repos.replaceSkillsIndex([
+      indexSkill("deploy-checklist"),
+      indexSkill("sneaky-draft", { status: "pending" }),
+    ]);
+    const h = makeHarness([finishTurn()]);
+    await drive(h);
+
+    const system = h.adapter.requests[0]?.messages[0]?.content ?? "";
+    expect(system).toContain("deploy-checklist — does deploy-checklist");
+    expect(system).not.toContain("sneaky-draft");
+  });
+
+  it("renders no skills section at all when the library is empty", async () => {
+    const h = makeHarness([finishTurn()]);
+    await drive(h);
+    expect(h.adapter.requests[0]?.messages[0]?.content ?? "").not.toContain("Skills available");
+  });
+
+  it("answers load_skill with the skill's body, read fresh from disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rewter-eng-skill-"));
+    const path = join(dir, "SKILL.md");
+    writeFileSync(
+      path,
+      "---\nname: deploy-checklist\ndescription: does deploy-checklist\n---\n\n1. run tests\n2. ship\n",
+    );
+    repos.replaceSkillsIndex([indexSkill("deploy-checklist", { path })]);
+
+    const h = makeHarness([
+      turn({ name: "load_skill", args: { slug: "deploy-checklist" } }),
+      finishTurn(),
+    ]);
+    await drive(h);
+
+    // The tool result is the second request's trailing tool turn.
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("Skill: deploy-checklist");
+    expect(sent).toContain("2. ship");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("answers an unknown slug with the available ones, not a throw", async () => {
+    repos.replaceSkillsIndex([indexSkill("real-skill")]);
+    const h = makeHarness([turn({ name: "load_skill", args: { slug: "invented" } }), finishTurn()]);
+    await drive(h);
+
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain('no skill \\"invented\\"');
+    expect(sent).toContain("real-skill");
+  });
+
+  it("scopes the digest to the task's project", async () => {
+    repos.replaceSkillsIndex([
+      indexSkill("theirs", { scope: "project", projectSlug: "other-proj" }),
+    ]);
+    const h = makeHarness([finishTurn()]);
+    await drive(h);
+    // A project-less task never sees another project's skills.
+    expect(h.adapter.requests[0]?.messages[0]?.content ?? "").not.toContain("theirs");
   });
 });
 

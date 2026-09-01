@@ -24,7 +24,7 @@ import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 3;
+export const ORCHESTRATOR_TOOLS_VERSION = 4;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -69,6 +69,10 @@ export const CancelWorkerArgs = z.object({
 export const SendToWorkerArgs = z.object({
   label: LabelSchema,
   message: z.string().trim().min(1).max(2000),
+});
+
+export const LoadSkillArgs = z.object({
+  slug: z.string().trim().min(1).max(100),
 });
 
 export const AskUserArgs = z.object({
@@ -217,6 +221,22 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
           reason: str("Optional short reason, shown to the user."),
         },
         required: ["label"],
+      },
+    },
+  },
+
+  load_skill: {
+    schema: LoadSkillArgs,
+    definition: {
+      name: "load_skill",
+      description:
+        "Fetch the full text of a skill from the Skills list above. Skills are learned " +
+        "procedures — when one matches the task, load it before planning and follow it, " +
+        "or paste the relevant part into a worker's instructions.",
+      parameters: {
+        type: "object",
+        properties: { slug: str("The skill's slug, exactly as listed under Skills.") },
+        required: ["slug"],
       },
     },
   },

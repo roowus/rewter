@@ -83,6 +83,15 @@ export interface Tier2Options {
    * coarse when a failed worker was retried.
    */
   onProgress?: ((note: string, workItem: WorkItem, workerRunId: WorkerRunId) => void) | undefined;
+  /**
+   * `load_skill`'s backend: slug in, tool-result string out (the skill body, or
+   * a refusal naming the alternatives). Injected rather than imported because
+   * only the engine knows the task's project — visibility is project-scoped —
+   * and because a lookup that is a plain function keeps this loop testable
+   * without a skills tree on disk. Absent means the library is not configured,
+   * and the tool says so instead of erroring.
+   */
+  loadSkill?: ((slug: string) => string) | undefined;
   maxTurns?: number | undefined;
   maxTokens?: number | undefined;
 }
@@ -284,7 +293,7 @@ export async function runTier2Worker(
         });
       }
 
-      const result = await dispatch(execCtx, call, denied);
+      const result = await dispatch(execCtx, call, denied, opts.loadSkill);
       if (result.denied === true) denied.set(fingerprint(call), result.content);
       if (call.name === "write_file" || call.name === "edit_file") {
         const path = pathOf(call);
@@ -319,6 +328,7 @@ async function dispatch(
   ctx: ExecuteContext,
   call: ToolCall,
   denied: Map<string, string>,
+  loadSkill: ((slug: string) => string) | undefined,
 ): Promise<ToolResult> {
   const remembered = denied.get(fingerprint(call));
   if (remembered !== undefined) {
@@ -353,6 +363,13 @@ async function dispatch(
     case "report_progress":
       ctx.onProgress?.(args.note);
       return { content: "noted" };
+    case "load_skill":
+      // Reads the skill library, not the workspace, so it never consults the
+      // approval gate — the injected lookup already enforces visibility.
+      if (loadSkill === undefined) {
+        return { content: "the skill library is not configured; proceed without it" };
+      }
+      return { content: loadSkill(args.slug) };
     default:
       // `parseWorkerArgs` rejects unknown names, so this is a tool declared in
       // `tools.ts` and never wired up here — a bug, but one the model can route

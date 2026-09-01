@@ -429,7 +429,7 @@ low on exactly these lines. The estimator is deliberately biased **high**, becau
 modes are asymmetric: a low estimate silently pushes the cache breakpoint and bills every
 orchestration; a high one drops a model with an honest note. Tests pin the estimate at-or-above
 hand-checked cl100k counts for representative digest content. The same estimator meters every
-future prompt-budgeted block (skills digest next).
+prompt-budgeted block — the skills digest reuses it with a 1000-token budget.
 
 ## Projects (P2-M1)
 
@@ -657,8 +657,44 @@ and a queue nobody sees is a queue nobody answers), arms reject like project del
 deletion), and turns a 409 into an explicit "approve anyway (overwrite)" button rather than
 retrying silently.
 
-Still to come in this milestone: the skills digest + `load_skill` tool (metered by the same
-`estimateTokens` as the registry digest).
+### Retrieval: the digest and `load_skill`
+
+The closing slice — approved skills actually reach prompts, through exactly two doors.
+
+**The digest** (`server/src/skills/digest.ts`) is the registry digest's contract on a
+smaller budget: one deterministic line per visible skill (`<slug>[ (project)] — <description>`),
+metered by the same `estimateTokens`, drop-from-end with an honest
+`(N further skill(s) omitted for space.)` note. The default budget is 1000 tokens, a quarter
+of the registry's — a library big enough to blow it is a library that needs curating, and the
+note is the curation prompt. It renders in the **per-task** region of the initiator prompt
+(after the project block), because visibility is project-dependent and putting it in the
+cacheable region would invalidate every other project's prompt cache; within one project the
+bytes are still deterministic, so per-project caching holds. An empty library renders nothing
+at all — no "Skills: (none)" header spending tokens on a feature the model cannot use.
+
+**`load_skill`** is one tool name on two surfaces (initiator, `ORCHESTRATOR_TOOLS_VERSION 4`;
+tier-2 workers, `WORKER_TOOLS_VERSION 2`) with one implementation:
+`loadSkillResult(all, projectSlug, slug)` in `server/src/skills/lookup.ts`. Both callers pass
+through it so the visibility filter — and with it "a pending draft is never retrieved" —
+cannot fork between them: retrieval is `visibleSkills` or nothing. The return value is always
+a tool *result* string, never a throw: an unknown slug names the available ones (the
+`parseToolArgs` rule — a bare "not found" buys a guess-and-retry loop over slugs the model
+cannot see), an empty library says so, and a file that moved under the index becomes
+"could not be read (…). Proceed without it." The body is read fresh from disk at call time,
+so an owner edit lands without a reindex.
+
+The tier-2 loop gets the lookup **injected** (`Tier2Options.loadSkill`) rather than imported:
+only the engine knows the task's project, and a plain function keeps the loop testable
+without a skills tree on disk. Absent means not configured, and the tool says so.
+`load_skill` reads the library, not the workspace, so it never consults the approval gate —
+stated in both tool descriptions, because a skill lookup parked on a human is a read the user
+cannot see the point of. The core prompt (`ORCHESTRATOR_PROMPT_VERSION 4`) gains a `# Skills`
+section: scan the list before planning, follow a matching skill's model/tier suggestions,
+never load speculatively or invent a slug; when a skill mostly concerns a worker's part of
+the job, name the slug in its instructions and let the worker load it itself. Handoff
+successors rebuild their prompt through the same `buildMessages`, so they inherit the digest
+for free. The frontmatter `uses` counter is deliberately not incremented yet — retrieval
+writes nothing.
 
 ## Orchestrator engine
 

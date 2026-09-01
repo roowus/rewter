@@ -31,7 +31,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(3);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(4);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {
@@ -147,6 +147,33 @@ describe("buildInitiatorMessages", () => {
       taskId: "task_abc",
     });
     expect(without[0]?.content).not.toContain("Project:");
+  });
+
+  it("renders the skills list in the per-task region, and nothing at all without one", () => {
+    // Skills visibility is project-dependent, so the block lives with the
+    // project section, after the cache breakpoint. Absent or empty renders
+    // nothing — a "Skills: (none)" header would spend tokens telling the model
+    // about a feature it cannot use.
+    const withSkills = buildInitiatorMessages({
+      digest: DIGEST,
+      conversation: CONVERSATION,
+      taskId: "task_abc",
+      skillsDigest: "deploy-checklist — Run the deploy checklist end to end",
+    });
+    const text = withSkills[0]?.content ?? "";
+    expect(text).toContain("deploy-checklist — Run the deploy checklist end to end");
+    expect(text).toContain("load_skill");
+    expect(text.indexOf("deploy-checklist —")).toBeGreaterThan(text.indexOf(DIGEST));
+
+    for (const skillsDigest of [undefined, ""]) {
+      const without = buildInitiatorMessages({
+        digest: DIGEST,
+        conversation: CONVERSATION,
+        taskId: "task_abc",
+        ...(skillsDigest === undefined ? {} : { skillsDigest }),
+      });
+      expect(without[0]?.content).not.toContain("Skills available");
+    }
   });
 });
 

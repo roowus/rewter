@@ -25,7 +25,7 @@ import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const WORKER_TOOLS_VERSION = 1;
+export const WORKER_TOOLS_VERSION = 2;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -73,6 +73,10 @@ export const ShellArgs = z.object({
 
 export const WebFetchArgs = z.object({
   url: z.string().trim().min(1).max(4_000),
+});
+
+export const LoadSkillArgs = z.object({
+  slug: z.string().trim().min(1).max(100),
 });
 
 export const ReportProgressArgs = z.object({
@@ -232,6 +236,22 @@ export const WORKER_TOOLS: Record<string, WorkerTool> = {
         type: "object",
         properties: { url: str("Absolute http(s) URL.") },
         required: ["url"],
+      },
+    },
+  },
+
+  load_skill: {
+    schema: LoadSkillArgs,
+    definition: {
+      name: "load_skill",
+      description:
+        "Fetch the full text of a learned skill by slug. If your instructions name a " +
+        "skill, load it before starting and follow its procedure. Reads from the skill " +
+        "library, not your workspace — it needs no approval.",
+      parameters: {
+        type: "object",
+        properties: { slug: str("The skill's slug, e.g. 'deploy-checklist'.") },
+        required: ["slug"],
       },
     },
   },

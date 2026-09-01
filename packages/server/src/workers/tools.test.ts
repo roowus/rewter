@@ -45,10 +45,12 @@ function zodShape(name: string): Record<string, z.ZodTypeAny> {
 const TOOL_NAMES = Object.keys(WORKER_TOOLS);
 
 describe("the worker tool surface", () => {
-  it("declares exactly the tools execute.ts implements", () => {
+  it("declares exactly the tools the tier-2 loop dispatches", () => {
     // `web_search` is absent on purpose: there is no search backend to call, and
     // a tool that errors every time costs a turn to discover and invites a
-    // retry. This assertion is what keeps that a decision.
+    // retry. This assertion is what keeps that a decision. Most of these live in
+    // execute.ts; `load_skill`, `report_progress` and `finish_report` are the
+    // loop's own (they never touch the workspace).
     expect(TOOL_NAMES.sort()).toEqual(
       [
         "edit_file",
@@ -56,6 +58,7 @@ describe("the worker tool surface", () => {
         "glob",
         "grep",
         "list_dir",
+        "load_skill",
         "read_file",
         "report_progress",
         "shell",
@@ -67,7 +70,7 @@ describe("the worker tool surface", () => {
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(WORKER_TOOLS_VERSION).toBe(1);
+    expect(WORKER_TOOLS_VERSION).toBe(2);
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {
