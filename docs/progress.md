@@ -58,6 +58,31 @@ and why in this order.
 
 ## Log
 
+### 2026-08-31 — steering by task id: the TUI's door into a running task (P2-M3, first slice)
+
+`POST /internal/tasks/:id/steer` `{message}` — the server half of the mid-run-prompting
+hard requirement. Steering has existed since M5 through the conversational door (re-POST
+the transcript, `LiveTaskIndex` fingerprints it back); this is the direct one, for a client
+that holds the task id: injection is exact, not inferred, and one sentence does not drag
+the whole transcript over the wire.
+
+- Same `parseSteering` as the re-POST path — one grammar, two doors. `approve apr_…: note`
+  in the body resolves through the approval gate (`resolvedBy: "in_band"`); only the
+  non-command remainder is queued for the initiator.
+- **202**, `{taskId, queued, remainder, approvals}` — the response reports what the parser
+  did. Delivery proof is the engine's `steering.received` event, appended at injection.
+- **No row-only fallback** (unlike `settings`): finished task or restart orphan → 409 with
+  distinct messages, because a message queued for a session that does not exist is a
+  message to nobody. 404 unknown id, 400 empty message.
+- Steering a task also `cancelGrace`s it — the user just claimed it.
+- New shared contract `steer.ts` (`SteerTaskRequestSchema`/`SteerTaskResultSchema`); route
+  reuses the existing `applyApprovalCommand` closure. Seven tests in `app.steer.test.ts`,
+  over a real socket (`app.inject()` serializes in-flight streams), including a real tier-2
+  approval resolved through the steer body.
+
+Remaining for P2-M3: the `rewt` TUI itself (WS client + shared fold, always-live input
+line POSTing here, approval keys, project auto-select, cost footer).
+
 ### 2026-08-31 — the daemon is shareable over a tailnet (P2-M2)
 
 Two supported modes, per the design doc. `tailscale serve` needed zero code — the daemon

@@ -44,6 +44,8 @@ import {
   type ShutdownResult,
   SocketClientMessageSchema,
   type SocketServerMessage,
+  SteerTaskRequestSchema,
+  type SteerTaskResult,
   type StreamChunk,
   type Supervisor,
   TASK_TRANSITIONS,
@@ -1394,6 +1396,61 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       aborted: false,
       alreadyFinished: false,
     };
+  });
+
+  // ── Steer ─────────────────────────────────────────────────────────────────
+  /**
+   * Speak to a running task by its id. The body's message goes through the same
+   * parser the conversational re-POST path uses — `approve apr_…` lines resolve
+   * approvals, everything else queues for injection at the next turn boundary —
+   * so the TUI's input line and a client's follow-up POST are one grammar with
+   * two doors, not two grammars.
+   *
+   * 202, not 200: the steering is *queued*, and the proof it reached the
+   * initiator is the `steering.received` event the engine appends at injection
+   * time — an answer that outlives this response, the stream, and a restart.
+   *
+   * Unlike `settings`, there is no row-only fallback. A budget written to an
+   * orphaned row is a fact the next boot can honour; a message queued for a
+   * session that does not exist is a message to nobody, and pretending it was
+   * accepted is worse than saying so. Hence 409 for anything without a live
+   * session — finished, orphaned by a restart, or never orchestrated here.
+   */
+  app.post("/internal/tasks/:id/steer", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const task = repos.getTask(id);
+    if (task === undefined) {
+      return reply.code(404).send({ error: { message: `no such task: ${id}` } });
+    }
+
+    const parsed = SteerTaskRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { message: "message must be a non-empty string" } });
+    }
+
+    const session = live.byTaskId(id);
+    if (session === null || session.isFinished) {
+      const detail = isTerminal(TASK_TRANSITIONS, task.status)
+        ? `task is already ${task.status}`
+        : "no live session for this task — nothing is running to steer";
+      return reply.code(409).send({ error: { message: detail } });
+    }
+
+    // The user just claimed this task; a disconnect-grace timer counting down
+    // to cancel it is now wrong. No-op when no timer is running.
+    live.cancelGrace(id as TaskId);
+
+    const { commands, remainder } = parseSteering(parsed.data.message);
+    for (const command of commands) applyApprovalCommand(id as TaskId, command, "in_band");
+    if (remainder !== "") session.steer(remainder);
+
+    const result: SteerTaskResult = {
+      taskId: id as TaskId,
+      queued: remainder !== "",
+      remainder,
+      approvals: commands.length,
+    };
+    return reply.code(202).send(result);
   });
 
   // ── Budget ────────────────────────────────────────────────────────────────

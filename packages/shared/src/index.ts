@@ -27,5 +27,6 @@ export * from "./openai.js";
 export * from "./anthropic.js";
 export * from "./translate.js";
 export * from "./run.js";
+export * from "./steer.js";
 export * from "./shutdown.js";
 export * from "./transfer.js";

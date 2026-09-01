@@ -69,6 +69,10 @@ boundary (and answers any pending `ask_user`). If the original SSE stream is gon
 stream **adopts** the task and resumes from the event log — this doubles as
 reconnect/resume.
 
+A client that holds the task id (the `rewt` TUI) skips the fingerprint and uses the direct
+door, `POST /internal/tasks/:id/steer` — same parser, exact injection. See
+[Steering by id](#steering-by-id-the-second-door-p2-m3).
+
 ## Safety: approval gates
 
 All risky actions flow through one choke point (`approvals.require`):
@@ -760,6 +764,32 @@ re-POST with nothing new is deliberately *not* a match against itself — that i
 matching it would inject the whole conversation back into the task as steering. A conversation
 that continues a task which already **finished** starts a fresh task: `onIdle` forgets a task
 the moment it completes.
+
+### Steering by id: the second door (P2-M3)
+
+The re-POST protocol is right for an OpenAI client, which has nothing *but* the
+conversation — and wrong for a client that holds the task id, because it drags the whole
+transcript over the wire to say one sentence, and a fingerprint match is an inference where
+an id is a fact. `POST /internal/tasks/:id/steer` `{message}` is the direct door, built for
+the `rewt` TUI's always-live input line. The message goes through the **same
+`parseSteering`** as the re-POST path — one grammar, two doors — so `approve apr_…` typed
+into the TUI resolves the approval through the gate (`resolvedBy: "in_band"`) instead of
+being read aloud to the initiator, and only the non-command remainder is queued.
+
+The response is a **202**, `{taskId, queued, remainder, approvals}`, and 202 is the honest
+code: it reports what the *parser* did, not what the task did. The steering text is in the
+task's queue; the engine injects it at the next turn boundary and appends
+`steering.received` to the event log at that moment, so "did it reach the initiator" is
+answered by the log. The route also calls `cancelGrace` — a user steering a task has just
+claimed it, and a disconnect-grace timer counting down to cancel it is now wrong.
+
+Unlike `settings`, there is **no row-only fallback**: a task whose row says `running` but
+has no live session (a restart orphan) is a 409, same as a finished one — a message queued
+for a session that does not exist is a message to nobody, and answering 202 would be a lie.
+The two 409s carry distinct messages ("task is already succeeded" vs "no live session…") so
+the TUI can tell the user which happened. Tasks started from the dashboard via
+`/internal/run` register with the same `LiveTaskIndex`, so they are steerable through this
+door too. Pinned in `app.steer.test.ts`, over a real socket for the same reason as above.
 
 **Disconnect grace.** Losing the last subscriber starts a 30-second timer, not a cancel — the
 window in which a reconnect can adopt the task. A subscriber arriving inside it calls
@@ -1852,6 +1882,9 @@ done-pattern) so any CLI harness is addable by config.
   /internal/approvals[?taskId=]` plus `POST /internal/approvals/:id` `{approved, note?}` —
   `POST /internal/tasks/:id/cancel` (`{task, aborted, alreadyFinished}`; 404 unknown, 409
   already terminal — see [Kill](#kill-who-writes-the-row-m7d)),
+  `POST /internal/tasks/:id/steer` (`{message}` → 202 `{taskId, queued, remainder,
+  approvals}`; 404 unknown, 400 empty message, 409 terminal **or** no live session — see
+  [Steering by id](#steering-by-id-the-second-door-p2-m3)),
   `POST /internal/tasks/:id/settings` (`{maxSpendUsd: number|null}` → `{task, applied}`;
   404 unknown, 409 terminal, 400 for a zero/absent/non-numeric cap — see
   [Moving the cap](#moving-the-cap-m7g)), `GET /internal/costs`
