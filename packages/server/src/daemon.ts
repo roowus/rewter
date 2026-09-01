@@ -24,6 +24,8 @@ import { type Db, openDb } from "./db/connection.js";
 import { Repos } from "./db/repos.js";
 import { EventBus } from "./events/bus.js";
 import { createClaudeCodeAdapter } from "./harness/claude-code.js";
+import { withTmuxMirror } from "./harness/tmux.js";
+import type { HarnessAdapter } from "./harness/types.js";
 import { buildApp } from "./http/app.js";
 import { Orchestrator } from "./orchestrator/engine.js";
 import { LiveTaskIndex } from "./orchestrator/live.js";
@@ -243,14 +245,20 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // never makes the directory.
     workspacesDir: expandPath(config.workspacesDir, home),
     // Empty unless the config opts in — tier 3 stays a tool-result refusal on
-    // a daemon whose owner never enabled a harness.
+    // a daemon whose owner never enabled a harness. Each adapter is wrapped in
+    // the tmux mirror when enabled; the wrapper hands back the adapter
+    // untouched on a machine without tmux, so this is safe to apply blindly.
     harnesses: config.harnesses.claudeCode.enabled
       ? [
-          createClaudeCodeAdapter({
-            binary: config.harnesses.claudeCode.binary,
-            permissionMode: config.harnesses.claudeCode.permissionMode,
-            model: config.harnesses.claudeCode.model,
-          }),
+          mirrored(
+            createClaudeCodeAdapter({
+              binary: config.harnesses.claudeCode.binary,
+              permissionMode: config.harnesses.claudeCode.permissionMode,
+              model: config.harnesses.claudeCode.model,
+            }),
+            config,
+            home,
+          ),
         ]
       : [],
     maxTurns: config.orchestrator.maxTurns,
@@ -447,6 +455,19 @@ export function bootSummary(daemon: RunningDaemon): string {
   const models = daemon.repos.listModels({ enabledOnly: true }).length;
   const providers = daemon.repos.listProviders({ enabledOnly: true }).length;
   return `rewter listening on ${daemon.url} — ${providers} provider(s), ${models} model(s)`;
+}
+
+/**
+ * Apply the tmux mirror per config. Logs live under `~/.rewter/harness-logs`,
+ * not inside any task's workspace — a worker with a shell must not be able to
+ * rewrite what the owner is watching.
+ */
+function mirrored(adapter: HarnessAdapter, config: Config, home: string): HarnessAdapter {
+  if (!config.harnesses.tmux.enabled) return adapter;
+  return withTmuxMirror(adapter, {
+    binary: config.harnesses.tmux.binary,
+    logsDir: expandPath("~/.rewter/harness-logs", home),
+  });
 }
 
 export interface SignalHandlerOptions {

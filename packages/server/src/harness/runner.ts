@@ -130,6 +130,9 @@ export async function runHarnessWorker(
   ctx.signal.addEventListener("abort", onAbort, { once: true });
 
   const progress = (note: string): void => opts.onProgress?.(note, ctx.workItem, run.id);
+  // First thing on the feed, while there is still something to watch: a
+  // command the owner can paste into any terminal on this machine.
+  if (session.attach !== undefined) progress(`watch live: ${session.attach.command}`);
   // A message forwarded since the last turn boundary *may* mean another turn
   // is coming — the harness may have queued it for the next boundary, or may
   // have steered it into the turn that was already running and answered both

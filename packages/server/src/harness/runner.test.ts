@@ -241,6 +241,24 @@ describe("the happy path", () => {
     expect(outcome.status).toBe("succeeded");
     expect(outcome.summary).toBe("just some prose about the work");
   });
+
+  it("surfaces attach info as the first progress line, when the session has it", async () => {
+    // The tmux mirror (tmux.ts) decorates sessions with `attach`; the runner
+    // only surfaces it. First on the feed, because it is only useful while
+    // there is still something to watch.
+    const { adapter } = fakeAdapter([{ type: "text", text: "working" }, turnEnd()]);
+    const inner = adapter.spawn.bind(adapter);
+    adapter.spawn = (spec) => ({
+      ...inner(spec),
+      attach: { session: "rwtr_run_1", command: "tmux attach -t rwtr_run_1" },
+    });
+
+    const outcome = await runHarnessWorker(makeContext(), options(adapter));
+
+    expect(outcome.status).toBe("succeeded");
+    expect(progress[0]).toBe("watch live: tmux attach -t rwtr_run_1");
+    expect(progress).toContain("working");
+  });
 });
 
 describe("the gate", () => {

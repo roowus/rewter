@@ -54,9 +54,39 @@ and why in this order.
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
-| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach + restart re-adoption in later slices | 🔶 |
+| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption + more adapters in later slices | 🔶 |
 
 ## Log
+
+### 2026-09-01 — watch a harness live: the tmux mirror (P2-M5, slice 2)
+
+`tmux attach -t rwtr_<runId>` now shows a running tier-3 session live — and the runner
+prints exactly that command as the first progress line of every harness run. The design
+decision that makes it safe: tmux is a **mirror**, not a pty host. The harness child
+keeps its plain pipes exactly as slice 1 built them (a pty would render raw stream-json
+and force input through the tty's 4KB canonical-mode buffer, silently truncating the
+frames mid-run `send_to_worker` depends on). Instead, `withTmuxMirror`
+(`server/src/harness/tmux.ts`) decorates the adapter: every normalized event is rendered
+into `~/.rewter/harness-logs/rwtr_<runId>.log` — synchronous writes, so a line lands the
+moment the event goes by — and a detached tmux session tails it. Steering shows up as
+`⇄ user: <message>`, which is the point: mid-run prompting is the feature the mirror
+exists to make visible.
+
+Lifecycle honesty: the log is outside every task workspace (a worker with a shell must
+not be able to rewrite what the owner is watching); `kill-session` fires exactly once
+from the tee's `finally`, so both natural exhaustion and the abort path (runner abandons
+iteration) tear the tmux session down — no orphaned `tail -f` sessions accumulating on
+the daemon. Best-effort by construction: the decorator probes `tmux -V` once and returns
+the inner adapter **unchanged** when tmux is missing; a per-spawn tmux failure or a full
+disk loses the mirror, never the session. Config: `"harnesses": { "tmux": { "enabled":
+true, "binary": "tmux" } }` — on-by-default is safe precisely because missing tmux is a
+no-op; under launchd the binary needs an absolute path, same lesson as the harness
+itself. 8 new tests (mirror pass-through, steering line, exactly-once kill incl.
+mid-stream abandonment, probe-fail identity, attach-line surfacing).
+
+Also recorded for slice 3: restart re-adoption does *not* depend on tmux — the child dies
+with the daemon either way. It rides the persisted `harnessSessionId` + `claude
+--resume`, which survives daemon death precisely because it needs no living process.
 
 ### 2026-09-01 — steered follow-ups: a bounded grace instead of waiting forever (P2-M5 follow-up 2)
 

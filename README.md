@@ -98,8 +98,12 @@ in <dir>"), `send_to_worker` reaches the running session mid-turn, and its self-
 cost is metered under `harness/claude-code`; opt-in via `"harnesses": { "claudeCode":
 { "enabled": true, "binary": "/abs/path/to/claude", "model": "…" } }` in the config —
 `binary` should be absolute (launchd has no user PATH) and `model` pins `--model` past
-the child's own settings, which can otherwise point it at a broken router alias. tmux
-attach and restart re-adoption come in later slices.*
+the child's own settings, which can otherwise point it at a broken router alias. Every
+harness run is also mirrored into a detached tmux session — the first progress line
+prints `watch live: tmux attach -t rwtr_<runId>`, and mid-run steering shows up there as
+`⇄ user:` lines; missing tmux simply means no mirror (config: `"harnesses": { "tmux":
+{ "enabled": true, "binary": "/opt/homebrew/bin/tmux" } }`). Restart re-adoption and
+more adapters come in later slices.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and

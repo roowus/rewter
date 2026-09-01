@@ -12,8 +12,10 @@
  *
  * Deliberately narrow. No approval callbacks (the spawn itself is gated, once,
  * by the ordinary `Approvals` choke point — see runner.ts for why per-action
- * gating is not possible from outside the harness), no attach info yet (tmux
- * wrapping is the next slice; this one runs the process directly).
+ * gating is not possible from outside the harness). Attach is a *mirror*, not
+ * the process's own pty: headless harnesses have no visual UI — their stdout is
+ * NDJSON — so `withTmuxMirror` (tmux.ts) tees the normalized events into a
+ * rendered log a tmux session tails, and `attach` names that session.
  */
 import type { WorkerRunId } from "@rewter/shared";
 
@@ -22,7 +24,7 @@ export interface HarnessSpec {
   instructions: string;
   /** Working directory for the harness — the task workspace's cwd. */
   cwd: string;
-  /** Names the session (`rwtr_<runId>` once tmux lands); useful in logs now. */
+  /** Names the tmux mirror session (`rwtr_<runId>`) and the log it tails. */
   runId: WorkerRunId;
 }
 
@@ -54,12 +56,27 @@ export type HarnessEvent =
   /** The process died without a result: crash, missing binary, bad flags. */
   | { type: "fatal"; error: string };
 
+/** How a human watches a running harness session from a terminal. */
+export interface HarnessAttachInfo {
+  /** The tmux session name (`rwtr_<runId>`). */
+  session: string;
+  /** The command to paste: `tmux attach -t rwtr_<runId>`. */
+  command: string;
+}
+
 export interface HarnessSession {
   /**
    * The event stream, ending when the process exits. A `fatal` event, when one
    * occurs, is always the last event.
    */
   events: AsyncIterable<HarnessEvent>;
+  /**
+   * Present when a live mirror exists for this session (see tmux.ts). The
+   * runner surfaces `command` as a progress line so the feed carries the
+   * attach instructions while the session is still running. Absent = no
+   * mirror; the session itself is unaffected.
+   */
+  attach?: HarnessAttachInfo | undefined;
   /**
    * Deliver a user message mid-session. The harness reads it at its next input
    * opportunity — for Claude Code that is a queued turn, exactly the semantics

@@ -49,7 +49,7 @@ The initiator picks the *cheapest sufficient* tier per subtask:
 |---|---|---|
 | 1 | Bare LLM call (text/vision in → text out) | Phase 1 |
 | 2 | rewter's own agent loop with tools (file r/w, shell, web) in a task workspace | Phase 1 |
-| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility); tmux attach/mirror, restart re-adoption, and more adapters (aider, codex, generic spec) in later slices | Phase 2 (slice 1 shipped) |
+| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility; slice 2: `tmux attach -t rwtr_<runId>` live mirror); restart re-adoption and more adapters (aider, codex, generic spec) in later slices | Phase 2 (slices 1–2 shipped) |
 
 ## Control model
 
@@ -2215,10 +2215,58 @@ existed still parse. The daemon constructs the adapter only when `enabled` is tr
 Under launchd the daemon has no user PATH, so `binary` should be an **absolute path**
 (`whence -p claude` finds it — the interactive `claude` is often a shell function).
 
-Still to come in later slices: tmux wrapping (`rwtr_<runId>` session names, `tmux attach`
-mirroring), restart re-adoption via the persisted session id, and the generic JSON
-adapter spec (command template, output-parse mode `jsonl|plain`, done-pattern) so any CLI
-harness is addable by config.
+### The tmux mirror (P2-M5 slice 2)
+
+`tmux attach -t rwtr_<runId>` shows a harness session live. A *mirror*, deliberately —
+the harness process does **not** run inside tmux. Headless harnesses speak NDJSON over
+pipes, and a pty would wreck both directions: tmux would render raw stream-json instead
+of anything a human can read, and `send-keys` input rides the tty line discipline, whose
+canonical-mode buffer (4KB on macOS) silently truncates the instruction frames we
+actually send. So the child keeps its pipes exactly as slice 1 built them, and
+`withTmuxMirror` (`server/src/harness/tmux.ts`) is an **adapter decorator** that tees the
+*normalized* event stream into a rendered log a detached tmux session tails
+(`tmux new-session -d -s rwtr_<runId> "exec tail -n +1 -f <log>"`). Watching costs
+nothing; not watching costs nothing; the harness cannot tell the difference.
+
+What the watcher sees: a header (harness name, cwd, task head), every event rendered
+(`· session <id>`, text verbatim, `⚒ Tool <detail>`, `── turn end ($cost) ──`,
+`✖ <fatal>`), **steering** as `⇄ user: <message>` — mid-run `send_to_worker` is the
+feature the mirror exists to make visible — and a `── session ended ──` line before the
+tmux session is killed. Log writes are synchronous (`writeSync` on an `openSync` fd): a
+line lands the moment the event goes by, and the file exists before the `tail -f` starts.
+`kill-session` fires exactly once, from the tee's `finally` — which runs on natural
+exhaustion *and* when the runner abandons iteration (the abort path), so cancelled tasks
+don't leave orphaned `tail -f` sessions on the daemon.
+
+Placement and surfacing: logs live under `~/.rewter/harness-logs/rwtr_<runId>.log` — not
+inside any task workspace, because a worker with a shell must not be able to rewrite what
+the owner is watching. The decorated session carries `attach: { session, command }`, and
+the runner emits `watch live: tmux attach -t rwtr_<runId>` as the **first** progress line
+(it is only useful while there is still something to watch); the engine already forwards
+progress lines to the feed and event log, so this needed zero engine changes.
+
+Best-effort by construction: `withTmuxMirror` probes `tmux -V` once at decoration time
+and returns the inner adapter **unchanged** when tmux is missing — a daemon without tmux
+runs tier 3 exactly as before this slice. A per-spawn tmux failure after a successful
+probe loses the mirror, never the session; a full disk kills the mirror, not the run.
+Config (defaults shown — enabled-by-default is safe precisely because missing tmux is a
+no-op):
+
+```jsonc
+"harnesses": { "tmux": { "enabled": true, "binary": "tmux" } }
+```
+
+Same launchd lesson as the harness binary: no user PATH, so a Homebrew tmux needs the
+absolute `/opt/homebrew/bin/tmux` here.
+
+Restart re-adoption (the next slice) does **not** depend on tmux: the child is still the
+daemon's child and dies with it. Re-adoption rides the persisted `harnessSessionId` and
+the harness's own resume mechanism (`claude --resume`), which survives daemon death
+precisely because it needs no living process.
+
+Still to come in later slices: restart re-adoption via the persisted session id, and the
+generic JSON adapter spec (command template, output-parse mode `jsonl|plain`,
+done-pattern) so any CLI harness is addable by config.
 
 ## API surface
 

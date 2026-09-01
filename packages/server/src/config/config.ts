@@ -148,6 +148,23 @@ export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
  */
 export const HarnessesConfigSchema = z
   .object({
+    /**
+     * The live tmux mirror: `tmux attach -t rwtr_<runId>` tails a rendered
+     * view of any running harness session. On by default but *best-effort* —
+     * a machine without tmux runs tier 3 exactly as if this block did not
+     * exist. The mirror never carries input; steering stays `send_to_worker`.
+     */
+    tmux: z
+      .object({
+        enabled: z.boolean().default(true),
+        /**
+         * Binary name or absolute path. Under launchd there is no user PATH,
+         * so a Homebrew tmux needs the absolute `/opt/homebrew/bin/tmux` here
+         * — same lesson as the harness binary itself.
+         */
+        binary: z.string().min(1).default("tmux"),
+      })
+      .default({}),
     claudeCode: z
       .object({
         enabled: z.boolean().default(false),
