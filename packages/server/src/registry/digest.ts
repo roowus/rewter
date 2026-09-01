@@ -18,6 +18,7 @@
  * model, abbreviations over prose, and a hard budget with honest truncation.
  */
 import type { CapabilityCard, Model } from "@rewter/shared";
+import { estimateTokens } from "./tokens.js";
 
 export interface DigestEntry {
   model: Model;
@@ -34,8 +35,6 @@ export interface DigestOptions {
   maxTokens?: number;
 }
 
-/** ~4 chars per token. Deliberately crude: the budget is a guardrail, not a meter. */
-const CHARS_PER_TOKEN = 4;
 const DEFAULT_MAX_TOKENS = 4000;
 
 /**
@@ -51,16 +50,18 @@ export function renderDigest(entries: DigestEntry[], opts: DigestOptions = {}): 
   const sorted = [...entries].sort((a, b) => (a.model.id < b.model.id ? -1 : 1));
 
   const lines: string[] = [];
-  let budget = maxTokens * CHARS_PER_TOKEN;
+  let budget = maxTokens;
   let dropped = 0;
 
   for (const entry of sorted) {
     const line = renderLine(entry);
-    if (line.length + 1 > budget) {
+    // +1 for the newline joining lines; tokenizers charge for it.
+    const cost = estimateTokens(line) + 1;
+    if (cost > budget) {
       dropped++;
       continue;
     }
-    budget -= line.length + 1;
+    budget -= cost;
     lines.push(line);
   }
 

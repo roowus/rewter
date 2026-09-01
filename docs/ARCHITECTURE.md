@@ -417,9 +417,19 @@ are omitted rather than printed as "unknown", counts abbreviate (`1M`, `200K`), 
 present, but `no tools` on **absence**, since tools are the norm and their absence is what rules a
 model out of a tier of work.
 
-Over budget (~4K tokens, crude 4-chars-per-token guardrail), models are dropped from the end of
-the sorted list and the digest **says so**: `(N further model(s) omitted for space.)` An initiator
-that cannot see a model will not choose it, and it should know that is why.
+Over budget (~4K tokens), models are dropped from the end of the sorted list and the digest
+**says so**: `(N further model(s) omitted for space.)` An initiator that cannot see a model will
+not choose it, and it should know that is why.
+
+The budget is metered by `estimateTokens` (`registry/tokens.ts`) — a segment estimator, not a
+real tokenizer (issue #8): letters ~4 chars/token, digit runs ~3/token, every symbol a full
+token, whitespace free. Digest lines are dense with ids, prices, and bracketed tags — content
+where BPE emits near one token per symbol, so the old flat 4-chars-per-token count ran ~2×
+low on exactly these lines. The estimator is deliberately biased **high**, because the failure
+modes are asymmetric: a low estimate silently pushes the cache breakpoint and bills every
+orchestration; a high one drops a model with an honest note. Tests pin the estimate at-or-above
+hand-checked cl100k counts for representative digest content. The same estimator meters every
+future prompt-budgeted block (skills digest next).
 
 ## Projects (P2-M1)
 

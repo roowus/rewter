@@ -58,6 +58,21 @@ and why in this order.
 
 ## Log
 
+### 2026-09-01 — the digest budget counts tokens, not characters (closes #8)
+
+The digest's ~4K-token budget was metered at a flat 4 chars/token — which runs about 2×
+low on exactly the content a digest line is made of (ids full of slashes and hyphens,
+price strings, bracketed tag lists — near one BPE token per symbol). A low estimate is
+the expensive failure: the digest silently outgrows its budget and pushes the prompt-cache
+breakpoint, billing every orchestration; a high one just drops a model with the honest
+`(N omitted)` note. New `estimateTokens` in `registry/tokens.ts` — a dependency-free
+segment estimator (letters ~4 chars/token, digit runs ~3/token, each symbol a full token,
+whitespace free), deliberately biased high, pinned by tests at-or-above hand-checked
+cl100k counts for representative digest lines. `renderDigest` now spends the budget in
+estimated tokens per line (+1 for the newline). It was the only char-count budget in the
+tree; the skills digest (P2-M4) inherits the estimator. 8 new tests; digest suite
+unchanged and green — the byte-stability property is untouched, only the meter moved.
+
 ### 2026-08-31 — `rewter chat`: the terminal client with a live prompt (P2-M3, second slice)
 
 The client half of mid-run prompting. `rewter chat [prompt…]` runs one orchestrator task
