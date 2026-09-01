@@ -59,10 +59,16 @@ import {
   vacuum,
 } from "@rewter/server";
 import { REGISTRY_BUNDLE_VERSION, RegistryBundleSchema, buildBundle } from "@rewter/shared";
+import { type ChatIo, chatCommand } from "./chat/chat.js";
 
 const USAGE = `rewter — an AI model router where the AI runs the routing
 
 Usage:
+  rewter chat [<instruction>...] [--model <m>] [-p <project>] [--url <daemon>]
+                                                talk to the orchestrator from the
+                                                terminal — the prompt stays live
+                                                while the task runs, so you can
+                                                steer it mid-flight
   rewter start [--config <path>] [--port <n>] [--pidfile <path>]
                                                 run the daemon in the foreground
   rewter status [--pidfile <path>]              is one running, and where
@@ -121,12 +127,17 @@ export interface RunOptions {
    * chmod a checked-in file, so the tests point this at a scratch copy.
    */
   entryPoint?: string;
+  /** Injectable terminal streams, so `chat` is testable without a TTY. */
+  io?: ChatIo;
 }
 
 export async function run(argv: string[], opts: RunOptions = {}): Promise<number> {
   const command = argv[0] ?? "help";
 
   switch (command) {
+    case "chat":
+      return await chatEntry(argv.slice(1), opts);
+
     case "start":
       return await start(argv.slice(1), opts);
 
@@ -185,6 +196,16 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
 }
 
 const VERSION = "0.1.0";
+
+/** `rewter chat` — see `chat/chat.ts`. This shim only resolves the injectables. */
+async function chatEntry(args: string[], opts: RunOptions): Promise<number> {
+  return await chatCommand(args, {
+    env: opts.env ?? process.env,
+    fetch: opts.fetch ?? globalThis.fetch,
+    pidfilePath: pidfileFor(args, opts),
+    io: opts.io ?? { input: process.stdin, output: process.stdout },
+  });
+}
 
 async function start(args: string[], opts: RunOptions = {}): Promise<number> {
   const configPath = flagValue(args, "--config");

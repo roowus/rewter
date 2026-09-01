@@ -96,6 +96,7 @@ export {
   PROJECT_HEADER,
   ProjectArchivedError,
   ProjectNotFoundError,
+  TASK_ID_HEADER,
   buildApp,
   type AppOptions,
 } from "./http/app.js";

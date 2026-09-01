@@ -80,7 +80,10 @@ vs. project like `CLAUDE.md`) — *shipped: `auto@<slug>` or an `x-rewter-projec
 runs a task under a project today, and the dashboard has a projects panel (create, edit
 policy, archive) plus a project picker on the run box* — a **skills learning loop** (agentskills.io `SKILL.md`
 distilled from what the system actually did, gated behind your approval), a **native
-`rewt` terminal client** where you can keep typing while a task runs, **Tailscale**
+`rewt` terminal client** where you can keep typing while a task runs — *shipped:
+`rewter chat` runs a task with an always-live prompt; mid-run lines steer the initiator
+or resolve approvals through the daemon's steering grammar (see
+[Chatting from the terminal](#chatting-from-the-terminal))* — **Tailscale**
 support — *shipped: `tailscale serve` works against the loopback daemon as-is, and a
 direct non-loopback bind fails closed until `REWTER_INTERNAL_KEY` is set, which then
 gates `/internal` and the dashboard (see
@@ -752,6 +755,31 @@ already in flight rather than starting a second, separately-billed orchestration
 header back does the same thing without relying on the conversation matching. Disconnect and
 reconnect within 30 seconds and you adopt your task, replaying whatever you missed; stay gone
 and it is cancelled, so an interrupted client does not leave workers billing to nobody.
+
+### Chatting from the terminal
+
+`rewter chat` is the native client for exactly that steering loop — and the prompt **stays
+live while the task runs**. The feed renders above it; anything you type mid-run is delivered
+immediately, without waiting for the turn to end:
+
+```sh
+rewter chat summarize these 3 URLs and compare them
+# · task task_k3j9x2mwpq4a
+# ◆ plan: fetch each page, then compare
+# ▶ [w1 · zai/glm-5.3 · tier1] summarize URL 1 — started
+› also note which one is the most recent        ← typed while w1 is still running
+# · queued for the initiator: also note which one is the most recent
+# ⏸ approval needed (apr_x9…) — shell: curl …
+› approve apr_x9
+# · 1 approval command(s) applied
+```
+
+Typed lines go through the daemon's one steering grammar: `approve`/`deny` resolve pending
+approvals on the spot, everything else queues for the initiator at the next turn boundary —
+and the echo tells you which happened. `--model` picks something other than
+`auto/orchestrator`, `--project <slug>` runs under a project, and `--url http://…` targets a
+daemon on another machine (a tailnet, say) instead of the local pidfile. Ctrl-C cancels the
+task on the daemon — settling it and stopping the spend — not just your socket.
 
 ## Development
 

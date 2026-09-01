@@ -52,11 +52,44 @@ and why in this order.
 |---|---|---|
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
-| P2-M3 | `rewt` TUI: WS client + shared fold, always-live input, mid-run steer, approvals | ⬜ |
+| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store, distiller, stage/approve pipeline, digest + `load_skill` | ⬜ |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-08-31 — `rewter chat`: the terminal client with a live prompt (P2-M3, second slice)
+
+The client half of mid-run prompting. `rewter chat [prompt…]` runs one orchestrator task
+with **an input line that is never modally bound to the running turn**: the feed renders
+above the prompt while the prompt stays live, and anything typed mid-run POSTs to the steer
+endpoint immediately — where the one steering grammar decides whether it was an approval
+command or an instruction for the initiator. This is the feature other CLIs don't have, and
+the reason the daemon owns the loop.
+
+- **Thin client of existing surfaces only** — chat over `/v1/chat/completions`, steer,
+  approvals, cancel. No new server surface, no fold, no WS: the daemon narrates the feed,
+  the command renders text it receives. Hand-rolled readline + per-line redraws, zero new
+  dependencies; folded into `packages/cli` (`src/chat/`: `sse.ts`, `stream.ts`,
+  `client.ts`, `chat.ts`) rather than a new package.
+- The task id rides the `x-rewter-task-id` **response header** — known before the first
+  body byte, which is what lets the prompt go live while the model is still thinking
+  (`TASK_ID_HEADER` now exported from `@rewter/server`).
+- Echo semantics tell the truth about the parser: `· queued for the initiator: …` vs
+  `· N approval command(s) applied` — identical at the keyboard, very different facts.
+  Steer POSTs are serialised so two quick lines cannot land out of order.
+- Ctrl-C is an honest kill: cancels the task on the daemon (settles it, stops the spend),
+  exits 130. A socket that closes without `[DONE]` reports as a connection loss, distinct
+  from a clean end.
+- Discovery = pidfile + the same health probe as `rewter stop`; `REWTER_URL`/`--url`
+  overrides for the tailnet case. One auth convention: `x-api-key` from
+  `REWTER_INTERNAL_KEY ?? REWTER_API_KEY`.
+- Escape codes only ever go to a TTY; piped output gets the plain feed. 49 tests across the
+  four modules, all through injected `io` + `fetch` playing the daemon — no TTY, no network.
+
+Remaining for P2-M3: live acceptance (steer a running fan-out mid-turn from the TUI;
+approve from the TUI while the dashboard watches; Ctrl-C mid-render leaves the terminal
+sane), then the later slices — approval keystrokes, multi-turn, the fold-backed tree.
 
 ### 2026-08-31 — steering by task id: the TUI's door into a running task (P2-M3, first slice)
 

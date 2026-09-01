@@ -803,6 +803,59 @@ from, and the `LiveTask` that holds it does not exist until the engine's stream 
 `let box: LiveTask | null`, filled in by `register()` immediately after — the engine only
 reads it between turns, long after that.
 
+### `rewter chat`: the terminal client (P2-M3)
+
+The steer route above is the server half of mid-run prompting; `rewter chat` is the client
+half, and the one behaviour it exists for: **the input line is never modally bound to the
+running turn**. The task's feed renders above the prompt while the prompt stays live;
+anything typed mid-run POSTs to the steer endpoint immediately, where the one steering
+grammar decides whether it was an approval command or an instruction for the initiator.
+Other CLIs make you wait for the turn to end; the whole point of the daemon owning the loop
+is that this one doesn't.
+
+It lives in `packages/cli/src/chat/` as four small modules, and everything about the split
+follows from the decision to be a **thin client of surfaces the dashboard already uses** —
+chat over `POST /v1/chat/completions`, steering over `/internal/tasks/:id/steer`, approvals
+over `/internal/approvals/:id`, kill over `/internal/tasks/:id/cancel`. No new server
+surface, no fold, no WebSocket: the daemon narrates the feed (glyph lines, approval cards,
+the final answer), so the command renders text it receives rather than reconstructing state.
+The fold-backed live task tree stays the dashboard's job until a later slice earns it here.
+
+- **`sse.ts`** — incremental SSE decoding, byte-boundary honest. Network reads do not
+  respect frame boundaries, so one parser per stream owns the split-block buffer: feed it
+  whatever arrived, get back only complete `data:` payloads. It returns raw strings rather
+  than parsed JSON because one of them is the literal `[DONE]` sentinel, which is not JSON
+  and not this layer's call. `: ping` heartbeats fall through untouched.
+- **`stream.ts`** — one POST is the whole start protocol. The task id arrives in the
+  `x-rewter-task-id` response header, **available before the first body byte** — which is
+  what lets the prompt go live (and steer) while the model is still thinking. The generator
+  yields typed events (`text`/`usage`/`error`/`done`) because the two non-obvious cases live
+  at this layer and nowhere else should know about them: the `[DONE]` sentinel, and the
+  daemon's error-on-the-final-frame convention. A socket that closes *without* `[DONE]` is
+  reported as a connection loss, distinct from a clean end.
+- **`client.ts`** — discovery and the `/internal` verbs. Discovery reuses the pidfile
+  through the same `daemonStatus` probe as `rewter stop` ("a pidfile is a claim, not a
+  fact"); `REWTER_URL` (or `--url`) overrides it for the tailnet case, where the daemon is
+  on another machine and no local pidfile speaks for it. Both the `/v1` and `/internal`
+  guards accept `x-api-key`, so that is the one header convention used:
+  `REWTER_INTERNAL_KEY ?? REWTER_API_KEY`, sent when set, harmless when unchecked.
+- **`chat.ts`** — the command. One task per invocation ([multi-turn is a later
+  slice](design/phase2-direction.md), and smaller than it sounds — steering already covers
+  "one more thing" while the task lives). Typed lines are serialised through a promise
+  chain so two quick lines cannot land out of order, and the echo distinguishes what the
+  parser did — `· queued for the initiator: …` vs `· N approval command(s) applied` —
+  because those look identical at the keyboard and are very different facts. Ctrl-C is an
+  honest kill: it cancels the task on the daemon (settling it, stopping the spend), not
+  just the local socket, and exits 130.
+
+Rendering discipline: deltas are buffered and flushed per *line*, so redrawing the prompt
+under the feed is a clear-line + reprint (`readline.prompt(true)` preserves the typed
+buffer), not a cursor ballet. Escape codes only ever go to a TTY — piped output gets the
+plain feed, which also keeps the tests honest: the whole command is tested through injected
+`io` streams and an injected `fetch` playing the daemon, no TTY and no network
+(`chat.test.ts`, with the module seams pinned in `sse.test.ts`, `client.test.ts`,
+`stream.test.ts`).
+
 Two behaviours here are testable only over a **real socket**: `app.inject()` serializes
 in-flight streaming requests, so a second `inject()` call's handler does not run until the
 first stream has finished — and a finished task is not a task you can steer. The steering
@@ -1369,6 +1422,9 @@ launchd side and are described in [Living under launchd](#living-under-launchd-m
 `rewter export-registry` / `import-registry` move models and cards between machines as a
 file, without a daemon —
 see [Moving a registry](#moving-a-registry-between-machines-m7j).
+`rewter chat [prompt…] [--model <m>] [--project <slug>] [--url <daemon>]` talks to the
+orchestrator from the terminal with a prompt that stays live mid-run — see
+[`rewter chat`: the terminal client](#rewter-chat-the-terminal-client-p2-m3).
 `rewter version` / `rewter help` round it out.
 
 ### Putting the command on PATH (M8b)
@@ -2875,7 +2931,8 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   **P2-M1** projects (top-level unit, Multica-style — resources, policy, model prefs,
   scoped learned state), **P2-M2** Tailscale hardening (`/internal` auth, fail-closed
   non-loopback boot), **P2-M3** the native `rewt` TUI (always-live input, mid-run
-  prompting), **P2-M4** the skills loop (agentskills.io `SKILL.md`, distill → stage →
+  prompting — the steer route and [`rewter chat`](#rewter-chat-the-terminal-client-p2-m3)
+  are its first two slices), **P2-M4** the skills loop (agentskills.io `SKILL.md`, distill → stage →
   approve → progressive-disclosure retrieval), **P2-M5** tier-3 harness #1 (Claude Code
   headless on the committed `HarnessAdapter` seam, tmux attach). The original phase-2
   items all survive inside this: harness adapters are P2-M5, tmux attach rides with it,
