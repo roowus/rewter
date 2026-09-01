@@ -17,6 +17,7 @@ import { ProvidersPanel } from "./ProvidersPanel.js";
 import { ReadinessCard } from "./ReadinessCard.js";
 import { RegistryPanel } from "./RegistryPanel.js";
 import { RunPanel } from "./RunPanel.js";
+import { SkillsPanel } from "./SkillsPanel.js";
 import { TaskTree } from "./TaskTree.js";
 import { TranslatePanel } from "./TranslatePanel.js";
 import { useDashboard } from "./store.js";
@@ -108,6 +109,11 @@ export function App(): JSX.Element {
           — policy, workspace, pin — so it sits between the catalog and the
           control that starts work under it. */}
       <ProjectsPanel />
+
+      {/* Below projects, which own the scopes skills land in. Fetches its
+          count even while collapsed: a proposed skill is a question waiting
+          on the owner, and the header is where the question shows. */}
+      <SkillsPanel />
 
       {/* Collapsed, and next to the log for the same reason: both are opened
           when something has gone wrong. This one answers the question the log

@@ -60,6 +60,7 @@ import {
 } from "@rewter/server";
 import { REGISTRY_BUNDLE_VERSION, RegistryBundleSchema, buildBundle } from "@rewter/shared";
 import { type ChatIo, chatCommand } from "./chat/chat.js";
+import { skillsCommand } from "./skills.js";
 
 const USAGE = `rewter — an AI model router where the AI runs the routing
 
@@ -84,6 +85,10 @@ Usage:
                                                 (or stdout) — never any keys
   rewter import-registry <file> [--overwrite] [--dry-run]
                                                 merge such a file back in
+  rewter skills [list|show|approve|reject] [<slug>] [--pending] [--overwrite]
+                                                review what the daemon learned —
+                                                proposed skills wait here until
+                                                you approve them
   rewter logs [-n <lines>] [--level <level>] [--log-dir <path>]
                                                 what the daemon wrote when
                                                 nobody was watching
@@ -152,6 +157,13 @@ export async function run(argv: string[], opts: RunOptions = {}): Promise<number
 
     case "import-registry":
       return importRegistryCommand(argv.slice(1), opts);
+
+    case "skills":
+      return await skillsCommand(argv.slice(1), {
+        env: opts.env ?? process.env,
+        fetch: opts.fetch ?? globalThis.fetch,
+        pidfilePath: pidfileFor(argv.slice(1), opts),
+      });
 
     case "version":
     case "--version":

@@ -98,6 +98,19 @@ export const SkillSchema = z.object({
 export type Skill = z.infer<typeof SkillSchema>;
 
 /**
+ * Body of `POST /internal/skills/:slug/approve`. Empty is the normal case;
+ * `overwrite` is the explicit consent required to replace an already-approved
+ * skill of the same slug in the target scope. `.strict()` so a typo'd key is
+ * a 400, not a silently ignored intention.
+ */
+export const SkillApproveRequestSchema = z
+  .object({
+    overwrite: z.boolean().optional(),
+  })
+  .strict();
+export type SkillApproveRequest = z.infer<typeof SkillApproveRequestSchema>;
+
+/**
  * Retrieval visibility: which approved skills a task sees. Global ∪ project,
  * and on a slug collision the project's copy shadows the global one — the same
  * precedence CLAUDE.md scoping taught everyone to expect. Pending never

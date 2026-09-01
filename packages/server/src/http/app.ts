@@ -42,6 +42,7 @@ import {
   RunTaskRequestSchema,
   type RunTaskResult,
   type ShutdownResult,
+  SkillApproveRequestSchema,
   SocketClientMessageSchema,
   type SocketServerMessage,
   SteerTaskRequestSchema,
@@ -95,6 +96,8 @@ import {
 import type { RouteRequest, Router } from "../router/router.js";
 import { SERVICE_LABEL } from "../service/launchd.js";
 import { detectSupervisor } from "../service/supervisor.js";
+import { reindexSkills } from "../skills/reindex.js";
+import { approveSkill, rejectSkill } from "../skills/stage.js";
 import { AnthropicStreamTranslator } from "./anthropic-stream.js";
 import { type StreamFrameContext, roleFrame, toOpenAIChunk } from "./openai-stream.js";
 import { SseWriter, type SseWriterOptions } from "./sse.js";
@@ -179,6 +182,13 @@ export interface AppOptions {
    * a test asserts is the answer under test, not whatever started vitest.
    */
   supervisor?: Supervisor;
+  /**
+   * The skills tree the approve/reject routes mutate (`~/.rewter/skills` in
+   * the daemon; a temp dir in tests). Absent — as in tests that never touch
+   * skills — the mutation routes answer 501, matching the orchestrator
+   * pattern; `GET /internal/skills` still lists whatever the index holds.
+   */
+  skillsRoot?: string | null;
 }
 
 /**
@@ -1306,6 +1316,74 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     }
     repos.deleteProject(existing.id);
     return { deleted: slug };
+  });
+
+  // ── Skills ────────────────────────────────────────────────────────────────
+  // The stage/approve gate (phase-2 M4 slice 3). The list reads the index;
+  // approve/reject mutate the tree through `skills/stage.ts` and reindex, so
+  // the response reflects the files as they now stand. Placement is the
+  // approval act — there is no status column to flip, only a directory to
+  // move into (docs/design/phase2-direction.md §2, decision 4).
+
+  app.get("/internal/skills", async (req) => {
+    const q = req.query as { status?: string };
+    const all = repos.listSkills();
+    const skills =
+      q.status === "pending" || q.status === "approved"
+        ? all.filter((s) => s.status === q.status)
+        : all;
+    return { skills };
+  });
+
+  const skillStageStatus = { not_found: 404, invalid: 422, unknown_project: 422, conflict: 409 };
+
+  app.post("/internal/skills/:slug/approve", async (req, reply) => {
+    const root = opts.skillsRoot;
+    if (root === undefined || root === null) {
+      return reply.code(501).send({ error: { message: "no skills directory configured" } });
+    }
+    const { slug } = req.params as { slug: string };
+    const parsed = SkillApproveRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+
+    const outcome = approveSkill(root, slug, {
+      ...(parsed.data.overwrite !== undefined && { overwrite: parsed.data.overwrite }),
+      projectExists: (p) => repos.getProjectBySlug(p) !== undefined,
+    });
+    if (!outcome.ok) {
+      return reply.code(skillStageStatus[outcome.code]).send({
+        error: { message: outcome.reason },
+      });
+    }
+
+    const { skills, problems } = reindexSkills(root, repos);
+    // The move succeeded but the scanner refused the file at its new home —
+    // possible only if the tree changed underneath us. Surface it; the file
+    // is still on disk at `outcome.path`, editable.
+    const skill = skills.find((s) => s.path === outcome.path);
+    if (skill === undefined) {
+      const why = problems.find((p) => p.path === outcome.path)?.reason ?? "not in the fresh scan";
+      return reply
+        .code(500)
+        .send({ error: { message: `approved to ${outcome.path} but unreadable there: ${why}` } });
+    }
+    return { skill };
+  });
+
+  app.post("/internal/skills/:slug/reject", async (req, reply) => {
+    const root = opts.skillsRoot;
+    if (root === undefined || root === null) {
+      return reply.code(501).send({ error: { message: "no skills directory configured" } });
+    }
+    const { slug } = req.params as { slug: string };
+    const outcome = rejectSkill(root, slug);
+    if (!outcome.ok) {
+      return reply.code(skillStageStatus[outcome.code]).send({
+        error: { message: outcome.reason },
+      });
+    }
+    reindexSkills(root, repos);
+    return { rejected: slug };
   });
 
   // ── Approvals ─────────────────────────────────────────────────────────────

@@ -625,9 +625,40 @@ for exactly that reason, and off is one config line.
   type. Shutdown unsubscribes the distiller first; an in-flight draft still lands, and the
   next boot's reindex picks it up.
 
-Still to come in this milestone: the stage/approve pipeline (`/internal/skills` routes;
-approve = move the file into its scoped directory + reindex), and the skills digest +
-`load_skill` tool (metered by the same `estimateTokens` as the registry digest).
+### Stage/approve: the gate itself
+
+The gate ships **on** (phase-2 design, decision 4): a draft stays inert in `pending/` until a
+human moves it, and the move *is* the approval — there is no status column to flip.
+`approveSkill` (`server/src/skills/stage.ts`) re-reads the draft's frontmatter at approval
+time (so "edit the file first, then approve" is a supported flow, not a race), refuses a
+name/slug mismatch or an unparseable file *before* moving anything (the draft stays in
+`pending/` where it can be fixed), resolves the target from frontmatter `project:` (absent =
+`global/`), checks that project actually exists against the repos (a skill must not be
+stranded in a directory no project answers to), and refuses to clobber an existing approved
+copy unless `overwrite` is explicit — a 409, with both copies surviving the refusal.
+`rejectSkill` deletes the pending directory and only the pending directory.
+
+The routes (`/internal/skills` in `app.ts`) are thin over those two functions plus a
+`reindexSkills` after every successful mutation, so the index never lags the tree: `GET`
+lists the index (`?status=pending|approved`), `POST :slug/approve` (strict body, optional
+`{overwrite: true}`) maps stage failures to HTTP — `not_found→404`, `invalid`/
+`unknown_project`→422, `conflict→409` — and returns the freshly-indexed approved row;
+`POST :slug/reject` answers `{rejected}`. Without a configured `skillsRoot` (tests that never
+touch skills) the mutations answer 501, the orchestrator-absent pattern; the daemon passes
+its `skillsDir`, the same tree the boot reindex and the distiller use.
+
+Both review surfaces sit on those routes and never touch the tree directly — the daemon owns
+the index, and a file moved behind its back is stale until next boot. `rewter skills`
+(`cli/src/skills.ts`): `list` (pending marked `?`, `--pending`/`--approved` filters), `show`
+(prints the SKILL.md path so the owner can open it), `approve [--overwrite]`, `reject` —
+same daemon discovery and `x-api-key` auth as `rewter chat`. The dashboard `SkillsPanel`
+fetches its count even while collapsed (a proposed skill is a question waiting on the owner,
+and a queue nobody sees is a queue nobody answers), arms reject like project delete (it is a
+deletion), and turns a 409 into an explicit "approve anyway (overwrite)" button rather than
+retrying silently.
+
+Still to come in this milestone: the skills digest + `load_skill` tool (metered by the same
+`estimateTokens` as the registry digest).
 
 ## Orchestrator engine
 

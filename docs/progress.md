@@ -53,10 +53,37 @@ and why in this order.
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
-| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ⬜ · digest + `load_skill` ⬜ | 🔶 |
+| P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ⬜ | 🔶 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter, tmux attach, mid-session `send()` | ⬜ |
 
 ## Log
+
+### 2026-09-01 — stage/approve: the human half of the loop (P2-M4, slice 3)
+
+The gate the design doc calls decision 4, shipped on. A draft in `pending/` now has exactly
+three exits, all owner-driven, all through the daemon (which owns the index — a file moved
+behind its back is stale until next boot):
+
+- **`approveSkill`/`rejectSkill`** (`server/src/skills/stage.ts`): approval *is* the move —
+  `pending/<slug>/` → `global/` or `<project>/` per the frontmatter's `project:` key, re-read
+  at approval time so *edit first, then approve* works. Refusals are surgical and leave the
+  draft fixable in place: unparseable/renamed → `invalid`, a `project:` no project answers to
+  → `unknown_project` (checked against the repos), an existing approved copy → `conflict`
+  unless `overwrite` is explicit (both copies survive the refusal). Reject deletes the
+  pending directory and only it.
+- **`/internal/skills` routes**: GET lists the index (`?status=` filter); approve/reject POST
+  thin over stage + `reindexSkills` after every mutation, failure codes mapped
+  `not_found→404, invalid/unknown_project→422, conflict→409`; 501 without a `skillsRoot`
+  (the orchestrator-absent pattern) — the daemon passes its `skillsDir`.
+- **`rewter skills`** (CLI): `list` (pending marked `?`, filters), `show` (prints the file
+  path — the owner's edit handle), `approve [--overwrite]`, `reject`. Same discovery and
+  `x-api-key` auth as `rewter chat`; validates rows with the shared `SkillSchema`, no CLI zod.
+- **Dashboard `SkillsPanel`**: fetches its proposed count even collapsed (a queue nobody sees
+  is a queue nobody answers), draft cards with approve / armed reject, a 409 becomes an
+  explicit "approve anyway (overwrite)" button, approved skills in a plain table below.
+
+40 new tests (8 stage, 8 routes, 11 CLI, 13 dashboard). Next: the digest + `load_skill`, at
+which point approved skills actually reach prompts.
 
 ### 2026-09-01 — the distiller: every success is offered up for learning (P2-M4, slice 2)
 

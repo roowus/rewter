@@ -80,8 +80,9 @@ vs. project like `CLAUDE.md`) — *shipped: `auto@<slug>` or an `x-rewter-projec
 runs a task under a project today, and the dashboard has a projects panel (create, edit
 policy, archive) plus a project picker on the run box* — a **skills learning loop** (agentskills.io `SKILL.md`
 distilled from what the system actually did, gated behind your approval) — *underway: the
-store/index and the distiller are in; every qualifying success now drafts a pending skill
-that retrieval never reads until you approve it* — a **native
+store/index, the distiller, and the approval gate are in; every qualifying success drafts a
+pending skill that retrieval never reads, and you review it with `rewter skills` or the
+dashboard's skills panel — approve moves it into scope, reject deletes it* — a **native
 `rewt` terminal client** where you can keep typing while a task runs — *shipped:
 `rewter chat` runs a task with an always-live prompt; mid-run lines steer the initiator
 or resolve approvals through the daemon's steering grammar (see

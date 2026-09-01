@@ -340,6 +340,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     live,
     dashboardDir,
     runtime,
+    // The tree the approve/reject routes move files in — same one the boot
+    // reindex and the distiller write to.
+    skillsRoot: skillsDir,
     // The same environment the registry was seeded against — so "test this
     // provider" answers for the process that would serve the request.
     env,
