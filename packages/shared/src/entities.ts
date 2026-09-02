@@ -236,6 +236,13 @@ export const WorkItemSchema = z.object({
   instructions: z.string(),
   modelId: ModelIdSchema,
   tier: WorkerTierSchema,
+  /**
+   * The kind of work the initiator filed this subtask under, from the same
+   * vocabulary as capability cards — the key its outcome is recorded against in
+   * `model_stats`. Null when the initiator did not say; such items are never
+   * counted, because a guess would poison the statistic it feeds.
+   */
+  taskTag: CapabilityTagSchema.nullable().default(null),
   resultSummary: z.string().nullable(),
   error: z.string().nullable(),
   createdAt: TimestampSchema,
@@ -243,6 +250,11 @@ export const WorkItemSchema = z.object({
   finishedAt: TimestampSchema.nullable(),
 });
 export type WorkItem = z.infer<typeof WorkItemSchema>;
+/**
+ * What a caller may hand `createWorkItem`: the same shape with the defaulted
+ * fields optional. The parsed `WorkItem` is what comes back out.
+ */
+export type WorkItemInput = z.input<typeof WorkItemSchema>;
 
 export const WorkerRunSchema = z.object({
   id: WorkerRunIdSchema,
@@ -304,7 +316,11 @@ export const CostRecordSchema = z.object({
 });
 export type CostRecord = z.infer<typeof CostRecordSchema>;
 
-/** Phase-2 learned stats — schema lives here from day one so the digest renderer has a seam. */
+/**
+ * Learned outcomes per (model, kind of work). Written by the server's stats
+ * recorder from every tagged work item that reaches a verdict; read by the
+ * registry digest as `stats:` facts. Means are running means over `attempts`.
+ */
 export const ModelStatSchema = z.object({
   modelId: ModelIdSchema,
   taskTag: CapabilityTagSchema,

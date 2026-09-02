@@ -1291,6 +1291,51 @@ describe("projects", () => {
   });
 });
 
+describe("learned stats", () => {
+  it("files a spawn under its tag, and leaves an untagged spawn null", async () => {
+    const h = makeHarness([
+      turn(
+        {
+          name: "spawn_worker",
+          args: { title: "a", model: SMALL, instructions: "x", tag: "summarization" },
+        },
+        { name: "spawn_worker", args: { title: "b", model: SMALL, instructions: "y" } },
+      ),
+      turn({ name: "wait", args: {} }),
+      turn({ name: "finish", args: { answer: "done" } }),
+    ]);
+    await drive(h);
+    const items = repos.listWorkItems(only(tasks())?.id ?? "");
+    expect(items.map((i) => i.taskTag)).toEqual(["summarization", null]);
+  });
+
+  it("renders each model's stats into the digest the initiator reads", async () => {
+    repos.recordOutcome({
+      modelId: SMALL,
+      taskTag: "coding",
+      succeeded: true,
+      costUsd: 0.01,
+      latencyMs: 2000,
+    });
+    repos.recordOutcome({
+      modelId: SMALL,
+      taskTag: "coding",
+      succeeded: false,
+      costUsd: 0.03,
+      latencyMs: 4000,
+    });
+    const h = makeHarness([turn({ name: "finish", args: { answer: "ok" } })]);
+    await drive(h);
+
+    const system = h.adapter.requests[0]?.messages[0]?.content ?? "";
+    expect(system).toContain(`${SMALL} — `);
+    expect(system).toContain("stats:[coding 1/2 ok ~$0.02 ~3s]");
+    // The model with no record has no fact, not an empty one.
+    const bigLine = system.split("\n").find((l) => l.startsWith(`${BIG} — `)) ?? "";
+    expect(bigLine).not.toContain("stats:");
+  });
+});
+
 describe("skills", () => {
   const finishTurn = (): StreamChunk[] => turn({ name: "finish", args: { answer: "ok" } });
 

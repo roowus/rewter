@@ -156,9 +156,10 @@ request; the file is the source of truth and the index is rebuilt from it.
 
 ### Explicitly later (roadmap, not v1)
 
-- **Stats-driven advice** — turn on the `StatsRecorder` event subscriber over the
-  existing `model_stats` table; render per-(model, taskTag) success/cost/latency into the
-  digest. The schema has been waiting since M1.
+- ~~**Stats-driven advice**~~ — **shipped 2026-09-02**: `wireStatsRecorder` subscribes to the
+  event bus over the existing `model_stats` table, keyed by the `tag` the initiator passes to
+  `spawn_worker`; per-(model, taskTag) success/cost/latency render into the digest as
+  `stats:[…]`. See ARCHITECTURE.md → "Learned stats".
 - **Practices memory** — small always-in-context durable facts (corrections, coding
   conventions, tool preferences), global + project scoped: a learned `CLAUDE.md` the
   system drafts and the owner approves. Same stage/approve pipeline as skills; different

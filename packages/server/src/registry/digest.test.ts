@@ -3,12 +3,25 @@
  * render the *same bytes* given the same registry" — the digest sits behind a
  * prompt-cache breakpoint, so instability is a cost bug, not a cosmetic one.
  */
-import type { CapabilityCard, Model } from "@rewter/shared";
+import type { CapabilityCard, CapabilityTag, Model, ModelStat } from "@rewter/shared";
 import { ModelIdSchema, ProviderIdSchema } from "@rewter/shared";
 import { describe, expect, it } from "vitest";
 import { renderDigest } from "./digest.js";
 
 const prv = ProviderIdSchema.parse("prv_testxx000000");
+
+function stat(id: string, taskTag: CapabilityTag, over: Partial<ModelStat> = {}): ModelStat {
+  return {
+    modelId: ModelIdSchema.parse(id),
+    taskTag,
+    attempts: 1,
+    successes: 1,
+    avgCostUsd: null,
+    avgLatencyMs: null,
+    updatedAt: 1,
+    ...over,
+  };
+}
 
 function model(id: string, over: Partial<Model> = {}): Model {
   return {
@@ -70,6 +83,67 @@ describe("renderDigest", () => {
     expect(out).toBe(
       "zai/glm-5.3 — $0.6/$2.2 per MTok, 200K ctx — best:[coding,fast_cheap] — avoid:[vision] — quick generalist",
     );
+  });
+
+  // ── Learned stats ─────────────────────────────────────────────────────────
+
+  it("renders stats as counts with rounded means, between the card facts and the summary", () => {
+    const out = renderDigest([
+      {
+        model: model("zai/glm-5.3"),
+        card: card("zai/glm-5.3", { bestAt: ["coding"], summary: "quick generalist" }),
+        stats: [
+          stat("zai/glm-5.3", "summarization", {
+            attempts: 2,
+            successes: 2,
+            avgCostUsd: 0.0012,
+            avgLatencyMs: 3400,
+          }),
+          stat("zai/glm-5.3", "coding", {
+            attempts: 5,
+            successes: 4,
+            avgCostUsd: 0.01234,
+            avgLatencyMs: 14_200,
+          }),
+        ],
+      },
+    ]);
+    expect(out).toBe(
+      "zai/glm-5.3 — $0.6/$2.2 per MTok, 200K ctx — best:[coding] — " +
+        "stats:[coding 4/5 ok ~$0.0123 ~14s, summarization 2/2 ok ~$0.0012 ~3s] — quick generalist",
+    );
+  });
+
+  it("omits an unmeasured mean, and the whole fact when there is nothing to say", () => {
+    const free = renderDigest([
+      {
+        model: model("local/llama"),
+        stats: [
+          stat("local/llama", "ocr", {
+            attempts: 1,
+            successes: 0,
+            avgCostUsd: null,
+            avgLatencyMs: 90_000,
+          }),
+        ],
+      },
+    ]);
+    expect(free).toContain("stats:[ocr 0/1 ok ~1.5m]");
+
+    const empty = renderDigest([{ model: model("zai/glm-5.3"), stats: [] }]);
+    expect(empty).toBe("zai/glm-5.3 — $0.6/$2.2 per MTok, 200K ctx");
+  });
+
+  it("orders stats by tag whatever order the rows arrive in", () => {
+    const rows = [
+      stat("zai/glm-5.3", "coding"),
+      stat("zai/glm-5.3", "math"),
+      stat("zai/glm-5.3", "extraction"),
+    ];
+    const a = renderDigest([{ model: model("zai/glm-5.3"), stats: rows }]);
+    const b = renderDigest([{ model: model("zai/glm-5.3"), stats: [...rows].reverse() }]);
+    expect(a).toBe(b);
+    expect(a).toContain("stats:[coding 1/1 ok, extraction 1/1 ok, math 1/1 ok]");
   });
 
   // ── Stability: the cacheability property ──────────────────────────────────

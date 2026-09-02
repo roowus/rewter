@@ -20,11 +20,11 @@
  * case beats withholding it — the model can read a refusal, and a tool it never
  * sees is a capability it cannot ask about.
  */
-import type { ToolDefinition } from "@rewter/shared";
+import { CapabilityTagSchema, type ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 6;
+export const ORCHESTRATOR_TOOLS_VERSION = 7;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -49,6 +49,13 @@ export const SpawnWorkerArgs = z.object({
   model: z.string().trim().min(1),
   instructions: z.string().trim().min(1),
   tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(1),
+  /**
+   * The card vocabulary, not free text: a tag is a `model_stats` key, and a
+   * statistic keyed on whatever the model felt like typing would never
+   * accumulate. An unknown tag is an `invalid arguments` tool result that lists
+   * the vocabulary (zod's enum message), one cheap turn from a corrected call.
+   */
+  tag: CapabilityTagSchema.optional(),
   resume_session_id: z.string().trim().min(1).max(200).optional(),
 });
 
@@ -144,6 +151,15 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
               "3 = external coding harness (brings its own model; `model` is ignored) — " +
               "reserve it for substantial multi-file coding work; starting one may pause " +
               "for the user's approval.",
+          },
+          tag: {
+            type: "string",
+            enum: [...CapabilityTagSchema.options],
+            description:
+              "The kind of work this is, from the card vocabulary. Give it whenever one " +
+              "tag plainly fits: the worker's outcome is then recorded against the model " +
+              "under that tag, and the registry's `stats:` facts are built from those " +
+              "records. Omit it when nothing fits — a wrong tag corrupts the record.",
           },
           resume_session_id: str(
             "Tier 3 only: resume an interrupted harness session instead of starting fresh. " +

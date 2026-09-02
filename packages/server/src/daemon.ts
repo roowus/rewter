@@ -31,6 +31,7 @@ import { buildApp } from "./http/app.js";
 import { Orchestrator } from "./orchestrator/engine.js";
 import { LiveTaskIndex } from "./orchestrator/live.js";
 import { type ReconcileResult, reconcileOnBoot, reconcileSummary } from "./reconcile.js";
+import { wireStatsRecorder } from "./registry/stats.js";
 import { Router } from "./router/router.js";
 import { removePidfile, writePidfile } from "./service/pidfile.js";
 import { reindexSkills } from "./skills/reindex.js";
@@ -305,6 +306,16 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     },
   });
 
+  // The learning loop's other half: every tagged worker that finishes becomes
+  // one row of evidence in `model_stats`, which the digest renders back to the
+  // next initiator as `stats:` facts. Wired before the app for the same reason
+  // as the distiller — the first work item can settle before the socket opens.
+  const stats = wireStatsRecorder({
+    bus,
+    store: repos,
+    log: { warn: (obj, msg) => app.log.warn(obj, msg) },
+  });
+
   // ── The stop sequence, defined before the app so the app can call it ───────
   //
   // `POST /internal/shutdown` needs a handle on this, and the app is built
@@ -331,6 +342,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       // reindex then finds the DB closed, that's a caught warn and the next
       // boot's reindex picks the file up anyway.
       distiller.unsubscribe();
+      // Stats too: the cancellations the drain below causes are the daemon
+      // stopping, not the models failing, and must not be counted against them.
+      stats.unsubscribe();
       // Tasks next: a running orchestration holds upstream calls open, and
       // closing the socket out from under it would leave them billing with
       // nobody left to read the answer.

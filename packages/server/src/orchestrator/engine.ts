@@ -23,8 +23,10 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  type CapabilityTag,
   type ChatMessage,
   type ModelId,
+  type ModelStat,
   type Project,
   type StreamChunk,
   type Task,
@@ -753,10 +755,23 @@ class Session {
   }
 
   private buildMessages(conversation: ChatMessage[], contextSummary?: string): ChatMessage[] {
+    // One query for every model's stats, grouped here: a per-model lookup would
+    // be N queries for a table that is a few dozen rows at most.
+    const statsByModel = new Map<string, ModelStat[]>();
+    for (const stat of this.o.repos.listModelStats()) {
+      const rows = statsByModel.get(stat.modelId);
+      if (rows === undefined) statsByModel.set(stat.modelId, [stat]);
+      else rows.push(stat);
+    }
     const digest = renderDigest(
       this.o.repos.listModels({ enabledOnly: true }).map((model) => {
         const card = this.o.repos.getCard(model.id);
-        return card === undefined ? { model } : { model, card };
+        const stats = statsByModel.get(model.id);
+        return {
+          model,
+          ...(card !== undefined && { card }),
+          ...(stats !== undefined && { stats }),
+        };
       }),
       { maxTokens: this.o.digestMaxTokens },
     );
@@ -977,6 +992,7 @@ class Session {
           model: string;
           instructions: string;
           tier: WorkerTier;
+          tag?: CapabilityTag;
           resume_session_id?: string;
         };
         if (args.resume_session_id !== undefined && args.tier !== 3) {
@@ -1030,6 +1046,7 @@ class Session {
           model: modelId,
           instructions: args.instructions,
           tier: args.tier,
+          tag: args.tag ?? null,
           resumeSessionId: args.resume_session_id,
         });
         yield chunk(
@@ -1193,6 +1210,8 @@ class Session {
     model: ModelId;
     instructions: string;
     tier: WorkerTier;
+    /** What kind of work this is — the `model_stats` key its outcome lands under. */
+    tag: CapabilityTag | null;
     /** Tier 3 only: a prior run's harness session to resume (see WorkerContext). */
     resumeSessionId?: string | undefined;
   }): Worker {
@@ -1206,6 +1225,7 @@ class Session {
       instructions: args.instructions,
       modelId: args.model,
       tier: args.tier,
+      taskTag: args.tag,
       resultSummary: null,
       error: null,
       createdAt: now,

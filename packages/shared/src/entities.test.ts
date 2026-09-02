@@ -150,6 +150,10 @@ describe("entity schemas", () => {
       expect(schema.parse(JSON.parse(JSON.stringify(value)))).toEqual(value);
     }
     expect(() => WorkItemSchema.parse({ ...wi, tier: 4 })).toThrow();
+    // An absent tag is "the initiator did not say", and only the card vocabulary counts.
+    expect(wi.taskTag).toBeNull();
+    expect(WorkItemSchema.parse({ ...wi, taskTag: "ocr" }).taskTag).toBe("ocr");
+    expect(() => WorkItemSchema.parse({ ...wi, taskTag: "vibes" })).toThrow();
   });
 
   it("Approval and CostRecord validate", () => {

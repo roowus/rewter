@@ -55,8 +55,56 @@ and why in this order.
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ + follow-up turns ✅ + approval keystrokes (`a w1` / `d w1 reason`) ✅ + fold-backed live tree, cost footer, project auto-select ✅ 2026-09-02 — all code slices done; interactive-TTY acceptance (owner) pending | ✅ code / 🔶 acceptance |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
+| P2-late | Stats-driven advice: `spawn_worker.tag` → `WorkItem.taskTag`, `wireStatsRecorder` bus subscriber over `model_stats`, `stats:[…]` in the digest, prompt v7 | ✅ 2026-09-02 |
 
 ## Log
+
+### 2026-09-02 — Learned stats: the `model_stats` table gets its writer (stats-driven advice)
+
+The table has sat in the schema since M1 (2026-08-27) with a `ModelStat` entity and nothing
+writing to it. The direction doc filed "turn on the `StatsRecorder` event subscriber" under
+"explicitly later"; with P2-M1–M5 done it was the next thing on the list. Four pieces, one
+commit:
+
+- **The tag** — `spawn_worker` takes an optional `tag` from the fourteen-word card vocabulary
+  (`ORCHESTRATOR_TOOLS_VERSION 7`); it lands on `WorkItem.taskTag` (nullable, migration
+  `0003_work_item_tag`). Nothing infers a tag from the instructions: a wrong guess would teach
+  the table a falsehood with the same confidence as a truth. Free text is refused at parse
+  time with the vocabulary in the error, so the correction is one turn away. An untagged
+  worker is not an error, it is simply not counted. `createWorkItem` now takes
+  `WorkItemInput` (zod input type) so the default applies at the repo boundary.
+- **The recorder** — `wireStatsRecorder({bus, store, log})` in `server/src/registry/stats.ts`,
+  wired in `daemon.ts` next to the distiller and unsubscribed in `stop` *before* the drain
+  turns running items into `cancelled` (a daemon stopping is not a model failing). It listens
+  for `work_item.status_changed` and records when the new status is tagged, terminal and about
+  the model: `succeeded` counts as success, `failed`/`cancelled` as attempts; `handed_off`
+  (the work moved) and `interrupted` (the machine went away) are not observations. Cost sums
+  only the `cost_records` rows belonging to the item's own worker runs — never the task total,
+  which includes the initiator — and is `null` when there are none. Latency is
+  `finishedAt − createdAt`, queue time included. A store failure is a warning, never an
+  exception into the write path. Why a subscriber rather than an engine call: every settling
+  path (engine, tier-2 failure, `cancel_worker`, dashboard kill, budget refusal) already goes
+  through `transitionWorkItem`, so one listener covers them all and cannot be forgotten.
+- **The digest** — `DigestEntry.stats?` renders `stats:[coding 4/5 ok ~$0.0123 ~14s,
+  summarization 2/2 ok ~$0.0012 ~3s]` between `avoid:` and the card summary, sorted by tag.
+  Counts, not percentages, so the initiator can see evidence volume; money to four places;
+  whole seconds under a minute, tenths of a minute above; an unmeasured mean omitted; the
+  whole fact omitted when there is nothing to say. `buildMessages` groups
+  `repos.listModelStats()` by model and passes the slice along. Still deterministic for a
+  given registry, and `buildMessages` runs once per session, so the cache breakpoint never
+  moves mid-orchestration.
+- **The prompt** (`ORCHESTRATOR_PROMPT_VERSION 7`) — two bullets under "Choosing a model":
+  `stats:` is evidence, not the card's opinion; weigh it above `best:` when they disagree but
+  read the denominator (1/1 is an anecdote, 9/10 is a record); missing `stats:` means never
+  tried here for tagged work. And: pass `tag` on `spawn_worker` whenever you know what the
+  work is, never guess.
+
+Tests: server 1318 → 1336 (new `stats.test.ts` against a real in-memory DB through the actual
+bus → transition → row path, running-mean fold in `repos.test.ts`, exact-bytes digest lines,
+tool-arg vocabulary refusal, an engine test that drives a tagged spawn and sees `stats:` land
+in the system prompt for the recorded model only); shared 394 (`taskTag` defaults to `null`,
+vocabulary enforced). Docs: ARCHITECTURE.md gains "Learned stats: the recorder and the
+digest"; the direction doc's roadmap bullet is struck through.
 
 ### 2026-09-02 — `rewter chat` grows a live tree, a cost footer and a cwd project (P2-M3, last code slice)
 

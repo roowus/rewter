@@ -17,12 +17,22 @@
  * needs 200 tokens to describe itself has crowded out the work. One line per
  * model, abbreviations over prose, and a hard budget with honest truncation.
  */
-import type { CapabilityCard, Model } from "@rewter/shared";
+import type { CapabilityCard, Model, ModelStat } from "@rewter/shared";
 import { estimateTokens } from "./tokens.js";
 
 export interface DigestEntry {
   model: Model;
   card?: CapabilityCard | undefined;
+  /**
+   * Learned outcomes for this model (`model_stats` rows, any order). Rendered
+   * as one `stats:[…]` fact after the card. These are the one input that
+   * changes between orchestrations — every tagged worker that finishes moves a
+   * number — so they cost a cache miss each time they move. Accepted: a
+   * statistic that never changed would not be worth showing, and it moves at
+   * most once per worker, never mid-orchestration (the digest is built once per
+   * initiator session).
+   */
+  stats?: ModelStat[] | undefined;
 }
 
 export interface DigestOptions {
@@ -41,7 +51,8 @@ const DEFAULT_MAX_TOKENS = 4000;
  * Render one line per model, stable-sorted by id.
  *
  * Format: `<id> — $in/$out per MTok, <ctx> ctx[, vision][, tools] — best:[…] — avoid:[…]`
- * with `— <summary>` appended when the card has one. Absent facts are omitted
+ * then `— stats:[…]` when the model has learned outcomes, then `— <summary>`
+ * when the card has one. Absent facts are omitted
  * rather than rendered as "unknown": a line of nulls is noise, and the
  * initiator can only act on what is present anyway.
  */
@@ -71,7 +82,7 @@ export function renderDigest(entries: DigestEntry[], opts: DigestOptions = {}): 
   return lines.join("\n");
 }
 
-function renderLine({ model, card }: DigestEntry): string {
+function renderLine({ model, card, stats }: DigestEntry): string {
   // Annotated: `model.id` is branded, and an inferred element type would reject
   // every plain string pushed after it.
   const parts: string[] = [model.id];
@@ -84,10 +95,47 @@ function renderLine({ model, card }: DigestEntry): string {
   if (card !== undefined) {
     if (card.bestAt.length > 0) parts.push(`best:[${card.bestAt.join(",")}]`);
     if (card.weaknesses.length > 0) parts.push(`avoid:[${card.weaknesses.join(",")}]`);
-    if (card.summary !== "") parts.push(card.summary);
   }
 
+  const statsFact = statsFactOf(stats ?? []);
+  if (statsFact !== undefined) parts.push(statsFact);
+
+  // The summary stays last: it is the one free-text part, and a reader scanning
+  // for the bracketed facts should find them at fixed positions before it.
+  if (card !== undefined && card.summary !== "") parts.push(card.summary);
+
   return parts.join(" — ");
+}
+
+/**
+ * `stats:[coding 4/5 ok ~$0.012 ~14s, summarization 2/2 ok ~$0.001 ~3s]`
+ *
+ * Ordered by tag so two renders of the same rows are the same bytes, and the
+ * row is *counts*, not a percentage: "4/5" tells the initiator how much
+ * evidence there is, which "80%" hides, and a 1/1 should not read like a 10/10.
+ * Cost and latency are omitted when never measured (a free local model has no
+ * cost rows; an item with no finish time has no latency).
+ */
+function statsFactOf(stats: ModelStat[]): string | undefined {
+  if (stats.length === 0) return undefined;
+  const rows = [...stats]
+    .filter((s) => s.attempts > 0)
+    .sort((a, b) => (a.taskTag < b.taskTag ? -1 : a.taskTag > b.taskTag ? 1 : 0))
+    .map((s) => {
+      const bits = [s.taskTag, `${s.successes}/${s.attempts} ok`];
+      if (s.avgCostUsd !== null) bits.push(`~$${money(s.avgCostUsd)}`);
+      if (s.avgLatencyMs !== null) bits.push(`~${duration(s.avgLatencyMs)}`);
+      return bits.join(" ");
+    });
+  if (rows.length === 0) return undefined;
+  return `stats:[${rows.join(", ")}]`;
+}
+
+/** Whole seconds under a minute, tenths of a minute above: coarse on purpose. */
+function duration(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${Math.round(s)}s`;
+  return `${Number((s / 60).toFixed(1))}m`;
 }
 
 function priceFact(model: Model): string | undefined {

@@ -16,6 +16,8 @@ import {
   CostRecordSchema,
   type Model,
   ModelSchema,
+  type ModelStat,
+  ModelStatSchema,
   type Project,
   ProjectSchema,
   type Provider,
@@ -31,6 +33,7 @@ import {
   WORKER_RUN_TRANSITIONS,
   WORK_ITEM_TRANSITIONS,
   type WorkItem,
+  type WorkItemInput,
   WorkItemSchema,
   type WorkItemStatus,
   type WorkerRun,
@@ -49,6 +52,7 @@ import {
   approvals,
   capabilityCards,
   costRecords,
+  modelStats,
   models,
   projects,
   providers,
@@ -477,7 +481,7 @@ export class Repos {
 
   // ── WorkItems ────────────────────────────────────────────────────────────
 
-  createWorkItem(item: WorkItem): WorkItem {
+  createWorkItem(item: WorkItemInput): WorkItem {
     const wi = WorkItemSchema.parse(item);
     this.db.insert(workItems).values(wi).run();
     this.bus.append({ taskId: wi.taskId, payload: { type: "work_item.created", workItem: wi } });
@@ -746,6 +750,92 @@ export class Repos {
     const filtered = clauses.length === 0 ? query : query.where(and(...clauses));
     return filtered.orderBy(asc(costRecords.createdAt)).all().map(toCostRecord);
   }
+
+  // ── Model stats ──────────────────────────────────────────────────────────
+
+  /**
+   * Fold one finished worker into the (model, tag) statistic: attempts up by
+   * one, successes up by one if it succeeded, and the averages moved by their
+   * running-mean update. A row stores the means and the count rather than the
+   * sums, so it reads as a fact without arithmetic — and the count is enough to
+   * recover the sums for the next update.
+   *
+   * `costUsd`/`latencyMs` are nullable because a worker that failed before its
+   * run existed has neither. A null observation leaves that average where it
+   * was rather than dragging it towards zero; the attempt still counts, because
+   * "it fell over" is the fact the statistic is for.
+   */
+  recordOutcome(observation: {
+    modelId: string;
+    taskTag: string;
+    succeeded: boolean;
+    costUsd: number | null;
+    latencyMs: number | null;
+  }): ModelStat {
+    const key = ModelStatSchema.pick({ modelId: true, taskTag: true }).parse(observation);
+    const current = this.getModelStat(key.modelId, key.taskTag);
+    const attempts = (current?.attempts ?? 0) + 1;
+    const successes = (current?.successes ?? 0) + (observation.succeeded ? 1 : 0);
+    const next = ModelStatSchema.parse({
+      ...key,
+      attempts,
+      successes,
+      avgCostUsd: runningMean(current?.avgCostUsd ?? null, attempts, observation.costUsd),
+      avgLatencyMs: runningMean(current?.avgLatencyMs ?? null, attempts, observation.latencyMs),
+      updatedAt: this.clock(),
+    });
+    this.db
+      .insert(modelStats)
+      .values(next)
+      .onConflictDoUpdate({
+        target: [modelStats.modelId, modelStats.taskTag],
+        set: {
+          attempts: next.attempts,
+          successes: next.successes,
+          avgCostUsd: next.avgCostUsd,
+          avgLatencyMs: next.avgLatencyMs,
+          updatedAt: next.updatedAt,
+        },
+      })
+      .run();
+    return next;
+  }
+
+  getModelStat(modelId: string, taskTag: string): ModelStat | undefined {
+    const row = this.db
+      .select()
+      .from(modelStats)
+      .where(and(eq(modelStats.modelId, modelId), eq(modelStats.taskTag, taskTag)))
+      .get();
+    return row === undefined ? undefined : ModelStatSchema.parse(row);
+  }
+
+  /** Every statistic, ordered by (model, tag) so callers rendering them need not sort. */
+  listModelStats(): ModelStat[] {
+    return this.db
+      .select()
+      .from(modelStats)
+      .orderBy(asc(modelStats.modelId), asc(modelStats.taskTag))
+      .all()
+      .map((r) => ModelStatSchema.parse(r));
+  }
+}
+
+/**
+ * The mean after `n` observations given the mean after `n - 1`, when the n-th
+ * observation is `value`. A null observation is "not measured", not zero, and
+ * leaves the mean unchanged rather than dragging it towards zero.
+ *
+ * `n` is the attempt count, not a count of measured observations, so an
+ * unmeasured attempt makes the next update's divisor one too large. That only
+ * happens for a worker that failed before its run row existed (no cost to
+ * measure), and a second counter column to make it exact would buy nothing an
+ * initiator reading `~$0.01` could act on.
+ */
+function runningMean(prev: number | null, n: number, value: number | null): number | null {
+  if (value === null) return prev;
+  if (prev === null) return value;
+  return prev + (value - prev) / n;
 }
 
 function toCostRecord(r: typeof costRecords.$inferSelect): CostRecord {

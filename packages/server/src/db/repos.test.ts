@@ -393,6 +393,138 @@ describe("Repos round-trips (in-memory SQLite)", () => {
       }),
     ).toThrow(/FOREIGN KEY/i);
   });
+
+  it("work item: taskTag persists and defaults to null when the initiator gave none", () => {
+    const task = makeTask();
+    const base = {
+      taskId: task.id,
+      parentWorkItemId: null,
+      status: "pending" as const,
+      title: "t",
+      instructions: "x",
+      modelId: mdl,
+      tier: 1 as const,
+      resultSummary: null,
+      error: null,
+      createdAt: tick,
+      updatedAt: tick,
+      finishedAt: null,
+    };
+    const tagged = repos.createWorkItem({ id: newWorkItemId(), taskTag: "coding", ...base });
+    const untagged = repos.createWorkItem({ id: newWorkItemId(), ...base });
+    expect(repos.getWorkItem(tagged.id)?.taskTag).toBe("coding");
+    expect(repos.getWorkItem(untagged.id)?.taskTag).toBeNull();
+  });
+});
+
+describe("Model stats (running means, upsert by (model, tag))", () => {
+  it("first outcome creates the row; later ones fold in as running means", () => {
+    const first = repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "coding",
+      succeeded: true,
+      costUsd: 0.01,
+      latencyMs: 1000,
+    });
+    expect(first).toMatchObject({
+      attempts: 1,
+      successes: 1,
+      avgCostUsd: 0.01,
+      avgLatencyMs: 1000,
+    });
+
+    const second = repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "coding",
+      succeeded: false,
+      costUsd: 0.03,
+      latencyMs: 3000,
+    });
+    expect(second.attempts).toBe(2);
+    expect(second.successes).toBe(1);
+    expect(second.avgCostUsd).toBeCloseTo(0.02, 10);
+    expect(second.avgLatencyMs).toBeCloseTo(2000, 10);
+    // The row, not just the return value, holds the folded numbers.
+    expect(repos.getModelStat(mdl, "coding")).toEqual(second);
+    // updatedAt is the clock, so two records a tick apart differ.
+    expect(second.updatedAt).toBeGreaterThan(first.updatedAt);
+  });
+
+  it("an unmeasured cost or latency leaves the mean alone rather than pulling it to zero", () => {
+    repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "ocr",
+      succeeded: true,
+      costUsd: null,
+      latencyMs: null,
+    });
+    const noMeans = repos.getModelStat(mdl, "ocr");
+    expect(noMeans?.avgCostUsd).toBeNull();
+    expect(noMeans?.avgLatencyMs).toBeNull();
+
+    repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "ocr",
+      succeeded: true,
+      costUsd: 0.5,
+      latencyMs: 10,
+    });
+    repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "ocr",
+      succeeded: false,
+      costUsd: null,
+      latencyMs: null,
+    });
+    const after = repos.getModelStat(mdl, "ocr");
+    expect(after?.attempts).toBe(3);
+    expect(after?.successes).toBe(2);
+    expect(after?.avgCostUsd).toBe(0.5);
+    expect(after?.avgLatencyMs).toBe(10);
+  });
+
+  it("listModelStats is ordered by (model, tag) and keyed per pair", () => {
+    const other = ModelIdSchema.parse("zai/glm-5.3");
+    repos.recordOutcome({
+      modelId: other,
+      taskTag: "coding",
+      succeeded: true,
+      costUsd: 0,
+      latencyMs: 1,
+    });
+    repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "summarization",
+      succeeded: true,
+      costUsd: 0,
+      latencyMs: 1,
+    });
+    repos.recordOutcome({
+      modelId: mdl,
+      taskTag: "coding",
+      succeeded: true,
+      costUsd: 0,
+      latencyMs: 1,
+    });
+    expect(repos.listModelStats().map((s) => [s.modelId, s.taskTag])).toEqual([
+      [mdl, "coding"],
+      [mdl, "summarization"],
+      [other, "coding"],
+    ]);
+  });
+
+  it("a tag outside the vocabulary is rejected at the store, not stored as a new key", () => {
+    expect(() =>
+      repos.recordOutcome({
+        modelId: mdl,
+        taskTag: "vibes",
+        succeeded: true,
+        costUsd: 0,
+        latencyMs: 0,
+      }),
+    ).toThrow();
+    expect(repos.listModelStats()).toEqual([]);
+  });
 });
 
 describe("Projects (configuration, not lifecycle)", () => {

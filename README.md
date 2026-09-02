@@ -113,7 +113,13 @@ config**, no code required: a `"harnesses": { "generic": [{ "id": "aider", "bina
 "donePattern": "^Applied edits" }] }` entry gets the same gate, steering, mirror, and
 metering — `parse: "jsonl"` for tools that can emit rewter's event shapes (or a five-line
 wrapper), `parse: "plain"` for everything else, with either a done-pattern sentinel or
-the process exit ending the turn.*
+the process exit ending the turn.* The learning loop's second dimension, **learned model
+stats**, is on too — *shipped 2026-09-02: the initiator tags each spawn with what the work
+is (`tag: "coding"`, from the same vocabulary the capability cards use), every settled
+worker is recorded as a success or failed attempt with its own cost and latency under
+(model, tag), and the digest the initiator reads shows the record as `stats:[coding 4/5 ok
+~$0.012 ~14s]` next to the card's opinion — evidence to weigh above `best:` when the two
+disagree. Untagged spawns are simply not counted; nothing is inferred.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and

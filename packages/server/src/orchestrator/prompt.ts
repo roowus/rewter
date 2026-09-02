@@ -19,7 +19,7 @@
 import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 6;
+export const ORCHESTRATOR_PROMPT_VERSION = 7;
 
 /**
  * Prefix on a mid-run message from the initiator to a tier-2 worker.
@@ -109,6 +109,16 @@ capability card. Read it before you choose; do not name a model that is not list
   final synthesis, anything the other workers will build on.
 - A subtask that only needs a long document read and condensed wants long context and
   a low price, not a reasoning model.
+- Some lines carry \`stats:\` — what actually happened when this router last used the
+  model for each kind of work: \`coding 4/5 ok ~$0.012 ~14s\` means four of five tagged
+  coding workers on it succeeded, at that average cost and wall-clock. This is evidence,
+  not the card's opinion: it comes from real outcomes here, so weigh it above \`best:\`
+  when the two disagree, but read the denominator — 1/1 is an anecdote, 9/10 is a
+  record. Missing \`stats:\` means the model has not been tried here for tagged work.
+- You feed those records. Pass \`tag\` on \`spawn_worker\` whenever one vocabulary tag
+  plainly names the work; the worker's outcome is then filed under it. Do not guess a
+  tag — an untagged worker is simply not counted, while a mis-tagged one is counted
+  against the wrong kind of work and misleads the next initiator.
 
 # Skills
 

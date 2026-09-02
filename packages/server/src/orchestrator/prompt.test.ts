@@ -31,7 +31,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(6);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(7);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {

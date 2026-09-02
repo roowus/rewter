@@ -107,6 +107,8 @@ export const workItems = sqliteTable(
     instructions: text("instructions").notNull(),
     modelId: text("model_id").notNull(),
     tier: integer("tier").notNull(),
+    /** Capability tag the initiator filed the subtask under; the `model_stats` join key. */
+    taskTag: text("task_tag"),
     resultSummary: text("result_summary"),
     error: text("error"),
     createdAt: integer("created_at").notNull(),

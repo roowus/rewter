@@ -181,7 +181,7 @@ Entities (zod-typed in `shared`):
   `supports{tools,streaming,vision,caching}`, source (synced|manual). Each `supports` flag is
   **tri-state** — see [Capabilities are tri-state](#capabilities-are-tri-state).
 - **CapabilityCard** (1:1 Model) — summary, strengths[], weaknesses[], bestAt[]/avoidFor[]
-  (tags from a **fixed vocabulary** that doubles as the phase-2 stats key), tierHint, speed,
+  (tags from a **fixed vocabulary** that doubles as the learned-stats key), tierHint, speed,
   `userOverrides` (JSON patch that survives regeneration). Stored in two halves — see
   [Capability cards](#capability-cards).
 - **Project** (P2-M1) — the Multica-style top-level unit tasks run under; slug (unique,
@@ -193,12 +193,18 @@ Entities (zod-typed in `shared`):
   tasks — see [Projects](#projects-p2-m1).
 - **Task** — one orchestrated request; workspaceDir, autoApprove, settings (maxSpendUsd?, maxParallel?),
   `projectId?` (nullable — pre-projects rows and project-less tasks replay identically).
-- **WorkItem** — subtask; `parentWorkItemId` builds handoff chains.
+- **WorkItem** — subtask; `parentWorkItemId` builds handoff chains; `taskTag?` (nullable, one
+  of the card vocabulary) is what the initiator said the work *was* when it spawned the worker —
+  the key the learned stats fold under. Absent means "the initiator did not say", and such an
+  item is never counted (migration `0003_work_item_tag`).
 - **WorkerRun** — one execution attempt (retry/handoff = new run); `harnessSessionId?` is written by the tier-3 runner (the restart re-adoption seam).
 - **Event** — append-only, autoincrement `seq`; **source of truth** for dashboard replay and audit.
 - **Approval** — kind (shell|write_outside_workspace|spawn_harness|budget|other), status, resolvedBy.
 - **CostRecord** — token counts incl. cache read/write; costUsd computed at write time from a pricing snapshot.
-- **ModelStat** — (modelId, taskTag) → attempts/successes/avgCost/avgLatency. Phase-2 data, phase-1 schema.
+- **ModelStat** — (modelId, taskTag) → attempts/successes/avgCostUsd?/avgLatencyMs?. Running
+  means, upserted per observation by the stats recorder — see
+  [Learned stats](#learned-stats-the-recorder-and-the-digest). The schema waited from M1; the
+  writer arrived 2026-09-02.
 
 ### Lifecycle state machines
 
@@ -406,7 +412,10 @@ CostRecord for every completion, so cards land in the same spend ledger as every
 
 `renderDigest(entries, {maxTokens})` in `server/src/registry/digest.ts` renders section 2 of the
 orchestrator prompt: one line per model, `<id> — <price>, <ctx>[, capabilities] — best:[…] —
-avoid:[…] — <summary>`.
+avoid:[…] — stats:[…] — <summary>`. The `stats:` fact is the learned record, rendered from
+`ModelStat` rows the caller passes in — see
+[Learned stats](#learned-stats-the-recorder-and-the-digest) for what it says and why it sits
+where it does.
 
 Two properties drive it. **Stability**, because the digest sits behind a `cache_control`
 breakpoint — instability is a *cost* bug, not a cosmetic one. So: stable sort by model id, the
@@ -431,6 +440,51 @@ modes are asymmetric: a low estimate silently pushes the cache breakpoint and bi
 orchestration; a high one drops a model with an honest note. Tests pin the estimate at-or-above
 hand-checked cl100k counts for representative digest content. The same estimator meters every
 prompt-budgeted block — the skills digest reuses it with a 1000-token budget.
+
+### Learned stats: the recorder and the digest
+
+The `model_stats` table has existed since M1 with nothing writing to it. As of 2026-09-02 it
+is live: `wireStatsRecorder` (`server/src/registry/stats.ts`) is an **event-bus subscriber**
+the daemon wires next to the skills distiller and unsubscribes in `stop`, and the digest
+renders what it records. Three decisions shape it.
+
+**The tag comes from the initiator, not from us.** `spawn_worker` takes an optional `tag` from
+the card vocabulary (`coding`, `summarization`, `ocr`, …) and it lands on `WorkItem.taskTag`.
+Nothing infers a tag from the instructions — a classifier guessing "coding" for a
+summarization job would teach the table a falsehood with the same confidence as a truth. The
+prompt tells the initiator to tag whenever it knows and never to guess; an untagged worker is
+simply not counted. Free text is refused at parse time with the vocabulary in the message, so
+the fix is one turn away and the table never grows a key nobody reads.
+
+**What counts as an observation.** The recorder listens for `work_item.status_changed` and
+records when the new status is terminal, tagged, and *about the model*: `succeeded` is a
+success; `failed` and `cancelled` are attempts that did not succeed. `handed_off` is not an
+observation of the worker (the work moved, it did not finish), and `interrupted` is the daemon
+dying, not the model failing — it is only ever written by boot reconciliation, before the
+subscriber exists, and the recorder unsubscribes before shutdown drains running items to
+`cancelled` for the same reason. Cost is the sum of the `cost_records` rows whose
+`workerRunId` belongs to one of the item's runs — not the task's total, which includes the
+initiator's own spend — and `null` when there are none (a free local model and an unmetered
+one are different facts). Latency is `finishedAt − createdAt` on the item: queue time
+included, because that is what the initiator waited.
+
+**Why a subscriber and not a call in the engine.** Every path that settles a work item —
+engine success, tier-2 failure, `cancel_worker`, dashboard kill, budget refusal — already goes
+through `transitionWorkItem`, which emits the event. One listener covers all of them and
+cannot be forgotten by the next path added. The store fold is a running mean per
+`(modelId, taskTag)` (`Repos.recordOutcome`, upsert); a `null` mean stays untouched by a
+`null` observation. A recorder failure is a **warning**, never an exception into the write
+path — statistics must not be able to fail a task.
+
+The digest then renders `stats:[coding 4/5 ok ~$0.0123 ~14s, summarization 2/2 ok ~$0.0012
+~3s]` between `avoid:` and the card summary: sorted by tag, counts rather than percentages
+(so the initiator sees evidence volume — `1/1` is an anecdote, `9/10` is a record),
+money to four places, whole seconds under a minute and tenths of a minute above, an
+unmeasured mean omitted, and the whole fact omitted when there is nothing to say. Prompt
+version 7 tells the initiator to weigh `stats:` above `best:` when the two disagree and to read
+the denominator. The digest is still deterministic for a given registry; stats move it at most
+once per settled worker and `buildMessages` runs once per session (and once on handoff), so
+the cache breakpoint never moves mid-orchestration.
 
 ## Projects (P2-M1)
 
@@ -744,9 +798,10 @@ that is the only case it can now mean.
 1. **Static core** (`ORCHESTRATOR_CORE_PROMPT`, versioned) — role, tier ladder, tool rules,
    cost discipline ("cheapest sufficient tier/model"), self-assessment + handoff criteria,
    narration conventions. Gets a `cache_control` breakpoint on the Anthropic adapter.
-2. **Registry digest** — one compact line per active model rendered from Model+Card,
-   stable-sorted for cacheability, ≤ ~4K tokens. Phase-2 stats append inside this same
-   renderer. An empty registry says `registry is empty` rather than rendering nothing —
+2. **Registry digest** — one compact line per active model rendered from Model+Card+Stats,
+   stable-sorted for cacheability, ≤ ~4K tokens. The learned `stats:[…]` fact renders
+   inside this same renderer (see [Learned stats](#learned-stats-the-recorder-and-the-digest)).
+   An empty registry says `registry is empty` rather than rendering nothing —
    silence would read as "no models exist".
 3. **Task context** — the [project block](#the-prompt-block) when a project is selected
    (after the digest, so it never invalidates the shared cache region), then the client's
@@ -768,7 +823,10 @@ where a thrown error costs the task. The description the model sees says what ea
 *for* — tier 1 for thinking, writing, summarizing; tier 2 when the subtask has to read or
 change something; tier 3 an external coding agent that brings its own model — since the
 initiator picks the cheapest sufficient tier and cannot do that from a bare number.
-`ORCHESTRATOR_TOOLS_VERSION` is 5. (See [Tier 3](#tier-3-external-harnesses-p2-m5).)
+(See [Tier 3](#tier-3-external-harnesses-p2-m5).) `spawn_worker` also takes an optional
+`tag` from the card vocabulary — the key the worker's outcome is recorded under (see
+[Learned stats](#learned-stats-the-recorder-and-the-digest)); an untagged spawn is fine and
+simply uncounted. `ORCHESTRATOR_TOOLS_VERSION` and `ORCHESTRATOR_PROMPT_VERSION` are both 7.
 
 Now that tier 2 exists, `concurrency` (default 4) bounds **agent loops**, not just single
 calls. The same number that used to cap four simultaneous one-shot completions now caps four
@@ -1632,9 +1690,10 @@ observes a task that claims to be running with nothing behind it.
 
 **Why `interrupted` and not `failed`.** A failure is a judgement: something tried and did not
 work. Nothing judged these. `failed` would tell an operator scanning history that the model got
-it wrong, when the machine simply went away — and it would poison the phase-2 learned stats,
-which key off exactly that success/failure distinction. The separate state costs one enum
-member and keeps the record honest.
+it wrong, when the machine simply went away — and it would poison the learned stats, which
+key off exactly that success/failure distinction. The separate state costs one enum member
+and keeps the record honest; the stats recorder ignores `interrupted` outright (see
+[Learned stats](#learned-stats-the-recorder-and-the-digest)).
 
 **Why not resume.** A task's liveness lives entirely in memory: its `AbortController`, the
 promises parked on pending approvals, the open upstream sockets. None of that survives. A
@@ -3479,12 +3538,13 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   approve → progressive-disclosure retrieval), **P2-M5** tier-3 harness #1 (Claude Code
   headless on the committed `HarnessAdapter` seam, tmux attach). The original phase-2
   items all survive inside this: harness adapters are P2-M5, tmux attach rides with it,
-  and learned stats queue directly behind P2-M4. (The plan listed Anthropic-native
-  `/v1/messages` here; it was pulled into phase 1 as M3d once it became clear M3's own
-  acceptance criterion depends on it.)
-- **Phase 3**: multi-initiator handoff chains, budgets, scheduling; stats-driven advice
-  and practices memory as the learning loop's second and third dimensions; a possible
-  project rename ([#17](https://github.com/roowus/rewter/issues/17)).
+  and learned stats landed 2026-09-02 as the
+  [stats recorder](#learned-stats-the-recorder-and-the-digest), the learning loop's second
+  dimension after skills. (The plan listed Anthropic-native `/v1/messages` here; it was
+  pulled into phase 1 as M3d once it became clear M3's own acceptance criterion depends on it.)
+- **Phase 3**: multi-initiator handoff chains, budgets, scheduling; practices memory as the
+  learning loop's third dimension; a possible project rename
+  ([#17](https://github.com/roowus/rewter/issues/17)).
 
 ## Key risks
 

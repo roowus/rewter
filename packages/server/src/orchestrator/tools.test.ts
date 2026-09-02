@@ -66,7 +66,7 @@ describe("the tool surface", () => {
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(6);
+    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(7);
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {
@@ -182,6 +182,27 @@ describe("parseToolArgs", () => {
       JSON.stringify({ title: "t", model: "m", instructions: "i", tier: 4 }),
     );
     expect(parsed.ok).toBe(false);
+  });
+
+  it("accepts a spawn tag from the card vocabulary and names the vocabulary otherwise", () => {
+    const base = { title: "t", model: "m", instructions: "i" };
+    const tagged = parseToolArgs("spawn_worker", JSON.stringify({ ...base, tag: "coding" }));
+    expect(tagged.ok).toBe(true);
+    if (tagged.ok) expect(tagged.args).toMatchObject({ tag: "coding" });
+
+    // No tag is not an error: an untagged worker is simply not counted.
+    const untagged = parseToolArgs("spawn_worker", JSON.stringify(base));
+    expect(untagged.ok).toBe(true);
+    if (untagged.ok) expect(untagged.args).not.toHaveProperty("tag");
+
+    // Free text is refused with the vocabulary in the message, so the fix is
+    // one turn away and the stats table never grows a key nobody reads.
+    const free = parseToolArgs("spawn_worker", JSON.stringify({ ...base, tag: "vibes" }));
+    expect(free.ok).toBe(false);
+    if (free.ok) return;
+    expect(free.error).toContain("tag");
+    expect(free.error).toContain("coding");
+    expect(free.error).toContain("summarization");
   });
 
   it("does not accept an empty final answer", () => {
