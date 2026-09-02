@@ -86,8 +86,9 @@ orchestrator's prompt digest, where the initiator or a tier-2 worker loads the f
 procedure with `load_skill`* — a **native
 `rewt` terminal client** where you can keep typing while a task runs — *shipped:
 `rewter chat` runs a task with an always-live prompt; mid-run lines steer the initiator
-or resolve approvals through the daemon's steering grammar, and lines after the answer are
-follow-up turns over the growing conversation (see
+or resolve approvals through the daemon's steering grammar, a live task tree redraws under
+the feed on a TTY, every answer ends with a cost footer, the project is picked from your
+cwd, and lines after the answer are follow-up turns over the growing conversation (see
 [Chatting from the terminal](#chatting-from-the-terminal))* — **Tailscale**
 support — *shipped: `tailscale serve` works against the loopback daemon as-is, and a
 direct non-loopback bind fails closed until `REWTER_INTERNAL_KEY` is set, which then
@@ -790,9 +791,15 @@ immediately, without waiting for the turn to end:
 
 ```sh
 rewter chat summarize these 3 URLs and compare them
+# · project clarity (from cwd; -p <slug> or --no-project to override)
 # · task task_k3j9x2mwpq4a
 # ◆ plan: fetch each page, then compare
 # ▶ [w1 · zai/glm-5.3 · tier1] summarize URL 1 — started
+# ┌ running · 0/3 workers done, 3 running · $0.01 spent (planning $0.01) · 4.2s
+# │ ▶ summarize URL 1 — w1 · glm-5.3 · T1 · running · $0 · 4.2s      ← redrawn live on a TTY
+# │ ▶ summarize URL 2 — w2 · glm-5.3 · T1 · running · $0 · 4.1s
+# │ ▶ summarize URL 3 — w3 · glm-5.3 · T1 · running · $0 · 4.1s
+# └
 › also note which one is the most recent        ← typed while w1 is still running
 # · queued for the initiator: also note which one is the most recent
 # ⏸ [w1] approval needed — curl …
@@ -802,12 +809,16 @@ rewter chat summarize these 3 URLs and compare them
 # ✔ [w1] done ($0.0021, 3.1s)
 #
 # URL 2 is the most recent (updated last week); all three agree on …
+# · $0.02 spent (planning $0.01) · 3 worker(s) · 14s
 › which of them cites primary sources?              ← typed after the answer: a follow-up
 # · task task_p8v2nqe1zt7c
 # ◆ plan: re-read the three summaries for citations
 ```
 
-Typed lines go through the daemon's one steering grammar: a parked approval is a keystroke —
+The tree between the feed and the prompt is the dashboard's task tree — the same event
+stream over the daemon's WebSocket, folded by the same shared code — redrawn in place on
+every event while the turn runs, then replaced by the one-line cost footer. Piped output
+gets the feed and the footer but never the tree. Typed lines go through the daemon's one steering grammar: a parked approval is a keystroke —
 `a w1` approves the worker's pending request, `d w1 too dangerous` denies it with the reason
 handed down to the model — and the longer `approve apr_…` / `deny apr_…: why` still works when
 you are reading an id off a log. Everything else queues for the initiator at the next turn
@@ -816,7 +827,9 @@ boundary, and the echo tells you which happened. The parser is conservative on p
 the next line is a **follow-up**: a new task that carries the whole conversation so far
 (your lines and each answer — the answer only, not the progress feed), so the initiator has
 the history without the daemon keeping any session. Ctrl-D ends the session. `--model` picks
-something other than `auto/orchestrator`, `--project <slug>` runs under a project, and
+something other than `auto/orchestrator`. The project is picked for you when your cwd is
+inside one of a project's `dir`/`repo` resources (announced on the first line, so a policy
+change is never silent); `--project <slug>` / `-p` overrides it and `--no-project` opts out.
 `--url http://…` targets a daemon on another machine (a tailnet, say) instead of the local
 pidfile. Ctrl-C cancels the task on the daemon — settling it and stopping the spend — not
 just your socket. With stdin from a pipe or `/dev/null` it stays a one-shot: the exit code

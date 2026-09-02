@@ -1,8 +1,16 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type Project, ProjectSchema, newProjectId } from "@rewter/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cancelTask, discoverDaemon, resolveApproval, steerTask } from "./client.js";
+import {
+  cancelTask,
+  discoverDaemon,
+  listProjects,
+  projectForCwd,
+  resolveApproval,
+  steerTask,
+} from "./client.js";
 import type { Connection } from "./client.js";
 
 let dir: string;
@@ -223,5 +231,119 @@ describe("cancelTask", () => {
     const { fetch } = scriptedFetch([new Response("{}", { status: 404 })]);
     const outcome = await cancelTask(conn, fetch, TASK_ID);
     expect(outcome).toEqual({ ok: false, status: 404, reason: "daemon returned 404" });
+  });
+});
+
+function project(
+  slug: string,
+  resources: { kind: "dir" | "repo" | "doc" | "url"; location: string }[],
+  archived = false,
+): Project {
+  return ProjectSchema.parse({
+    id: newProjectId(),
+    slug,
+    name: slug,
+    resources,
+    archived,
+    createdAt: 1_724_800_000_000,
+    updatedAt: 1_724_800_000_000,
+  });
+}
+
+describe("listProjects", () => {
+  it("GETs /internal/projects with the connection's headers and parses the list", async () => {
+    const p = project("clarity", [{ kind: "repo", location: "/Users/me/projects/clarity" }]);
+    const { fetch, calls } = scriptedFetch([
+      new Response(JSON.stringify({ projects: [p] }), { status: 200 }),
+    ]);
+    const outcome = await listProjects(conn, fetch);
+    expect(outcome).toEqual({ ok: true, projects: [p] });
+    expect(calls[0]?.url).toBe("http://127.0.0.1:20180/internal/projects");
+    expect((calls[0]?.init?.headers as Record<string, string>)["x-api-key"]).toBe("k");
+  });
+
+  it("is a reason, not a throw, when the daemon refuses or is too old", async () => {
+    const refused = scriptedFetch([
+      new Response(JSON.stringify({ error: { message: "unauthorised" } }), { status: 401 }),
+    ]);
+    expect(await listProjects(conn, refused.fetch)).toEqual({ ok: false, reason: "unauthorised" });
+
+    const older = scriptedFetch([new Response("<html>not found</html>", { status: 404 })]);
+    expect(await listProjects(conn, older.fetch)).toEqual({
+      ok: false,
+      reason: "daemon returned 404",
+    });
+
+    const down = {
+      fetch: (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as unknown as typeof globalThis.fetch,
+    };
+    expect(await listProjects(conn, down.fetch)).toEqual({ ok: false, reason: "ECONNREFUSED" });
+  });
+
+  it("rejects an unexpected shape rather than guessing", async () => {
+    const notList = scriptedFetch([
+      new Response(JSON.stringify({ projects: "nope" }), { status: 200 }),
+    ]);
+    expect(await listProjects(conn, notList.fetch)).toEqual({
+      ok: false,
+      reason: "daemon answered with an unexpected shape",
+    });
+    const badElement = scriptedFetch([
+      new Response(JSON.stringify({ projects: [{ slug: "x" }] }), { status: 200 }),
+    ]);
+    expect(await listProjects(conn, badElement.fetch)).toEqual({
+      ok: false,
+      reason: "daemon answered with an unexpected shape",
+    });
+  });
+});
+
+describe("projectForCwd", () => {
+  const clarity = project("clarity", [{ kind: "repo", location: "/Users/me/projects/clarity" }]);
+  const mono = project("mono", [{ kind: "dir", location: "/Users/me/projects/mono" }]);
+  const pkg = project("mono-web", [{ kind: "dir", location: "/Users/me/projects/mono/apps/web" }]);
+  const docsOnly = project("notes", [
+    { kind: "doc", location: "/Users/me/projects/notes/README.md" },
+    { kind: "url", location: "https://example.com" },
+  ]);
+
+  it("matches the project whose dir/repo contains the cwd, at any depth", () => {
+    expect(projectForCwd([clarity, mono], "/Users/me/projects/clarity")?.slug).toBe("clarity");
+    expect(projectForCwd([clarity, mono], "/Users/me/projects/clarity/src/deep")?.slug).toBe(
+      "clarity",
+    );
+    expect(projectForCwd([clarity, mono], "/Users/me/projects/clarity/")?.slug).toBe("clarity");
+  });
+
+  it("does not match a sibling that merely shares a prefix", () => {
+    expect(projectForCwd([clarity], "/Users/me/projects/clarity-fork")).toBeUndefined();
+    expect(projectForCwd([clarity], "/Users/me")).toBeUndefined();
+  });
+
+  it("prefers the deepest resource when projects nest", () => {
+    expect(projectForCwd([mono, pkg], "/Users/me/projects/mono/apps/web/src")?.slug).toBe(
+      "mono-web",
+    );
+    expect(projectForCwd([pkg, mono], "/Users/me/projects/mono/apps/web/src")?.slug).toBe(
+      "mono-web",
+    );
+    expect(projectForCwd([mono, pkg], "/Users/me/projects/mono/packages/x")?.slug).toBe("mono");
+  });
+
+  it("ignores doc/url resources and archived projects", () => {
+    expect(projectForCwd([docsOnly], "/Users/me/projects/notes")).toBeUndefined();
+    const gone = project(
+      "clarity",
+      [{ kind: "repo", location: "/Users/me/projects/clarity" }],
+      true,
+    );
+    expect(projectForCwd([gone], "/Users/me/projects/clarity")).toBeUndefined();
+  });
+
+  it("returns undefined when nothing matches or there are no projects", () => {
+    expect(projectForCwd([], "/anywhere")).toBeUndefined();
+    expect(projectForCwd([clarity], "/tmp")).toBeUndefined();
   });
 });

@@ -997,13 +997,15 @@ grammar decides whether it was an approval command or an instruction for the ini
 Other CLIs make you wait for the turn to end; the whole point of the daemon owning the loop
 is that this one doesn't.
 
-It lives in `packages/cli/src/chat/` as four small modules, and everything about the split
+It lives in `packages/cli/src/chat/` as six small modules, and everything about the split
 follows from the decision to be a **thin client of surfaces the dashboard already uses** —
 chat over `POST /v1/chat/completions`, steering over `/internal/tasks/:id/steer`, approvals
-over `/internal/approvals/:id`, kill over `/internal/tasks/:id/cancel`. No new server
-surface, no fold, no WebSocket: the daemon narrates the feed (glyph lines, approval cards,
-the final answer), so the command renders text it receives rather than reconstructing state.
-The fold-backed live task tree stays the dashboard's job until a later slice earns it here.
+over `/internal/approvals/:id`, kill over `/internal/tasks/:id/cancel`, the live task tree
+over `WS /internal/ws` folded by the same `@rewter/shared` fold the dashboard uses, project
+lookup over `GET /internal/projects`. No new server surface: the daemon narrates the feed
+(glyph lines, approval cards, the final answer) and the command renders text it receives;
+the tree is the one thing it *reconstructs*, and it reconstructs it with the fold that was
+already tested once for the dashboard rather than a second interpretation of the events.
 
 - **`sse.ts`** — incremental SSE decoding, byte-boundary honest. Network reads do not
   respect frame boundaries, so one parser per stream owns the split-block buffer: feed it
@@ -1030,6 +1032,48 @@ The fold-backed live task tree stays the dashboard's job until a later slice ear
   approval command(s) applied` — because those look identical at the keyboard and are very
   different facts. Ctrl-C is an honest kill: it cancels the task on the daemon (settling it,
   stopping the spend), not just the local socket, and exits 130.
+- **`watch.ts`** — one WebSocket subscription per task. On open it sends
+  `{type:"subscribe", taskId}` (the socket's own filter — no client-side discarding of other
+  tasks' events) and folds every `event` frame through `applyEvent` from `@rewter/shared`,
+  so `watcher.task` is a `FoldedTask` — the same object the dashboard's tree is a view of.
+  `settled(ms)` resolves when the folded task reaches a terminal status, when the socket
+  closes, or on the deadline, whichever is first. The socket is Node's global `WebSocket`
+  (undici) handed the connection's headers, so `x-api-key` rides the upgrade exactly as the
+  dashboard's does; the factory is injectable, and a factory that throws degrades to a stub
+  whose `failure` says why (`socket unavailable: …`) — the turn still runs, the tree is
+  merely absent.
+- **`tree.ts`** — pure renderers over a `FoldedTask`: `renderTree` (header with
+  done/total/running counts, spend with the planning share, elapsed; one row per worker
+  with glyph · title · label · model · tier · status · attempts · spend · elapsed; a row per
+  pending approval; a closing rule) and `costFooter` (the one-line summary). Elapsed uses
+  `finishedAt` once a task or worker is over, so a finished tree renders the same at any
+  `now`. Both are tested against the same fixture shapes as `shared/fold.test.ts`
+  (`fold-fixtures.ts`), so a task the CLI can draw is a task the fold has been proven on.
+
+**Live tree and cost footer.** While an orchestrator turn runs on a TTY, the folded tree is
+redrawn as a block between the feed and the prompt on every socket event: printed once,
+then cleared (cursor up + erase-to-end) and reprinted, so the feed above it stays a
+scrollback of what happened and the tree is always the current state. Piped output gets no
+tree at all — a tree that cannot be redrawn is a log spammer — and the footer is the
+non-TTY reader's whole summary. When the stream ends, the command waits up to
+`SETTLE_MS` (1.5 s) for the socket to agree the task is terminal (the engine's terminal
+transition precedes its final text delta, so normally the socket is already there), closes
+the socket, clears the tree, and prints **one feed line** after the answer:
+`· $0.02 spent (planning $0.02) · 2 worker(s) · 18s`. The footer is a feed line, never part
+of the answer — the follow-up turn's assistant message is still the last text delta alone.
+If the socket could not be opened the same slot says `· no live tree — <reason>` once, and
+the exit code is unaffected. A pass-through model has no task id, so no socket is opened
+and no footer is printed.
+
+**Project auto-select.** Without `--project`/`-p`, `rewter chat` lists the daemon's
+projects once and picks the non-archived one whose `dir`/`repo` resource contains the cwd
+(deepest match wins when projects nest; a sibling that merely shares a prefix is not a
+match; `doc`/`url` resources never match). It announces the choice — `· project clarity
+(from cwd; -p <slug> or --no-project to override)` — because a silent header would be a
+silent policy change, and then sends `x-rewter-project` on every turn exactly as an
+explicit `-p` does. `--no-project` skips the lookup; an explicit `-p` skips it too. A daemon
+too old to serve `/internal/projects`, or one that refuses, simply yields no project — the
+lookup is a convenience, never a precondition for the turn.
 
 **Follow-up turns.** When a turn finishes with exit 0 the prompt returns, and the next
 non-blank line is a *follow-up*, not steering: it starts a **new task** whose `messages`
@@ -1059,9 +1103,9 @@ Rendering discipline: deltas are buffered and flushed per *line*, so redrawing t
 under the feed is a clear-line + reprint (`readline.prompt(true)` preserves the typed
 buffer), not a cursor ballet. Escape codes only ever go to a TTY — piped output gets the
 plain feed, which also keeps the tests honest: the whole command is tested through injected
-`io` streams and an injected `fetch` playing the daemon, no TTY and no network
-(`chat.test.ts`, with the module seams pinned in `sse.test.ts`, `client.test.ts`,
-`stream.test.ts`).
+`io` streams, an injected `fetch` playing the daemon, and an injected socket factory playing
+`/internal/ws` — no TTY and no network (`chat.test.ts`, with the module seams pinned in
+`sse.test.ts`, `client.test.ts`, `stream.test.ts`, `watch.test.ts`, `tree.test.ts`).
 
 Two behaviours here are testable only over a **real socket**: `app.inject()` serializes
 in-flight streaming requests, so a second `inject()` call's handler does not run until the
@@ -1639,8 +1683,10 @@ launchd side and are described in [Living under launchd](#living-under-launchd-m
 `rewter export-registry` / `import-registry` move models and cards between machines as a
 file, without a daemon —
 see [Moving a registry](#moving-a-registry-between-machines-m7j).
-`rewter chat [prompt…] [--model <m>] [--project <slug>] [--url <daemon>]` talks to the
-orchestrator from the terminal with a prompt that stays live mid-run — see
+`rewter chat [prompt…] [--model <m>] [--project <slug> | --no-project] [--url <daemon>]`
+talks to the orchestrator from the terminal with a prompt that stays live mid-run, a
+fold-backed live task tree on a TTY, a cost footer after every answer, and the project
+auto-selected from the cwd — see
 [`rewter chat`: the terminal client](#rewter-chat-the-terminal-client-p2-m3).
 `rewter version` / `rewter help` round it out.
 

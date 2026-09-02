@@ -19,8 +19,14 @@
  * sent unconditionally when the env var is set, harmless when the daemon
  * doesn't check it.
  */
+import { resolve } from "node:path";
 import { daemonStatus } from "@rewter/server";
-import { type SteerTaskResult, SteerTaskResultSchema } from "@rewter/shared";
+import {
+  type Project,
+  ProjectSchema,
+  type SteerTaskResult,
+  SteerTaskResultSchema,
+} from "@rewter/shared";
 
 export interface Connection {
   baseUrl: string;
@@ -136,6 +142,66 @@ export async function resolveApproval(
   });
   if (!res.ok) return { ok: false, status: res.status, reason: await errorMessage(res) };
   return { ok: true };
+}
+
+/**
+ * `GET /internal/projects` — the live (unarchived) projects, for cwd matching.
+ *
+ * Failure is a reason, not a throw: a daemon too old to have projects, or a
+ * key that unlocks `/v1` but not `/internal`, should cost the user the
+ * auto-select and nothing else.
+ */
+export async function listProjects(
+  conn: Connection,
+  fetchImpl: typeof globalThis.fetch,
+): Promise<{ ok: true; projects: Project[] } | { ok: false; reason: string }> {
+  let res: Response;
+  try {
+    res = await fetchImpl(`${conn.baseUrl}/internal/projects`, { headers: conn.headers });
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message };
+  }
+  if (!res.ok) return { ok: false, reason: await errorMessage(res) };
+  const body = (await res.json()) as { projects?: unknown };
+  if (!Array.isArray(body.projects)) {
+    return { ok: false, reason: "daemon answered with an unexpected shape" };
+  }
+  const projects: Project[] = [];
+  for (const raw of body.projects) {
+    const parsed = ProjectSchema.safeParse(raw);
+    if (!parsed.success) return { ok: false, reason: "daemon answered with an unexpected shape" };
+    projects.push(parsed.data);
+  }
+  return { ok: true, projects };
+}
+
+/**
+ * The project whose `dir`/`repo` resource contains `cwd` — how `rewter chat`
+ * run inside a checkout picks its project, the way git finds its repo. The
+ * *deepest* match wins when resources nest (a monorepo project and a package
+ * project under it), and archived projects never match: they are hidden from
+ * selection everywhere else too. `doc`/`url` resources are references, not
+ * places you can stand in.
+ */
+export function projectForCwd(projects: Project[], cwd: string): Project | undefined {
+  const here = normalizePath(cwd);
+  let best: { project: Project; depth: number } | undefined;
+  for (const project of projects) {
+    if (project.archived) continue;
+    for (const resource of project.resources) {
+      if (resource.kind !== "dir" && resource.kind !== "repo") continue;
+      const root = normalizePath(resource.location);
+      if (here !== root && !here.startsWith(`${root}/`)) continue;
+      const depth = root.split("/").length;
+      if (best === undefined || depth > best.depth) best = { project, depth };
+    }
+  }
+  return best?.project;
+}
+
+function normalizePath(path: string): string {
+  const resolved = resolve(path);
+  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
 }
 
 /** `POST /internal/tasks/:id/cancel` — the kill switch, same as the dashboard's. */

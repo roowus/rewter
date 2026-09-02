@@ -52,11 +52,55 @@ and why in this order.
 |---|---|---|
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
-| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ + follow-up turns (multi-turn over one growing conversation) ✅ + approval keystrokes (`a w1` / `d w1 reason`) ✅ 2026-09-02 — interactive-TTY acceptance pending, fold-backed tree open | 🔶 |
+| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ + follow-up turns ✅ + approval keystrokes (`a w1` / `d w1 reason`) ✅ + fold-backed live tree, cost footer, project auto-select ✅ 2026-09-02 — all code slices done; interactive-TTY acceptance (owner) pending | ✅ code / 🔶 acceptance |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
 
 ## Log
+
+### 2026-09-02 — `rewter chat` grows a live tree, a cost footer and a cwd project (P2-M3, last code slice)
+
+The design doc's three remaining TUI items landed together, and all three are the CLI
+becoming a second consumer of things the daemon already had rather than the daemon growing
+anything: the tree is `WS /internal/ws` folded by the shared fold, the footer is that fold's
+`costUsd`/`initiatorCostUsd`, the project is `GET /internal/projects` matched against the cwd.
+Server untouched.
+
+- **`watch.ts`** — one socket per orchestrator turn, subscribed with `{type:"subscribe",
+  taskId}` so the daemon filters (no client-side discard). Every `event` frame goes through
+  `applyEvent` from `@rewter/shared`; `watcher.task` is a `FoldedTask`, the dashboard's own
+  object. `settled(ms)` = terminal status ∨ socket closed ∨ deadline. Node's global
+  `WebSocket` (undici) with the connection's headers, so `x-api-key` rides the upgrade —
+  no new dependency. Factory injectable; a throwing factory becomes a stub with a `failure`
+  string and the turn runs treeless.
+- **`tree.ts`** — pure renderers: `renderTree` (header `┌ running · 1/2 workers done, 1
+  running · $0.02 spent (planning $0.02) · 30s`, one `│` row per worker, a row per pending
+  approval, `└`) and `costFooter`. Elapsed uses `finishedAt` once something is over, so a
+  finished task renders identically at any `now` — pinned by test.
+- **`chat.ts`** — on a TTY the tree is a block redrawn between feed and prompt on each socket
+  event (print, then cursor-up + erase, reprint); piped output never sees it. After the
+  stream ends: wait ≤ `SETTLE_MS` (1.5 s) for the socket's terminal event, close, clear the
+  tree, print **one feed line** `· $0.02 spent (planning $0.02) · 2 worker(s) · 18s` after the
+  answer. The footer is a feed line, never part of the answer — the follow-up turn's assistant
+  message is still the last delta alone (`keeps the footer out of the assistant turn`). Socket
+  refused ⇒ `· no live tree — <reason>` once, exit code unchanged. Pass-through model ⇒ no
+  task id ⇒ no socket, no footer.
+- **Project auto-select** — without `-p`, list projects once and pick the non-archived one
+  whose `dir`/`repo` resource contains the cwd (deepest wins; `clarity-fork` is not inside
+  `clarity`; `doc`/`url` never match). Announced as `· project clarity (from cwd; -p <slug>
+  or --no-project to override)`, then `x-rewter-project` on every turn. `--no-project` and
+  an explicit `-p` both skip the lookup. Fixed on the way: `--no-project` had been listed as a
+  *valued* flag in `positional`, so `rewter chat --no-project go` dropped `go`.
+- **Tests**: `fold-fixtures.ts` (the same stream builders as `shared/fold.test.ts`, so a task
+  the CLI draws is one the fold was proven on), `tree.test.ts` 8, `watch.test.ts` 12,
+  `client.test.ts` +7 (`listProjects` reasons and shapes, `projectForCwd`), `chat.test.ts`
+  +10 (subscribe/close/footer, footer outside the assistant turn, fan-out fold to
+  `2 worker(s)`, refused socket, footer waits for the socket's terminal event, pass-through
+  opens nothing, the four auto-select cases). Every `launch()` now injects a fake socket
+  factory so no test dials loopback. CLI 174.
+
+Remaining for P2-M3: interactive-TTY acceptance by the owner (watch the tree redraw under
+a real fan-out, steer it, answer an approval with `a w1`).
 
 ### 2026-09-02 — approvals are keystrokes: `a w1` / `d w1 reason` (P2-M3)
 

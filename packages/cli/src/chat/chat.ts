@@ -9,23 +9,31 @@
  * CLIs make you wait for the turn to end; the whole point of the daemon owning
  * the loop is that this one doesn't.
  *
- * Everything else is deliberately thin. The daemon narrates the feed
- * (`orchestrator/narrate.ts` — glyph lines, approval cards, the final answer),
- * so this command renders text it receives rather than reconstructing state:
- * no fold, no socket, just the SSE body and a readline. The fold-backed live
- * task tree is the dashboard's job until a later slice earns it here.
+ * Two channels, two jobs. The SSE body is the *turn*: the daemon narrates the
+ * feed into it (`orchestrator/narrate.ts` — glyph lines, approval cards, the
+ * final answer) and this command renders that text as it arrives. The socket
+ * (`WS /internal/ws`, the dashboard's) is the *state*: the task's events, folded
+ * with the same `@rewter/shared` fold the dashboard uses, drawn as a live tree
+ * above the prompt on a TTY (`tree.ts`, `watch.ts`) and as a cost footer after
+ * the answer. The socket is optional in the strict sense — lose it and the turn
+ * still runs, with one line saying the tree is off — so the client never
+ * depends on it for correctness, only for the view.
  *
  * Rendering discipline: stream deltas are buffered and flushed per *line*, so
  * redrawing the prompt under them is a clear-line + reprint, not a cursor
  * ballet. Escape codes only ever go to a TTY — piped output gets the plain
- * feed, which also keeps the tests honest.
+ * feed (and no tree: a tree that cannot be redrawn is a log spammer), which
+ * also keeps the tests honest. The footer is a feed line, never part of the
+ * answer; the answer is the last text delta and is what follow-ups carry.
  */
-import { clearLine, createInterface, cursorTo } from "node:readline";
+import { createInterface, cursorTo, moveCursor } from "node:readline";
 import type { Interface } from "node:readline";
 import type { OpenAIMessage } from "@rewter/shared";
-import { cancelTask, discoverDaemon, steerTask } from "./client.js";
+import { cancelTask, discoverDaemon, listProjects, projectForCwd, steerTask } from "./client.js";
 import type { Connection } from "./client.js";
 import { ChatStartError, startChat } from "./stream.js";
+import { costFooter, renderTree } from "./tree.js";
+import { type SocketFactory, type TaskWatcher, nodeSocket, watchTask } from "./watch.js";
 
 export interface ChatIo {
   input: NodeJS.ReadableStream;
@@ -37,9 +45,22 @@ export interface ChatOptions {
   fetch: typeof globalThis.fetch;
   pidfilePath: string;
   io: ChatIo;
+  /** How to open the task socket; defaults to Node's global `WebSocket`. */
+  socket?: SocketFactory;
+  /** Where the user is standing, for project auto-select; defaults to `process.cwd()`. */
+  cwd?: string;
+  /** Clock for elapsed times in the tree; injectable so a test's tree is stable. */
+  now?: () => number;
 }
 
 const PROMPT = "› ";
+
+/**
+ * How long, after the stream's `[DONE]`, to wait for the socket to report the
+ * task terminal before printing the footer. The two ride different connections;
+ * in practice the socket is ahead, and this is the bound on "in practice".
+ */
+const SETTLE_MS = 1500;
 
 /**
  * Run a conversation of tasks with a live prompt. Returns an exit code.
@@ -68,7 +89,8 @@ const PROMPT = "› ";
  */
 export async function chatCommand(args: string[], opts: ChatOptions): Promise<number> {
   const model = flagValue(args, "--model") ?? "auto/orchestrator";
-  const project = flagValue(args, "--project") ?? flagValue(args, "-p");
+  // `--no-project` takes no value, so it is not listed here: `positional` already
+  // skips every `--flag`, and listing it would swallow the word after it.
   const promptWords = positional(args, ["--model", "--project", "-p", "--pidfile", "--url"]);
   const out = opts.io.output;
 
@@ -82,6 +104,26 @@ export async function chatCommand(args: string[], opts: ChatOptions): Promise<nu
     return 1;
   }
   const conn = found.connection;
+
+  // Project: the flag wins; otherwise the project whose directory we are
+  // standing in, like git finding its repo. `--no-project` opts out of the
+  // lookup for the case where the directory belongs to a project but this
+  // question does not. Auto-selection is announced — a project changes the
+  // initiator's policy and prompt, and a silent switch is a surprise bill.
+  let project = flagValue(args, "--project") ?? flagValue(args, "-p");
+  if (project === undefined && !args.includes("--no-project")) {
+    const listed = await listProjects(conn, opts.fetch);
+    if (listed.ok) {
+      const match = projectForCwd(listed.projects, opts.cwd ?? process.cwd());
+      if (match !== undefined) {
+        project = match.slug;
+        out.write(`· project ${match.slug} (from cwd; -p <slug> or --no-project to override)\n`);
+      }
+    }
+  }
+
+  const socket = opts.socket ?? nodeSocket;
+  const now = opts.now ?? Date.now;
 
   const rl = createInterface({
     input: opts.io.input,
@@ -98,11 +140,18 @@ export async function chatCommand(args: string[], opts: ChatOptions): Promise<nu
 
     const messages: OpenAIMessage[] = [{ role: "user", content: instruction }];
     for (;;) {
-      const turn = await runTask(rl, lines, out, conn, opts.fetch, {
-        model,
-        messages,
-        ...(project !== undefined && { project }),
-      });
+      const turn = await runTask(
+        rl,
+        lines,
+        out,
+        conn,
+        { fetch: opts.fetch, socket, now },
+        {
+          model,
+          messages,
+          ...(project !== undefined && { project }),
+        },
+      );
       if (turn.code !== 0) return turn.code;
 
       // The turn is over, so this read is modal like the first one. Blank lines
@@ -211,14 +260,21 @@ interface TurnResult {
   answer: string;
 }
 
+interface TurnDeps {
+  fetch: typeof globalThis.fetch;
+  socket: SocketFactory;
+  now: () => number;
+}
+
 async function runTask(
   rl: Interface,
   lines: LineSource,
   out: ChatIo["output"],
   conn: Connection,
-  fetchImpl: typeof globalThis.fetch,
+  deps: TurnDeps,
   spec: TaskSpec,
 ): Promise<TurnResult> {
+  const fetchImpl = deps.fetch;
   const abort = new AbortController();
   let stream: Awaited<ReturnType<typeof startChat>>;
   try {
@@ -236,9 +292,19 @@ async function runTask(
     throw err;
   }
 
-  const render = lineRenderer(rl, out);
+  const tty = (out as NodeJS.WriteStream).isTTY === true;
   const taskId = stream.taskId;
+  // The live tree: fold the task's events off the socket and, on a TTY, keep a
+  // redrawn block between the feed and the prompt. Off a TTY the fold still
+  // runs (it is what the footer reads) but nothing is redrawn.
+  const watcher: TaskWatcher | null =
+    taskId === undefined ? null : watchTask(conn, taskId, deps.socket);
+  const tree = treeBlock(rl, out, tty);
+  const render = (line: string): void => tree.printAbove(line);
   if (taskId !== undefined) render(`· task ${taskId}`);
+  if (watcher !== null && tty) {
+    watcher.onChange((task) => tree.redraw(renderTree(task, deps.now())));
+  }
 
   // The live input line. Every line typed while the stream runs goes to the
   // steer endpoint; the echo tells the user what the daemon's parser did with
@@ -316,6 +382,18 @@ async function runTask(
     await steering.catch(() => undefined);
   }
 
+  // The turn is over on the stream; give the socket a moment to agree, then
+  // the tree comes down and the footer goes up in its place — a settled fact
+  // printed once, not a view kept live.
+  if (watcher !== null) {
+    if (!interrupted) await watcher.settled(SETTLE_MS);
+    watcher.close();
+    tree.clear();
+    const task = watcher.task;
+    if (task !== undefined) render(costFooter(task, deps.now()));
+    else if (watcher.failure !== null) render(`· no live tree — ${watcher.failure}`);
+  }
+
   if (interrupted) {
     render("⊘ cancelled");
     return { code: 130, answer: "" };
@@ -323,6 +401,71 @@ async function runTask(
   if (failed) return { code: 1, answer: "" };
   // The task id header is what marks an orchestrator run (see `streamOrchestration`).
   return { code: 0, answer: taskId !== undefined ? lastText : allText };
+}
+
+/**
+ * The region between the feed and the prompt where the tree lives.
+ *
+ * On a TTY the block is `n` tree lines followed by the prompt row. Printing a
+ * feed line means: go up to the block's first row, clear down, print the line,
+ * reprint the tree, reprint the prompt with the user's buffer intact. Redrawing
+ * the tree is the same dance without the feed line. `moveCursor` up by the
+ * block height is exact because every tree line is one row — long titles are
+ * clipped to the terminal width for that reason, since a wrapped line would put
+ * the cursor arithmetic off by one and shift the whole screen.
+ *
+ * Off a TTY there is no block: feed lines are written plainly and the tree is
+ * never drawn. `clear()` is the end-of-turn teardown so the footer and the
+ * follow-up prompt land on a clean screen.
+ */
+function treeBlock(
+  rl: Interface,
+  out: ChatIo["output"],
+  tty: boolean,
+): { printAbove: (line: string) => void; redraw: (lines: string[]) => void; clear: () => void } {
+  if (!tty) {
+    return {
+      printAbove: (line) => out.write(`${line}\n`),
+      redraw: () => undefined,
+      clear: () => undefined,
+    };
+  }
+  const stream = out as NodeJS.WriteStream;
+  let shown: string[] = [];
+  const width = (): number => (stream.columns > 0 ? stream.columns : 80);
+  const clip = (line: string): string => {
+    const w = width();
+    return line.length > w ? `${line.slice(0, Math.max(0, w - 1))}…` : line;
+  };
+  /** Cursor to the first tree row (or the prompt row when there is none), clear to the bottom. */
+  const rewind = (): void => {
+    cursorTo(stream, 0);
+    if (shown.length > 0) moveCursor(stream, 0, -shown.length);
+    // Clear from cursor to end of screen — one sequence, not one per row.
+    stream.write("\u001b[0J");
+  };
+  const paint = (): void => {
+    for (const line of shown) stream.write(`${clip(line)}\n`);
+    rl.prompt(true);
+  };
+  return {
+    printAbove: (line) => {
+      rewind();
+      stream.write(`${line}\n`);
+      paint();
+    },
+    redraw: (lines) => {
+      rewind();
+      shown = lines;
+      paint();
+    },
+    clear: () => {
+      if (shown.length === 0) return;
+      rewind();
+      shown = [];
+      paint();
+    },
+  };
 }
 
 /**
@@ -344,26 +487,6 @@ function feedLines(): { push: (delta: string) => string[]; flush: () => string[]
       partial = "";
       return [last];
     },
-  };
-}
-
-/**
- * Print a feed line above a live prompt.
- *
- * On a TTY: clear the prompt row, print the line, re-print the prompt with
- * whatever the user had typed (readline keeps the buffer; `prompt(true)`
- * preserves it). Anywhere else — a pipe, a test — just write the line: escape
- * codes in captured output are noise pretending to be UI.
- */
-function lineRenderer(rl: Interface, out: ChatIo["output"]): (line: string) => void {
-  const tty = (out as NodeJS.WriteStream).isTTY === true;
-  if (!tty) return (line) => out.write(`${line}\n`);
-  const stream = out as NodeJS.WriteStream;
-  return (line) => {
-    clearLine(stream, 0);
-    cursorTo(stream, 0);
-    stream.write(`${line}\n`);
-    rl.prompt(true);
   };
 }
 
