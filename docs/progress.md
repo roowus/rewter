@@ -52,11 +52,44 @@ and why in this order.
 |---|---|---|
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
-| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
+| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ + follow-up turns (multi-turn over one growing conversation) ✅ 2026-09-02 — interactive-TTY acceptance pending | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
 
 ## Log
+
+### 2026-09-02 — `rewter chat` follows up (P2-M3, the deferred multi-turn slice)
+
+The chat client's one-task-per-invocation rule is gone. A turn that finishes with exit 0
+brings the prompt back, and the next non-blank line is a **follow-up**: a new task whose
+`messages` carry the whole conversation so far — `[user, assistant, user, …]`. No server
+change was needed, which is the point of the slice being "smaller than it sounds":
+`LiveTaskIndex` forgets finished tasks, so the re-POST is simply a fresh task with a fresh
+`x-rewter-task-id`, and `buildInitiatorMessages` already passes prior turns to the initiator
+as ordinary history.
+
+The one design question was how the client builds the assistant turn from a stream that is
+mostly progress lines. The answer was already in the engine, unstated: on success it yields
+the separator delta, then **the whole answer as one `text_delta` with no trailing newline**,
+then `message_end`, and nothing textual after. So the assistant content is the last text
+delta of an orchestrator stream — verbatim, no progress lines, no markup. Pass-through models
+(no task id header) have no feed, so their whole text is the answer. That invariant is now
+documented in ARCHITECTURE.md as load-bearing, next to the progress-as-text block, because a
+future "print a cost footer after the answer" would corrupt every follow-up's history
+silently.
+
+Two things the tests caught. First, per-turn `once("line")` reads lose lines: readline emits
+a chunk's lines synchronously, so a two-line paste (or a pipe) between two modal reads drops
+the second. Lines now flow through one `LineSource` for the session — a queue while no task
+runs, routed straight to the steering handler while one does, queued lines first. Second,
+`rewter chat "…" < /dev/null` must stay a one-shot: EOF observed during the first turn ends
+the session with 0 once that turn completes, and no `› ` is printed to a pipe that has
+already hung up. A failed or cancelled turn adds no assistant message and exits with its
+code as before.
+
+`chat.test.ts`: 13 → 20 tests (the fake daemon now hands out one live feed per completion);
+CLI total 56. Server untouched. ARCHITECTURE.md (chat client section + progress-as-text
+contract), README (follow-up example), this log.
 
 ### 2026-09-01 — any CLI is a harness (P2-M5, slice 4 — milestone complete)
 

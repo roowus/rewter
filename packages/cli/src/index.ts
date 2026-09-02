@@ -69,7 +69,8 @@ Usage:
                                                 talk to the orchestrator from the
                                                 terminal — the prompt stays live
                                                 while the task runs, so you can
-                                                steer it mid-flight
+                                                steer it mid-flight; after the
+                                                answer, keep typing to follow up
   rewter start [--config <path>] [--port <n>] [--pidfile <path>]
                                                 run the daemon in the foreground
   rewter status [--pidfile <path>]              is one running, and where

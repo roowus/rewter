@@ -86,7 +86,8 @@ orchestrator's prompt digest, where the initiator or a tier-2 worker loads the f
 procedure with `load_skill`* — a **native
 `rewt` terminal client** where you can keep typing while a task runs — *shipped:
 `rewter chat` runs a task with an always-live prompt; mid-run lines steer the initiator
-or resolve approvals through the daemon's steering grammar (see
+or resolve approvals through the daemon's steering grammar, and lines after the answer are
+follow-up turns over the growing conversation (see
 [Chatting from the terminal](#chatting-from-the-terminal))* — **Tailscale**
 support — *shipped: `tailscale serve` works against the loopback daemon as-is, and a
 direct non-loopback bind fails closed until `REWTER_INTERNAL_KEY` is set, which then
@@ -796,14 +797,25 @@ rewter chat summarize these 3 URLs and compare them
 # ⏸ approval needed (apr_x9…) — shell: curl …
 › approve apr_x9
 # · 1 approval command(s) applied
+# ✔ [w1] done ($0.0021, 3.1s)
+#
+# URL 2 is the most recent (updated last week); all three agree on …
+› which of them cites primary sources?              ← typed after the answer: a follow-up
+# · task task_p8v2nqe1zt7c
+# ◆ plan: re-read the three summaries for citations
 ```
 
 Typed lines go through the daemon's one steering grammar: `approve`/`deny` resolve pending
 approvals on the spot, everything else queues for the initiator at the next turn boundary —
-and the echo tells you which happened. `--model` picks something other than
-`auto/orchestrator`, `--project <slug>` runs under a project, and `--url http://…` targets a
-daemon on another machine (a tailnet, say) instead of the local pidfile. Ctrl-C cancels the
-task on the daemon — settling it and stopping the spend — not just your socket.
+and the echo tells you which happened. Once a turn has finished, the prompt comes back and
+the next line is a **follow-up**: a new task that carries the whole conversation so far
+(your lines and each answer — the answer only, not the progress feed), so the initiator has
+the history without the daemon keeping any session. Ctrl-D ends the session. `--model` picks
+something other than `auto/orchestrator`, `--project <slug>` runs under a project, and
+`--url http://…` targets a daemon on another machine (a tailnet, say) instead of the local
+pidfile. Ctrl-C cancels the task on the daemon — settling it and stopping the spend — not
+just your socket. With stdin from a pipe or `/dev/null` it stays a one-shot: the exit code
+is the first turn's.
 
 ## Development
 

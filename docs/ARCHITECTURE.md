@@ -857,6 +857,15 @@ initiator can read it with `get_result`. The same rule holds inside a tier-2 tur
 Lines produced while awaiting a worker are queued and flushed at the next yield point, so a
 generator that is parked inside `Promise.race` still gets its narration out in order.
 
+**The answer's framing is a contract, not a courtesy.** On success the engine flushes every
+pending narration line, yields one separator delta (`ANSWER_SEPARATOR` is the empty line, so
+the delta is a bare `"\n"`), then yields the whole answer as a **single `text_delta` with no
+trailing newline**, then `message_end` — no text ever follows the answer. Failure and
+cancellation instead end with a newline-terminated `✖ task failed: …` / `⊘ task cancelled …`
+line. `rewter chat` relies on this to recover the answer verbatim (last delta of a succeeded
+stream) when building the assistant turn for a [follow-up](#rewter-chat-the-terminal-client-p2-m3); change
+the framing and that client's conversation history silently fills with progress lines.
+
 Two of those lines come from *inside* a tier-2 worker rather than from the initiator. A
 worker's `report_progress` note is labelled with its own `w<n>` (`workerNoteLine`), because
 four loops running for minutes make an unlabelled "wrote the fixture" meaningless. An approval
@@ -1013,14 +1022,37 @@ The fold-backed live task tree stays the dashboard's job until a later slice ear
   on another machine and no local pidfile speaks for it. Both the `/v1` and `/internal`
   guards accept `x-api-key`, so that is the one header convention used:
   `REWTER_INTERNAL_KEY ?? REWTER_API_KEY`, sent when set, harmless when unchecked.
-- **`chat.ts`** — the command. One task per invocation ([multi-turn is a later
-  slice](design/phase2-direction.md), and smaller than it sounds — steering already covers
-  "one more thing" while the task lives). Typed lines are serialised through a promise
-  chain so two quick lines cannot land out of order, and the echo distinguishes what the
-  parser did — `· queued for the initiator: …` vs `· N approval command(s) applied` —
-  because those look identical at the keyboard and are very different facts. Ctrl-C is an
-  honest kill: it cancels the task on the daemon (settling it, stopping the spend), not
-  just the local socket, and exits 130.
+- **`chat.ts`** — the command. A session is a sequence of tasks over one growing
+  conversation (see *Follow-up turns* below). While a task runs, typed lines are steering:
+  serialised through a promise chain so two quick lines cannot land out of order, with an
+  echo that distinguishes what the parser did — `· queued for the initiator: …` vs `· N
+  approval command(s) applied` — because those look identical at the keyboard and are very
+  different facts. Ctrl-C is an honest kill: it cancels the task on the daemon (settling it,
+  stopping the spend), not just the local socket, and exits 130.
+
+**Follow-up turns.** When a turn finishes with exit 0 the prompt returns, and the next
+non-blank line is a *follow-up*, not steering: it starts a **new task** whose `messages`
+carry the whole conversation so far — `[user, assistant, user, assistant, …, user]`. The
+daemon has no session state to hold for this: `LiveTaskIndex` forgets finished tasks, so the
+re-POST matches nothing and starts fresh (new `x-rewter-task-id`), and `buildInitiatorMessages`
+hands the prior turns to the initiator verbatim as ordinary conversation history. The
+assistant turn the client appends is **the answer alone, not the progress feed**, and it is
+recoverable without any markup because of an engine invariant that is now load-bearing:
+on success the engine emits `chunk(ANSWER_SEPARATOR)` (a bare `"\n"` delta), then the final
+answer as **one `text_delta` with no trailing newline**, then `message_end` — nothing
+textual follows it (`engine.ts`, the `finish` path). So for an orchestrator run (task id
+header present) the answer is the last text delta; for a pass-through model (no header, no
+feed) the answer is the whole text. A turn that fails or is cancelled adds no assistant
+message and ends the session with its exit code, so `rewter chat "…" < /dev/null` keeps its
+one-shot semantics: EOF on stdin ends the session with 0 once the running turn completes,
+and no follow-up prompt is printed to a pipe that has already hung up. Blank lines at the
+follow-up prompt re-prompt, as at a shell.
+
+Lines arrive through one `LineSource` for the whole session rather than per-turn
+`once("line")` reads: readline emits a chunk's lines synchronously (a paste, a pipe), so a
+modal read between two of them would lose the second. While no task runs, `next()` drains a
+queue; while one does, `attach()` routes lines straight to the steering handler — queued
+lines first, so a follow-up pasted as two lines means the second one for the task it starts.
 
 Rendering discipline: deltas are buffered and flushed per *line*, so redrawing the prompt
 under the feed is a clear-line + reprint (`readline.prompt(true)` preserves the typed

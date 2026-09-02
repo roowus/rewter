@@ -22,6 +22,7 @@
  */
 import { clearLine, createInterface, cursorTo } from "node:readline";
 import type { Interface } from "node:readline";
+import type { OpenAIMessage } from "@rewter/shared";
 import { cancelTask, discoverDaemon, steerTask } from "./client.js";
 import type { Connection } from "./client.js";
 import { ChatStartError, startChat } from "./stream.js";
@@ -41,12 +42,29 @@ export interface ChatOptions {
 const PROMPT = "› ";
 
 /**
- * Run one task to completion with a live prompt. Returns an exit code.
+ * Run a conversation of tasks with a live prompt. Returns an exit code.
  *
- * `argsPrompt` is the initial instruction (from argv); when empty, the first
- * line typed becomes it. Either way there is exactly one task per invocation —
- * multi-turn conversation is a later slice, and a smaller one than it sounds,
- * because steering already covers "one more thing" while the task lives.
+ * The first instruction comes from argv, or from the first line typed when argv
+ * has none. Each subsequent line typed *after* a turn has finished is a
+ * follow-up: it starts a new task whose messages carry the whole conversation so
+ * far — every prior user line plus the answer each one produced. (Lines typed
+ * *while* a turn runs are steering, not turns — see `runTask`.) The daemon sees
+ * an ordinary multi-turn OpenAI conversation; `LiveTaskIndex` forgets finished
+ * tasks, so the follow-up is a fresh task with a fresh id, and the initiator
+ * reads the history straight from the messages. No server-side session state.
+ *
+ * The assistant turn we append is the answer alone, not the progress feed. The
+ * engine's contract makes that recoverable without markup: on success the
+ * final answer is the *last* text delta of the stream, on its own, after a
+ * separator delta (`engine.ts`, the `finish` path). Progress lines never follow
+ * it. A pass-through model (`--model some/model`, no task id) has no feed, so
+ * its whole text is the answer. A turn that fails or is cancelled adds no
+ * assistant message and ends the session with its exit code — a scripted
+ * `rewter chat "…" < /dev/null` keeps its one-shot semantics, and an
+ * interactive user retries by relaunching.
+ *
+ * EOF (Ctrl-D) at the follow-up prompt ends the session with 0; blank lines are
+ * ignored, as at any shell.
  */
 export async function chatCommand(args: string[], opts: ChatOptions): Promise<number> {
   const model = flagValue(args, "--model") ?? "auto/orchestrator";
@@ -65,59 +83,155 @@ export async function chatCommand(args: string[], opts: ChatOptions): Promise<nu
   }
   const conn = found.connection;
 
-  const rl = createInterface({ input: opts.io.input, output: out as NodeJS.WritableStream });
+  const rl = createInterface({
+    input: opts.io.input,
+    output: out as NodeJS.WritableStream,
+    prompt: PROMPT,
+  });
+  const lines = new LineSource(rl);
   try {
-    const instruction =
-      promptWords.length > 0 ? promptWords.join(" ") : await askFirstLine(rl, out);
+    const instruction = promptWords.length > 0 ? promptWords.join(" ") : await askLine(lines, out);
     if (instruction === undefined || instruction.trim() === "") {
       out.write("nothing to do — give me an instruction\n");
       return 1;
     }
-    return await runTask(rl, out, conn, opts.fetch, {
-      model,
-      instruction,
-      ...(project !== undefined && { project }),
-    });
+
+    const messages: OpenAIMessage[] = [{ role: "user", content: instruction }];
+    for (;;) {
+      const turn = await runTask(rl, lines, out, conn, opts.fetch, {
+        model,
+        messages,
+        ...(project !== undefined && { project }),
+      });
+      if (turn.code !== 0) return turn.code;
+
+      // The turn is over, so this read is modal like the first one. Blank lines
+      // re-prompt; EOF ends the session.
+      let followUp: string | undefined;
+      do {
+        followUp = await askLine(lines, out);
+      } while (followUp !== undefined && followUp.trim() === "");
+      if (followUp === undefined) return 0;
+      messages.push(
+        { role: "assistant", content: turn.answer },
+        { role: "user", content: followUp },
+      );
+    }
   } finally {
     rl.close();
   }
 }
 
-/** With no argv prompt, ask for one — this read *is* modal; the task hasn't started. */
-function askFirstLine(rl: Interface, out: ChatIo["output"]): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    out.write(PROMPT);
-    rl.once("line", (line) => resolve(line));
-    rl.once("close", () => resolve(undefined));
-  });
+/**
+ * Every line typed, in order, for the whole session. readline emits the lines
+ * of one chunk synchronously — a paste, or a pipe — so a `once("line")` read
+ * between two of them would lose the second. One listener for the session,
+ * and two ways to consume: `next()` while no task runs (modal, queue-backed),
+ * `attach()` while one does (live, straight to the steering handler).
+ */
+class LineSource {
+  private readonly queue: string[] = [];
+  private live: ((line: string) => void) | null = null;
+  private wake: (() => void) | null = null;
+  private closed = false;
+
+  constructor(rl: Interface) {
+    rl.on("line", (line) => {
+      if (this.live !== null) {
+        this.live(line);
+        return;
+      }
+      this.queue.push(line);
+      this.notify();
+    });
+    rl.once("close", () => {
+      this.closed = true;
+      this.notify();
+    });
+  }
+
+  /** The next line not yet consumed; `undefined` once the input is closed and drained. */
+  async next(): Promise<string | undefined> {
+    while (this.queue.length === 0) {
+      if (this.closed) return undefined;
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+    }
+    return this.queue.shift();
+  }
+
+  /** Is the queue empty *and* the input gone? Then prompting would be theatre. */
+  get exhausted(): boolean {
+    return this.closed && this.queue.length === 0;
+  }
+
+  /**
+   * Route lines to `handler` until `detach()`. Lines already queued go first —
+   * a follow-up pasted as two lines means the second one for the task it starts.
+   */
+  attach(handler: (line: string) => void): void {
+    this.live = handler;
+    for (const line of this.queue.splice(0)) handler(line);
+  }
+
+  detach(): void {
+    this.live = null;
+  }
+
+  private notify(): void {
+    const wake = this.wake;
+    this.wake = null;
+    wake?.();
+  }
+}
+
+/** Ask for a line while no task runs — this read *is* modal. `undefined` on EOF. */
+function askLine(lines: LineSource, out: ChatIo["output"]): Promise<string | undefined> {
+  if (lines.exhausted) return Promise.resolve(undefined);
+  out.write(PROMPT);
+  return lines.next();
 }
 
 interface TaskSpec {
   model: string;
-  instruction: string;
+  /** The conversation so far; the last message is the instruction for this turn. */
+  messages: OpenAIMessage[];
   project?: string;
+}
+
+interface TurnResult {
+  /** Process exit code semantics: 0 succeeded, 1 failed, 130 interrupted. */
+  code: number;
+  /**
+   * The final answer, verbatim, when `code` is 0: the last text delta of an
+   * orchestrator stream, or the whole text of a pass-through one (see
+   * `chatCommand`). Empty when the stream carried no text at all.
+   */
+  answer: string;
 }
 
 async function runTask(
   rl: Interface,
+  lines: LineSource,
   out: ChatIo["output"],
   conn: Connection,
   fetchImpl: typeof globalThis.fetch,
   spec: TaskSpec,
-): Promise<number> {
+): Promise<TurnResult> {
   const abort = new AbortController();
   let stream: Awaited<ReturnType<typeof startChat>>;
   try {
     stream = await startChat(conn, fetchImpl, {
       model: spec.model,
-      messages: [{ role: "user", content: spec.instruction }],
+      messages: spec.messages,
       ...(spec.project !== undefined && { project: spec.project }),
       signal: abort.signal,
     });
   } catch (err) {
     if (err instanceof ChatStartError) {
       out.write(`${err.message}\n`);
-      return 1;
+      return { code: 1, answer: "" };
     }
     throw err;
   }
@@ -151,7 +265,7 @@ async function runTask(
       else if (approvals === 0) render("· nothing recognised — empty after parsing");
     });
   };
-  rl.on("line", onLine);
+  lines.attach(onLine);
 
   // Ctrl-C is a kill, and an honest one: cancel the task on the daemon (which
   // settles it and stops the spend), not just the local socket.
@@ -167,11 +281,18 @@ async function runTask(
   rl.on("SIGINT", onSigint);
 
   let failed = false;
+  // Kept apart from the line buffer, which merges deltas by row. For an
+  // orchestrator run the answer is the last delta alone (engine contract); for a
+  // pass-through model every delta is answer, so the whole text is.
+  let lastText = "";
+  let allText = "";
   const feed = feedLines();
   try {
     for await (const event of stream.events) {
       switch (event.type) {
         case "text":
+          lastText = event.text;
+          allText += event.text;
           for (const line of feed.push(event.text)) render(line);
           break;
         case "error":
@@ -190,16 +311,18 @@ async function runTask(
     if (!interrupted) throw err;
   } finally {
     for (const line of feed.flush()) render(line);
-    rl.off("line", onLine);
+    lines.detach();
     rl.off("SIGINT", onSigint);
     await steering.catch(() => undefined);
   }
 
   if (interrupted) {
     render("⊘ cancelled");
-    return 130;
+    return { code: 130, answer: "" };
   }
-  return failed ? 1 : 0;
+  if (failed) return { code: 1, answer: "" };
+  // The task id header is what marks an orchestrator run (see `streamOrchestration`).
+  return { code: 0, answer: taskId !== undefined ? lastText : allText };
 }
 
 /**
