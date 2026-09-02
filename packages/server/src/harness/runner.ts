@@ -25,8 +25,9 @@
  *  - **The money.** Harness spend never touches the router, so without a
  *    CostRecord it would be invisible to the task's cap. Every turn_end that
  *    reports a cost is written under the synthetic model id
- *    `harness/claude-code` with an all-null pricing snapshot — "the harness
- *    said so" is the snapshot, and `overBudget()` sees it at the next spawn.
+ *    `harness/<adapter id>` (e.g. `harness/claude-code`) with an all-null
+ *    pricing snapshot — "the harness said so" is the snapshot, and
+ *    `overBudget()` sees it at the next spawn.
  */
 import {
   type ModelId,
@@ -180,7 +181,7 @@ export async function runHarnessWorker(
           break;
         case "turn_end": {
           lastResult = { text: event.resultText, isError: event.isError };
-          recordTurnCost(ctx, run.id, event);
+          recordTurnCost(ctx, run.id, opts.adapter.id, event);
           drainInbox();
           // Anything forwarded during or at the end of this turn *may* start
           // the next one, so stdin stays open — but only under the grace
@@ -261,15 +262,27 @@ export async function runHarnessWorker(
 }
 
 /**
- * The synthetic id harness spend is recorded under. Passes ModelIdSchema by
- * construction (checked at module load — a rename that broke the regex would
- * fail the first import, not the first paying task).
+ * The synthetic id an adapter's spend is recorded under. Parsed through
+ * ModelIdSchema so an adapter id that broke the model-id shape fails at spawn
+ * time with a schema error, not at cost-query time with a corrupt row —
+ * adapter ids come from config, which enforces the same shape, so in practice
+ * this never throws.
  */
-export const HARNESS_COST_MODEL_ID: ModelId = ModelIdSchema.parse("harness/claude-code");
+export function harnessCostModelId(adapterId: string): ModelId {
+  return ModelIdSchema.parse(`harness/${adapterId}`);
+}
+
+/**
+ * The claude-code adapter's synthetic cost id. Checked at module load — a
+ * rename that broke the regex would fail the first import, not the first
+ * paying task.
+ */
+export const HARNESS_COST_MODEL_ID: ModelId = harnessCostModelId("claude-code");
 
 function recordTurnCost(
   ctx: WorkerContext,
   workerRunId: WorkerOutcome["workerRunId"],
+  adapterId: string,
   event: {
     costUsd: number | null;
     inputTokens: number | null;
@@ -284,7 +297,7 @@ function recordTurnCost(
     id: newCostRecordId(),
     taskId: ctx.taskId,
     workerRunId,
-    modelId: HARNESS_COST_MODEL_ID,
+    modelId: harnessCostModelId(adapterId),
     inputTokens: event.inputTokens ?? 0,
     outputTokens: event.outputTokens ?? 0,
     cacheReadTokens: event.cacheReadTokens ?? 0,

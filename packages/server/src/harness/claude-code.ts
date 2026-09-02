@@ -29,7 +29,12 @@
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { z } from "zod";
+import { EventQueue } from "./queue.js";
 import type { HarnessAdapter, HarnessEvent, HarnessSession, HarnessSpec } from "./types.js";
+
+// Re-exported because this file is where the queue was born; existing imports
+// (tests, tmux mirror) keep working while queue.ts is the canonical home.
+export { EventQueue } from "./queue.js";
 
 export interface ClaudeCodeOptions {
   /** Binary name or absolute path; resolved through PATH like any spawn. */
@@ -155,45 +160,6 @@ export function toEvents(line: string): HarnessEvent[] {
 /** A stream-json stdin frame: how both the task and every follow-up arrive. */
 export function userFrame(text: string): string {
   return `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
-}
-
-/**
- * The push-pull seam between a process's events and an AsyncIterable: the
- * process pushes, the runner pulls, whichever side arrives first waits for
- * the other. `close()` ends iteration after the queue drains, so a fatal
- * pushed just before close is still delivered — the "fatal is always last"
- * guarantee in types.ts rests on this ordering.
- */
-export class EventQueue {
-  private queue: HarnessEvent[] = [];
-  private wake: (() => void) | null = null;
-  private closed = false;
-
-  push(event: HarnessEvent): void {
-    if (this.closed) return;
-    this.queue.push(event);
-    this.wake?.();
-  }
-
-  close(): void {
-    this.closed = true;
-    this.wake?.();
-  }
-
-  async *events(): AsyncIterable<HarnessEvent> {
-    while (true) {
-      const next = this.queue.shift();
-      if (next !== undefined) {
-        yield next;
-        continue;
-      }
-      if (this.closed) return;
-      await new Promise<void>((resolve) => {
-        this.wake = resolve;
-      });
-      this.wake = null;
-    }
-  }
 }
 
 export function createClaudeCodeAdapter(opts: ClaudeCodeOptions): HarnessAdapter {

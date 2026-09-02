@@ -54,9 +54,40 @@ and why in this order.
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
-| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · more adapters (aider, codex, generic spec) in a later slice | 🔶 |
+| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
 
 ## Log
+
+### 2026-09-01 — any CLI is a harness (P2-M5, slice 4 — milestone complete)
+
+The generic adapter spec, and with it P2-M5 closes. A config entry —
+`{ id, binary, args, parse: "jsonl"|"plain", donePattern?, resumeArgs? }` under
+`harnesses.generic` — turns any CLI into a tier-3 harness, and everything downstream
+composes for free because the entry becomes an ordinary `HarnessAdapter`: the spawn gate,
+mid-run `send_to_worker`, the tmux mirror (the `mirrored()` decorator wraps generic
+adapters identically), `allowedHarnesses`, and cost visibility, now billed under
+`harness/<id>` via `harnessCostModelId()` (the claude-code constant is just the id
+applied).
+
+`parse: "jsonl"` is the generic *JSON* spec: NDJSON shaped like rewter's own harness
+events, lenient enough that a wrapper can emit only `{"type":"turn_end","resultText":…}`;
+unknown or unparseable lines are skipped, never thrown on, and `fatal` is deliberately
+not in the vocabulary — a process does not get to declare its own death. `parse: "plain"`
+maps stdout lines to `text`; a `donePattern` sentinel ends each turn (REPL multi-turn for
+free), and without one the process exit is the turn end — exit 0 succeeds with the
+accumulated stdout, non-zero fails with it or the stderr tail. `{instructions}`/`{cwd}`
+substitute in the argv array (no shell, no injection); no `{instructions}` mention means
+stdin delivery. `resumeArgs` (with `{sessionId}`) opts into restart re-adoption; a resume
+request without them is a loud fatal, never a silent fresh start. Config validation is
+up-front: ids are slash-free (so `harness/<id>` always parses as a ModelId), unique, and
+must not shadow `claude-code`; `donePattern` must compile and is plain-only.
+
+`EventQueue` moved to `harness/queue.ts` as the shared push-pull seam (re-exported from
+`claude-code.ts` for existing imports); its drain-before-close ordering is the
+fatal-is-last guarantee every adapter leans on. Tests follow the slice-1 doctrine: the
+pure `jsonlToEvents` carries the defensive-parsing promise, and the adapter is exercised
+against real stub processes (every parse mode, argv vs stdin delivery, sentinel and
+exit-as-turn-end, resume both ways, REPL multi-turn via `send()`, missing binary, kill).
 
 ### 2026-09-01 — harness sessions survive restarts (P2-M5, slice 3)
 

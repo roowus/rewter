@@ -188,9 +188,74 @@ export const HarnessesConfigSchema = z
         model: z.string().min(1).optional(),
       })
       .default({}),
+    /**
+     * The generic adapter spec: any CLI as a harness, described here instead
+     * of in code. `parse: "jsonl"` expects newline-delimited JSON shaped like
+     * rewter's own harness events (a five-line wrapper script adapts anything
+     * else); `parse: "plain"` treats stdout lines as progress, with either a
+     * `donePattern` sentinel ending each turn or — without one — the process
+     * exit as the turn end (exit 0 = success). `{instructions}` and `{cwd}`
+     * substitute inside `args`; without an `{instructions}` mention the task
+     * arrives on stdin. `resumeArgs` (with `{sessionId}`) opts a harness into
+     * restart re-adoption — absent, a resume request fails loudly.
+     */
+    generic: z
+      .array(
+        z
+          .object({
+            /**
+             * What `allowedHarnesses` lists and costs are billed under
+             * (`harness/<id>`). The shape is the model-id charset minus `/`,
+             * so the composite id always parses.
+             */
+            id: z
+              .string()
+              .regex(
+                /^[a-z0-9][a-z0-9._:-]*$/,
+                "harness id must be lowercase alphanumeric with . _ : - (no slashes)",
+              ),
+            displayName: z.string().min(1).optional(),
+            /** Absolute under launchd — there is no user PATH. */
+            binary: z.string().min(1),
+            args: z.array(z.string()).optional(),
+            parse: z.enum(["jsonl", "plain"]),
+            donePattern: z
+              .string()
+              .min(1)
+              .optional()
+              .refine(
+                (p) => {
+                  if (p === undefined) return true;
+                  try {
+                    new RegExp(p);
+                    return true;
+                  } catch {
+                    return false;
+                  }
+                },
+                { message: "donePattern must be a valid regular expression" },
+              ),
+            resumeArgs: z.array(z.string()).optional(),
+          })
+          .refine((e) => e.parse === "plain" || e.donePattern === undefined, {
+            message: 'donePattern only applies to parse: "plain"',
+          }),
+      )
+      .default([])
+      .refine(
+        (entries) => {
+          const ids = entries.map((e) => e.id);
+          return new Set(ids).size === ids.length && !ids.includes("claude-code");
+        },
+        {
+          message:
+            'generic harness ids must be unique and must not shadow the built-in "claude-code"',
+        },
+      ),
   })
   .default({});
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+export type GenericHarnessConfig = HarnessesConfig["generic"][number];
 
 export const ConfigSchema = z.object({
   /** Loopback by default: the daemon holds provider keys and gates nothing else. */

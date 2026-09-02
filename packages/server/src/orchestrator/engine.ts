@@ -44,7 +44,7 @@ import {
 } from "@rewter/shared";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
-import { HARNESS_COST_MODEL_ID, createHarnessRunner } from "../harness/runner.js";
+import { createHarnessRunner, harnessCostModelId } from "../harness/runner.js";
 import type { HarnessAdapter } from "../harness/types.js";
 import { renderDigest } from "../registry/digest.js";
 import { pinnedInitiator } from "../router/resolve.js";
@@ -961,12 +961,14 @@ class Session {
               "session. Spawn with tier 3, or omit resume_session_id.",
           };
         }
+        let harnessAdapterId: string | null = null;
         if (args.tier === 3) {
           // Answered before the work item exists: a refusal here is a tool
           // result the initiator can route around (use tier 2), not a worker
           // that spawns and instantly fails.
           const picked = this.pickHarness();
           if ("refusal" in picked) return { result: picked.refusal };
+          harnessAdapterId = picked.adapter.id;
         }
         if (this.overBudget()) {
           return {
@@ -981,8 +983,8 @@ class Session {
         // Tier 3 skips the registry: the harness brings its own model, and the
         // work item records the synthetic id its costs are billed under.
         let modelId: ModelId;
-        if (args.tier === 3) {
-          modelId = HARNESS_COST_MODEL_ID;
+        if (harnessAdapterId !== null) {
+          modelId = harnessCostModelId(harnessAdapterId);
         } else {
           try {
             modelId = this.o.router.resolve(args.model).model.id;

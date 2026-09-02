@@ -20,7 +20,7 @@ your client (Claude Code, curl, any OpenAI or Anthropic client)
 │  initiator AI plans, then fans out:               │
 │    ├─▶ cheap model   · tier 1: bare call          │
 │    ├─▶ agent worker  · tier 2: files/shell/web    │
-│    └─▶ harness       · tier 3: headless Claude Code│ (aider, codex: later)
+│    └─▶ harness       · tier 3: headless Claude Code│ or any CLI, by config
 │  approval gates ⏸ · live task tree · cost tracking│
 └───────────────────────────────────────────────────┘
          ▲ web dashboard: watch, approve, steer, kill
@@ -95,7 +95,7 @@ gates `/internal` and the dashboard (see
 the first **tier-3 harness** (headless Claude Code) on the seam built in phase 1 —
 *shipped: `spawn_worker` takes `tier: 3`, one approval gates the spawn ("run Claude Code
 in <dir>"), `send_to_worker` reaches the running session mid-turn, and its self-reported
-cost is metered under `harness/claude-code`; opt-in via `"harnesses": { "claudeCode":
+cost is metered under `harness/<id>`; opt-in via `"harnesses": { "claudeCode":
 { "enabled": true, "binary": "/abs/path/to/claude", "model": "…" } }` in the config —
 `binary` should be absolute (launchd has no user PATH) and `model` pins `--model` past
 the child's own settings, which can otherwise point it at a broken router alias. Every
@@ -105,8 +105,13 @@ prints `watch live: tmux attach -t rwtr_<runId>`, and mid-run steering shows up 
 { "enabled": true, "binary": "/opt/homebrew/bin/tmux" } }`). Harness sessions survive a
 daemon restart: an interrupted tier-3 run's session shows up in the next orchestration's
 prompt as resumable, and `spawn_worker`'s `resume_session_id` continues it via
-`claude --resume` with its full conversation intact. More adapters (aider, codex, a
-generic JSON spec) come in a later slice.*
+`claude --resume` with its full conversation intact. And **any other CLI is a harness by
+config**, no code required: a `"harnesses": { "generic": [{ "id": "aider", "binary":
+"/abs/path", "args": ["--message", "{instructions}", "--yes"], "parse": "plain",
+"donePattern": "^Applied edits" }] }` entry gets the same gate, steering, mirror, and
+metering — `parse: "jsonl"` for tools that can emit rewter's event shapes (or a five-line
+wrapper), `parse: "plain"` for everything else, with either a done-pattern sentinel or
+the process exit ending the turn.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and

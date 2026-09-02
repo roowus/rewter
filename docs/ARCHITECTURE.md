@@ -49,7 +49,7 @@ The initiator picks the *cheapest sufficient* tier per subtask:
 |---|---|---|
 | 1 | Bare LLM call (text/vision in → text out) | Phase 1 |
 | 2 | rewter's own agent loop with tools (file r/w, shell, web) in a task workspace | Phase 1 |
-| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility; slice 2: `tmux attach -t rwtr_<runId>` live mirror; slice 3: restart re-adoption via `--resume`); more adapters (aider, codex, generic spec) in a later slice | Phase 2 (slices 1–3 shipped) |
+| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility; slice 2: `tmux attach -t rwtr_<runId>` live mirror; slice 3: restart re-adoption via `--resume`; slice 4: the generic adapter spec — any CLI as a harness by config, so aider/codex are config entries, not code) | Phase 2 (slices 1–4 shipped) |
 
 ## Control model
 
@@ -2180,8 +2180,9 @@ transition) only manages the three edges the process cannot:
   never done.
 - **The money.** Harness spend never touches the router, so without a CostRecord it
   would be invisible to the task's budget cap. Every `turn_end` that reports cost or
-  tokens lands a CostRecord under the synthetic model id **`harness/claude-code`**
-  (`HARNESS_COST_MODEL_ID`, checked against `ModelIdSchema` at module load) with an
+  tokens lands a CostRecord under the synthetic model id **`harness/<adapter id>`**
+  (`harnessCostModelId()`, checked against `ModelIdSchema`; `harness/claude-code` for the
+  first-class adapter) with an
   all-null pricing snapshot — "the harness said so" is the snapshot — and `overBudget()`
   sees it at the next spawn. A turn that reports nothing lands nothing.
 
@@ -2194,7 +2195,8 @@ a lifecycle transition — it emits no event), which is the seam
 `spawn_worker` now accepts `tier: 3` (`ORCHESTRATOR_TOOLS_VERSION 6`,
 `ORCHESTRATOR_PROMPT_VERSION 6`: the ladder describes tier 3 as an external coding agent
 that brings its own model — `model` is ignored, the work item is recorded under
-`harness/claude-code` and the registry resolve is skipped — and always pauses for
+`harness/<id>` of whichever adapter `pickHarness()` selects and the registry resolve is
+skipped — and always pauses for
 approval unless auto-approve is on; if refused, fall back to tier 2). Two pre-spawn gates
 return tool-*result* refusals rather than throws, so the initiator can re-plan in one
 turn:
@@ -2303,8 +2305,65 @@ attempt died), while the *session* — the harness's conversation with its full 
 is offered to a new run under a new task. Nothing auto-resumes; a fresh task whose work
 continues the old one gets the offer, and the model decides.
 
-Still to come in a later slice: the generic JSON adapter spec (command template,
-output-parse mode `jsonl|plain`, done-pattern) so any CLI harness is addable by config.
+### The generic adapter spec (P2-M5 slice 4)
+
+Any CLI is a harness now, described in config instead of in code
+(`server/src/harness/generic.ts`). The slice-1 promise made good: aider, codex, or a
+five-line wrapper script are config entries, and everything downstream — the runner, the
+spawn gate, mid-run `send_to_worker`, the tmux mirror, cost visibility, `allowedHarnesses`
+— composes for free, because a generic adapter is just another `HarnessAdapter` in the
+daemon's list.
+
+```jsonc
+"harnesses": {
+  "generic": [{
+    "id": "aider",                          // allowedHarnesses key; costs bill to harness/aider
+    "displayName": "Aider",                 // optional; defaults to the id
+    "binary": "/opt/homebrew/bin/aider",    // absolute under launchd — no user PATH
+    "args": ["--message", "{instructions}", "--yes"],
+    "parse": "plain",                       // or "jsonl"
+    "donePattern": "^Applied edits",        // plain-only; optional
+    "resumeArgs": ["--restore-chat-history"] // opts into restart re-adoption; optional
+  }]
+}
+```
+
+**Two parse modes.** `parse: "jsonl"` is the generic *JSON* adapter spec: the process
+emits newline-delimited JSON shaped like rewter's own harness events (`session`, `text`,
+`tool_use`, `turn_end` — lenient, so a minimal wrapper can emit nothing but
+`{"type":"turn_end","resultText":"done"}`). Lines that don't parse or aren't recognized
+are skipped, never thrown on — stray log output through the same pipe costs nothing.
+`fatal` is deliberately **not** in the spec: a process does not get to declare its own
+death; exits and spawn failures own that, exactly as they do for Claude Code.
+`parse: "plain"` treats stdout lines as `text` progress. With a `donePattern` (a regex,
+validated at config load), a matching line is a sentinel: the turn ends with the
+accumulated lines as its result, the sentinel excluded, and the accumulator resets — a
+REPL-style CLI gets multi-turn steering for free. Without one, the **process exit is the
+turn end**: exit 0 succeeds with the accumulated stdout as the result, non-zero fails
+with it (or with the stderr tail when stdout was empty).
+
+**Delivery and substitution.** `{instructions}` and `{cwd}` substitute inside `args`;
+when no arg mentions `{instructions}`, the task arrives on stdin followed by a newline.
+Follow-ups (`send()`) are always plain stdin lines. Substitution happens in the argv
+array — there is no shell, so instructions cannot inject. Unlike the Claude Code adapter,
+the environment passes through **untouched**: the `ANTHROPIC_*` strip is a
+claude-code-specific recursion hazard, and a generic CLI's env is its own business.
+
+**Resume honesty.** `resumeArgs` (with `{sessionId}` substituted) opts a harness into
+[restart re-adoption](#restart-re-adoption-p2-m5-slice-3); they are appended only when
+resuming. A resume request against a harness *without* `resumeArgs` is a loud `fatal`,
+never a silent fresh start — pretending otherwise would hand the initiator a stranger
+claiming to remember.
+
+**Config validation up front.** Ids are lowercase-alphanumeric with `._:-` and **no
+slash** (the composite `harness/<id>` must always parse as a ModelId), must be unique,
+and must not shadow the built-in `claude-code`; `donePattern` must compile as a regex and
+only applies to `parse: "plain"`. In the daemon's adapter list, generic entries come
+*after* claude-code — `pickHarness()` is first-allowed-wins, so a config that enables
+both prefers the first-class adapter unless a project's `allowedHarnesses` says
+otherwise. The shared `EventQueue` moved to `harness/queue.ts` (still re-exported from
+`claude-code.ts`), since its drain-before-close ordering is the fatal-is-last guarantee
+every adapter leans on.
 
 ## API surface
 

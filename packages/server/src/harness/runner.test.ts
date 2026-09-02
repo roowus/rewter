@@ -34,7 +34,12 @@ import { EventBus } from "../events/bus.js";
 import type { WorkerContext, WorkerRouter } from "../orchestrator/worker.js";
 import { Approvals } from "../workers/approvals.js";
 import { EventQueue } from "./claude-code.js";
-import { HARNESS_COST_MODEL_ID, type HarnessRunnerOptions, runHarnessWorker } from "./runner.js";
+import {
+  HARNESS_COST_MODEL_ID,
+  type HarnessRunnerOptions,
+  harnessCostModelId,
+  runHarnessWorker,
+} from "./runner.js";
 import type { HarnessAdapter, HarnessEvent, HarnessSession, HarnessSpec } from "./types.js";
 
 let db: Db;
@@ -478,7 +483,8 @@ describe("money", () => {
     const costs = repos.listCosts(taskId);
     expect(costs).toHaveLength(1);
     const cost = costs[0];
-    expect(cost?.modelId).toBe(HARNESS_COST_MODEL_ID);
+    // Billed under the *spawning* adapter's id — the fake's, not claude-code's.
+    expect(cost?.modelId).toBe(harnessCostModelId("fake"));
     expect(cost?.costUsd).toBe(0.37);
     expect(cost?.inputTokens).toBe(1200);
     expect(cost?.outputTokens).toBe(300);

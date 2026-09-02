@@ -194,6 +194,92 @@ describe("loadConfig", () => {
   });
 });
 
+describe("harnesses.generic", () => {
+  it("defaults to an empty list — no config, no generic harnesses", () => {
+    const { config } = loadConfig({ env: { HOME: dir } });
+    expect(config.harnesses.generic).toEqual([]);
+  });
+
+  it("accepts a full entry and preserves every field", () => {
+    const path = writeConfig({
+      harnesses: {
+        generic: [
+          {
+            id: "aider",
+            displayName: "Aider",
+            binary: "/opt/homebrew/bin/aider",
+            args: ["--message", "{instructions}", "--yes"],
+            parse: "plain",
+            donePattern: "^Applied edits",
+            resumeArgs: ["--restore-chat-history"],
+          },
+        ],
+      },
+    });
+    const { config } = loadConfig({ path, env: {} });
+    const entry = config.harnesses.generic[0];
+    expect(entry?.id).toBe("aider");
+    expect(entry?.displayName).toBe("Aider");
+    expect(entry?.binary).toBe("/opt/homebrew/bin/aider");
+    expect(entry?.args).toEqual(["--message", "{instructions}", "--yes"]);
+    expect(entry?.parse).toBe("plain");
+    expect(entry?.donePattern).toBe("^Applied edits");
+    expect(entry?.resumeArgs).toEqual(["--restore-chat-history"]);
+  });
+
+  it("a minimal jsonl entry needs only id, binary, and parse", () => {
+    const path = writeConfig({
+      harnesses: { generic: [{ id: "mytool", binary: "/usr/local/bin/mytool", parse: "jsonl" }] },
+    });
+    const { config } = loadConfig({ path, env: {} });
+    expect(config.harnesses.generic[0]?.id).toBe("mytool");
+  });
+
+  it("rejects an id with a slash — it must compose into harness/<id>", () => {
+    // The composite cost model id is `harness/<id>`; a slash inside the id
+    // would make it unparseable as a ModelId.
+    const path = writeConfig({
+      harnesses: { generic: [{ id: "my/tool", binary: "x", parse: "plain" }] },
+    });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/lowercase alphanumeric/);
+  });
+
+  it("rejects duplicate ids", () => {
+    const path = writeConfig({
+      harnesses: {
+        generic: [
+          { id: "twin", binary: "a", parse: "plain" },
+          { id: "twin", binary: "b", parse: "plain" },
+        ],
+      },
+    });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/unique/);
+  });
+
+  it('rejects an entry that shadows the built-in "claude-code"', () => {
+    // Costs, allowedHarnesses, and re-adoption all key on the id; letting a
+    // config entry claim "claude-code" would silently split that identity.
+    const path = writeConfig({
+      harnesses: { generic: [{ id: "claude-code", binary: "x", parse: "jsonl" }] },
+    });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/claude-code/);
+  });
+
+  it("rejects a donePattern that is not a valid regular expression", () => {
+    const path = writeConfig({
+      harnesses: { generic: [{ id: "t", binary: "x", parse: "plain", donePattern: "([" }] },
+    });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/valid regular expression/);
+  });
+
+  it("rejects a donePattern on a jsonl entry — the sentinel is a plain-mode idea", () => {
+    const path = writeConfig({
+      harnesses: { generic: [{ id: "t", binary: "x", parse: "jsonl", donePattern: "^DONE$" }] },
+    });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/only applies to parse/);
+  });
+});
+
 describe("isLoopbackHost", () => {
   it("recognizes the loopback spellings", () => {
     expect(isLoopbackHost("127.0.0.1")).toBe(true);

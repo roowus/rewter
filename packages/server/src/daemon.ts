@@ -24,6 +24,7 @@ import { type Db, openDb } from "./db/connection.js";
 import { Repos } from "./db/repos.js";
 import { EventBus } from "./events/bus.js";
 import { createClaudeCodeAdapter } from "./harness/claude-code.js";
+import { createGenericAdapter } from "./harness/generic.js";
 import { withTmuxMirror } from "./harness/tmux.js";
 import type { HarnessAdapter } from "./harness/types.js";
 import { buildApp } from "./http/app.js";
@@ -248,19 +249,27 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // a daemon whose owner never enabled a harness. Each adapter is wrapped in
     // the tmux mirror when enabled; the wrapper hands back the adapter
     // untouched on a machine without tmux, so this is safe to apply blindly.
-    harnesses: config.harnesses.claudeCode.enabled
-      ? [
-          mirrored(
-            createClaudeCodeAdapter({
-              binary: config.harnesses.claudeCode.binary,
-              permissionMode: config.harnesses.claudeCode.permissionMode,
-              model: config.harnesses.claudeCode.model,
-            }),
-            config,
-            home,
-          ),
-        ]
-      : [],
+    harnesses: [
+      ...(config.harnesses.claudeCode.enabled
+        ? [
+            mirrored(
+              createClaudeCodeAdapter({
+                binary: config.harnesses.claudeCode.binary,
+                permissionMode: config.harnesses.claudeCode.permissionMode,
+                model: config.harnesses.claudeCode.model,
+              }),
+              config,
+              home,
+            ),
+          ]
+        : []),
+      // Generic entries come after claude-code: pickHarness is first-allowed-
+      // wins, so a config that enables both prefers the first-class adapter
+      // unless a project's allowedHarnesses says otherwise.
+      ...config.harnesses.generic.map((entry) =>
+        mirrored(createGenericAdapter(entry), config, home),
+      ),
+    ],
     maxTurns: config.orchestrator.maxTurns,
     maxHandoffs: config.orchestrator.maxHandoffs,
     defaultSettings: {
