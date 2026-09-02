@@ -235,6 +235,24 @@ describe("the happy path", () => {
     expect(progress).toEqual(["reading the code", 'Bash {"command":"ls"}']);
   });
 
+  it("threads the context's resume session id into the spawn spec", async () => {
+    // Slice 3: this is the last hop before the adapter turns it into
+    // `--resume`. Dropped here, the initiator's resume request would silently
+    // start a fresh conversation.
+    const { adapter, calls } = fakeAdapter([turnEnd()]);
+    const ctx = { ...makeContext(), resumeSessionId: "sess_prev" };
+
+    const outcome = await runHarnessWorker(ctx, options(adapter));
+
+    expect(outcome.status).toBe("succeeded");
+    expect(calls.spawns[0]?.resumeSessionId).toBe("sess_prev");
+
+    // And a context without one spawns without one.
+    const fresh = fakeAdapter([turnEnd()]);
+    await runHarnessWorker(makeContext(), options(fresh.adapter));
+    expect(fresh.calls.spawns[0]?.resumeSessionId).toBeUndefined();
+  });
+
   it("falls back to the head of the result when there is no SUMMARY line", async () => {
     const { adapter } = fakeAdapter([turnEnd({ resultText: "just some prose about the work" })]);
     const outcome = await runHarnessWorker(makeContext(), options(adapter));

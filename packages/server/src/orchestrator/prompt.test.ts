@@ -31,7 +31,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(5);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(6);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {
@@ -59,6 +59,11 @@ describe("the core prompt", () => {
     expect(ladder).toContain("approval");
     expect(ladder).toContain("fall back to tier 2");
     expect(ladder).toContain("send_to_worker");
+    // P2-M5 slice 3: the ladder is where the model learns what a "resumable
+    // harness session" in the task header is for. Without this paragraph the
+    // header lists ids the model has never been told how to use.
+    expect(ladder).toContain("resume_session_id");
+    expect(ladder).toContain("do not resume one whose directory does not match");
   });
 
   it("teaches every behaviour the engine relies on the model knowing", () => {
@@ -188,6 +193,39 @@ describe("buildInitiatorMessages", () => {
         ...(skillsDigest === undefined ? {} : { skillsDigest }),
       });
       expect(without[0]?.content).not.toContain("Skills available");
+    }
+  });
+
+  it("lists resumable harness sessions in the per-task region, with id, title and cwd", () => {
+    // The session ids differ per boot, so the block lives after the cache
+    // breakpoint with the other per-task sections. Each line carries the cwd
+    // because a resume continues in that directory — the ladder tells the model
+    // not to resume one whose directory does not match the work.
+    const messages = buildInitiatorMessages({
+      digest: DIGEST,
+      conversation: CONVERSATION,
+      taskId: "task_abc",
+      resumableSessions: [
+        { sessionId: "0aa6c2f1-e91c-4e6e", title: "refactor the parser", cwd: "/tmp/ws/task_old" },
+      ],
+    });
+    const text = messages[0]?.content ?? "";
+    expect(text).toContain("Resumable harness sessions");
+    expect(text).toContain(
+      '- 0aa6c2f1-e91c-4e6e — "refactor the parser" — worked in /tmp/ws/task_old',
+    );
+    expect(text).toContain("resume_session_id");
+    expect(text.indexOf("Resumable harness sessions")).toBeGreaterThan(text.indexOf(DIGEST));
+
+    // Absent or empty renders nothing at all — same rule as the skills digest.
+    for (const resumableSessions of [undefined, [] as never[]]) {
+      const without = buildInitiatorMessages({
+        digest: DIGEST,
+        conversation: CONVERSATION,
+        taskId: "task_abc",
+        ...(resumableSessions === undefined ? {} : { resumableSessions }),
+      });
+      expect(without[0]?.content).not.toContain("Resumable harness sessions");
     }
   });
 });

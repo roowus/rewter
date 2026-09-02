@@ -29,9 +29,11 @@ import {
   SkillSlugSchema,
   type StreamChunk,
   type TaskId,
+  TaskSettingsSchema,
   newCostRecordId,
   newProjectId,
   newTaskId,
+  newWorkItemId,
   newWorkerRunId,
 } from "@rewter/shared";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -661,6 +663,50 @@ describe("failures the initiator can recover from", () => {
     const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
     expect(sent).toContain("does not allow");
     expect(sent).toContain("tier 2");
+  });
+
+  it("refuses resume_session_id below tier 3 — only a harness has a session", async () => {
+    const h = makeHarness(
+      [
+        turn({
+          name: "spawn_worker",
+          args: { title: "x", model: SMALL, instructions: "x", tier: 2, resume_session_id: "s1" },
+        }),
+        turn({ name: "finish", args: { answer: "spawned properly instead" } }),
+      ],
+      { harnesses: [stubHarnessAdapter("claude-code")] },
+    );
+
+    await drive(h);
+    // A refusal, not a silent drop: the initiator asked for a resumed
+    // conversation and would otherwise believe it got one.
+    expect(h.spawned).toHaveLength(0);
+    const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
+    expect(sent).toContain("resume_session_id only applies to tier 3");
+  });
+
+  it("threads resume_session_id into the tier-3 worker's context", async () => {
+    const h = makeHarness(
+      [
+        turn({
+          name: "spawn_worker",
+          args: {
+            title: "continue the refactor",
+            model: "whatever",
+            instructions: "verify what was done, then finish",
+            tier: 3,
+            resume_session_id: "sess_prev",
+          },
+        }),
+        turn({ name: "wait", args: {} }),
+        turn({ name: "finish", args: { answer: "continued" } }),
+      ],
+      { harnesses: [stubHarnessAdapter("claude-code")] },
+    );
+
+    await drive(h);
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]?.resumeSessionId).toBe("sess_prev");
   });
 
   it("nudges a model that answered in prose, then accepts the prose", async () => {
@@ -1322,6 +1368,110 @@ describe("skills", () => {
     await drive(h);
     // A project-less task never sees another project's skills.
     expect(h.adapter.requests[0]?.messages[0]?.content ?? "").not.toContain("theirs");
+  });
+});
+
+describe("resumable harness sessions", () => {
+  const finishTurn = (): StreamChunk[] => turn({ name: "finish", args: { answer: "ok" } });
+
+  /** An earlier task whose tier-3 run a "restart" left interrupted. */
+  function seedInterruptedRun(over: { workspaceDir?: string } = {}): TaskId {
+    const now = ++tick;
+    const task = repos.createTask({
+      id: newTaskId(),
+      status: "pending",
+      title: "the earlier task",
+      initiatorModelId: ModelIdSchema.parse(BIG),
+      projectId: null,
+      conversationFingerprint: `fp_prev_${now}`,
+      settings: TaskSettingsSchema.parse(
+        over.workspaceDir === undefined ? {} : { workspaceDir: over.workspaceDir },
+      ),
+      resultSummary: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      finishedAt: null,
+    });
+    const wi = repos.createWorkItem({
+      id: newWorkItemId(),
+      taskId: task.id,
+      parentWorkItemId: null,
+      status: "pending",
+      title: "refactor the parser",
+      instructions: "x",
+      modelId: HARNESS_COST_MODEL_ID,
+      tier: 3,
+      resultSummary: null,
+      error: null,
+      createdAt: tick,
+      updatedAt: tick,
+      finishedAt: null,
+    });
+    const run = repos.createWorkerRun({
+      id: newWorkerRunId(),
+      workItemId: wi.id,
+      taskId: task.id,
+      status: "created",
+      modelId: HARNESS_COST_MODEL_ID,
+      tier: 3,
+      attempt: 1,
+      harnessSessionId: null,
+      resultText: null,
+      error: null,
+      createdAt: tick,
+      updatedAt: tick,
+      finishedAt: null,
+    });
+    repos.transitionWorkerRun(run.id, "streaming", { harnessSessionId: "sess_prev" });
+    repos.transitionWorkerRun(run.id, "interrupted");
+    return task.id;
+  }
+
+  it("offers an interrupted session in the header, with the directory it worked in", async () => {
+    seedInterruptedRun({ workspaceDir: "/Users/x/projects/thing" });
+    const h = makeHarness([finishTurn()], {
+      harnesses: [stubHarnessAdapter("claude-code")],
+      workspacesDir: "/tmp/ws",
+    });
+    await drive(h);
+
+    const system = h.adapter.requests[0]?.messages[0]?.content ?? "";
+    expect(system).toContain("Resumable harness sessions");
+    expect(system).toContain(
+      '- sess_prev — "refactor the parser" — worked in /Users/x/projects/thing',
+    );
+  });
+
+  it("computes the default per-task directory when the task had no workspaceDir", async () => {
+    const prevTaskId = seedInterruptedRun();
+    const h = makeHarness([finishTurn()], {
+      harnesses: [stubHarnessAdapter("claude-code")],
+      workspacesDir: "/tmp/ws",
+    });
+    await drive(h);
+
+    const system = h.adapter.requests[0]?.messages[0]?.content ?? "";
+    expect(system).toContain(`worked in /tmp/ws/${prevTaskId}`);
+  });
+
+  it("offers nothing when tier 3 cannot run — no harness, no header", async () => {
+    // A header offering a resume that spawn_worker would refuse teaches the
+    // initiator to distrust the header.
+    seedInterruptedRun();
+    const h = makeHarness([finishTurn()]);
+    await drive(h);
+    expect(h.adapter.requests[0]?.messages[0]?.content ?? "").not.toContain(
+      "Resumable harness sessions",
+    );
+  });
+
+  it("offers nothing when there is nothing to resume", async () => {
+    const h = makeHarness([finishTurn()], { harnesses: [stubHarnessAdapter("claude-code")] });
+    await drive(h);
+    expect(h.adapter.requests[0]?.messages[0]?.content ?? "").not.toContain(
+      "Resumable harness sessions",
+    );
   });
 });
 

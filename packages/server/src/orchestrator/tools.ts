@@ -24,7 +24,7 @@ import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 5;
+export const ORCHESTRATOR_TOOLS_VERSION = 6;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -49,6 +49,7 @@ export const SpawnWorkerArgs = z.object({
   model: z.string().trim().min(1),
   instructions: z.string().trim().min(1),
   tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(1),
+  resume_session_id: z.string().trim().min(1).max(200).optional(),
 });
 
 export const WaitArgs = z.object({
@@ -144,6 +145,13 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
               "reserve it for substantial multi-file coding work; starting one may pause " +
               "for the user's approval.",
           },
+          resume_session_id: str(
+            "Tier 3 only: resume an interrupted harness session instead of starting fresh. " +
+              "Use the session id the task header lists under resumable sessions. The harness " +
+              "reloads its previous conversation, so write instructions that continue the " +
+              "work — verify what was already done, then finish — rather than restating the " +
+              "original task.",
+          ),
         },
         required: ["title", "model", "instructions"],
       },

@@ -49,7 +49,7 @@ The initiator picks the *cheapest sufficient* tier per subtask:
 |---|---|---|
 | 1 | Bare LLM call (text/vision in → text out) | Phase 1 |
 | 2 | rewter's own agent loop with tools (file r/w, shell, web) in a task workspace | Phase 1 |
-| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility; slice 2: `tmux attach -t rwtr_<runId>` live mirror); restart re-adoption and more adapters (aider, codex, generic spec) in later slices | Phase 2 (slices 1–2 shipped) |
+| 3 | External harness session — headless Claude Code **live** (P2-M5 slice 1: direct process, mid-run `send()`, spawn gate, cost visibility; slice 2: `tmux attach -t rwtr_<runId>` live mirror; slice 3: restart re-adoption via `--resume`); more adapters (aider, codex, generic spec) in a later slice | Phase 2 (slices 1–3 shipped) |
 
 ## Control model
 
@@ -1564,7 +1564,11 @@ promises parked on pending approvals, the open upstream sockets. None of that su
 tier-2 worker killed mid-`shell` has an unknown amount of its command already applied to the
 filesystem, so replaying the event log would re-run side effects that already happened.
 Marking interrupted keeps the whole history — every event is still there for the fold — and
-lets the user decide whether to ask again.
+lets the user decide whether to ask again. The one exception is a tier-3 harness
+*session*: its conversation lives on the harness's own disk, not in daemon memory, so an
+interrupted run with a `harnessSessionId` is offered to the next orchestration as
+resumable — see [restart re-adoption](#restart-re-adoption-p2-m5-slice-3). The run still
+closes `interrupted`; only the conversation survives.
 
 Three properties the implementation is built around:
 
@@ -2182,13 +2186,13 @@ transition) only manages the three edges the process cannot:
   sees it at the next spawn. A turn that reports nothing lands nothing.
 
 The `session` event's id is persisted to `WorkerRun.harnessSessionId` (a data patch, not
-a lifecycle transition — it emits no event), which is the seam a later slice uses to
-re-adopt sessions across a daemon restart.
+a lifecycle transition — it emits no event), which is the seam
+[restart re-adoption](#restart-re-adoption-p2-m5-slice-3) rides across a daemon restart.
 
 ### Engine wiring and config
 
-`spawn_worker` now accepts `tier: 3` (`ORCHESTRATOR_TOOLS_VERSION 5`,
-`ORCHESTRATOR_PROMPT_VERSION 5`: the ladder describes tier 3 as an external coding agent
+`spawn_worker` now accepts `tier: 3` (`ORCHESTRATOR_TOOLS_VERSION 6`,
+`ORCHESTRATOR_PROMPT_VERSION 6`: the ladder describes tier 3 as an external coding agent
 that brings its own model — `model` is ignored, the work item is recorded under
 `harness/claude-code` and the registry resolve is skipped — and always pauses for
 approval unless auto-approve is on; if refused, fall back to tier 2). Two pre-spawn gates
@@ -2259,14 +2263,48 @@ no-op):
 Same launchd lesson as the harness binary: no user PATH, so a Homebrew tmux needs the
 absolute `/opt/homebrew/bin/tmux` here.
 
-Restart re-adoption (the next slice) does **not** depend on tmux: the child is still the
-daemon's child and dies with it. Re-adoption rides the persisted `harnessSessionId` and
-the harness's own resume mechanism (`claude --resume`), which survives daemon death
-precisely because it needs no living process.
+Restart re-adoption does **not** depend on tmux: the child is still the daemon's child
+and dies with it. Re-adoption rides the persisted `harnessSessionId` and the harness's
+own resume mechanism (`claude --resume`), which survives daemon death precisely because
+it needs no living process.
 
-Still to come in later slices: restart re-adoption via the persisted session id, and the
-generic JSON adapter spec (command template, output-parse mode `jsonl|plain`,
-done-pattern) so any CLI harness is addable by config.
+### Restart re-adoption (P2-M5 slice 3)
+
+A daemon restart kills every harness child, and
+[boot reconciliation](#boot-reconciliation-m8) closes their runs as `interrupted` — that part is unchanged, and deliberately so: the
+run's liveness (process, pipes, parked promises) genuinely died. What survives is the
+harness's own on-disk conversation, addressed by the persisted `harnessSessionId`. So
+re-adoption is **not** boot cleanup silently restarting work; it is an *offer* to the
+next orchestration. Resuming is a decision about new work, so it belongs to the model
+that plans new work, not to the reconciler.
+
+The pipeline, hop by hop:
+
+1. **Discovery** — `Repos.listResumableHarnessSessions()` returns the newest interrupted
+   tier-3 runs that carry a session id (limit 5), joined to the work-item title and the
+   task's `workspaceDir` so the offer is legible: what was it doing, and where.
+2. **Gating** — the engine only renders the offer when `pickHarness()` would let a
+   spawn succeed. A header offering a resume that `spawn_worker` would refuse teaches
+   the initiator to distrust the header.
+3. **The prompt header** — a per-task "Resumable harness sessions" block (after the
+   digest, so it never breaks the prompt cache; absent entirely when there is nothing to
+   offer) lists `- <sessionId> — "<title>" — worked in <cwd>`. The cwd is
+   `workspaceDir ?? <workspacesDir>/<taskId>` — the same rule `openWorkspace` uses —
+   and it is printed because a resumed conversation continues *in that directory*; the
+   ladder tells the model not to resume one whose directory does not match the work.
+4. **The tool** — `spawn_worker` grew `resume_session_id` (tools/prompt version 6).
+   Below tier 3 it is a tool-result refusal, not a throw: only a harness has a session.
+5. **The spawn** — the runner threads it into the `HarnessSpec`, and the Claude Code
+   adapter turns it into `--resume <id>` on argv. The harness reloads its own
+   conversation; rewter never replays anything.
+
+The run/session split is the whole design: the *run* stays `interrupted` (honest — that
+attempt died), while the *session* — the harness's conversation with its full context —
+is offered to a new run under a new task. Nothing auto-resumes; a fresh task whose work
+continues the old one gets the offer, and the model decides.
+
+Still to come in a later slice: the generic JSON adapter spec (command template,
+output-parse mode `jsonl|plain`, done-pattern) so any CLI harness is addable by config.
 
 ## API surface
 

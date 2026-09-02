@@ -56,6 +56,15 @@ export interface WorkerContext {
    * rather than dropping the message silently.
    */
   inbox?: (() => string[]) | undefined;
+  /**
+   * Tier 3 only: resume a previous harness session instead of starting fresh.
+   * The value is a prior run's `harnessSessionId` — persisted, so it survives
+   * a daemon restart where every in-memory handle (the process, the abort
+   * tree, the streams) did not. Per work item for the same reason `inbox` is:
+   * the harness runner is created once per task, so per-spawn data has to
+   * ride the context. Tiers 1 and 2 ignore it.
+   */
+  resumeSessionId?: string | undefined;
 }
 
 export interface WorkerOutcome {

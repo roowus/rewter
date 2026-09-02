@@ -66,7 +66,7 @@ describe("the tool surface", () => {
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(5);
+    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(6);
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {

@@ -102,8 +102,11 @@ the child's own settings, which can otherwise point it at a broken router alias.
 harness run is also mirrored into a detached tmux session — the first progress line
 prints `watch live: tmux attach -t rwtr_<runId>`, and mid-run steering shows up there as
 `⇄ user:` lines; missing tmux simply means no mirror (config: `"harnesses": { "tmux":
-{ "enabled": true, "binary": "/opt/homebrew/bin/tmux" } }`). Restart re-adoption and
-more adapters come in later slices.*
+{ "enabled": true, "binary": "/opt/homebrew/bin/tmux" } }`). Harness sessions survive a
+daemon restart: an interrupted tier-3 run's session shows up in the next orchestration's
+prompt as resumable, and `spawn_worker`'s `resume_session_id` continues it via
+`claude --resume` with its full conversation intact. More adapters (aider, codex, a
+generic JSON spec) come in a later slice.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and

@@ -54,9 +54,38 @@ and why in this order.
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
 | P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ — live acceptance pending | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
-| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption + more adapters in later slices | 🔶 |
+| P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · more adapters (aider, codex, generic spec) in a later slice | 🔶 |
 
 ## Log
+
+### 2026-09-01 — harness sessions survive restarts (P2-M5, slice 3)
+
+A daemon restart used to be the end of a tier-3 conversation: reconciliation closed the
+run `interrupted` and the harness's context was stranded on disk. Now the persisted
+`harnessSessionId` completes its purpose. `Repos.listResumableHarnessSessions()` surfaces
+the newest interrupted tier-3 runs (with the work-item title and the task's workspace
+dir), the engine renders them into a per-task "Resumable harness sessions" prompt header
+— only when `pickHarness()` would let a spawn succeed, because a header offering a resume
+that `spawn_worker` would refuse teaches the initiator to distrust the header — and
+`spawn_worker` grew `resume_session_id` (tools/prompt version 6), which the runner threads
+into the spawn spec and the Claude Code adapter turns into `--resume <id>`. The harness
+reloads its own on-disk conversation; rewter replays nothing.
+
+The design line that settled everything: reconciliation still closes the *run* as
+`interrupted` — that attempt's liveness genuinely died — but the *session* is offered to
+the next orchestration. Resuming is a decision about new work, so it belongs to the model
+that plans new work, not to boot cleanup. Nothing auto-resumes.
+
+Each header line prints the session's working directory (`workspaceDir ?? workspaces/<taskId>`,
+the same rule `openWorkspace` uses) and the ladder says not to resume a session whose
+directory does not match the work — a resumed conversation continues in that directory.
+Below tier 3, `resume_session_id` is a tool-result refusal, not a throw: only a harness
+has a session.
+
+Tests cover every hop: the repos query (exclusions, order, limit, workspaceDir), the
+prompt block (rendering, ordering after the digest, absent-when-empty), the ladder
+teaching, the engine gate + context threading, the runner spec threading, and the
+adapter's argv (`--resume` present and absent).
 
 ### 2026-09-01 — watch a harness live: the tmux mirror (P2-M5, slice 2)
 

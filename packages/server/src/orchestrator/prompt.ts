@@ -19,7 +19,7 @@
 import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 5;
+export const ORCHESTRATOR_PROMPT_VERSION = 6;
 
 /**
  * Prefix on a mid-run message from the initiator to a tier-2 worker.
@@ -75,6 +75,12 @@ Pick the cheapest tier that can do the job.
   brings its own model; pass any string). Starting one always pauses for the user's
   approval unless auto-approve is on. If tier 3 is refused, fall back to tier 2 or do
   the work yourself. Like tier 2, it can be messaged mid-run via \`send_to_worker\`.
+  If the task header lists **resumable harness sessions** — tier-3 conversations a
+  daemon restart cut short — and this task plainly continues one of them, spawn tier 3
+  with that session's id as \`resume_session_id\`: the harness reloads its previous
+  conversation, so write instructions that continue the work (verify what was already
+  done, then finish) rather than restating it. A resumed session works in the directory
+  listed with it; do not resume one whose directory does not match the work.
 
 # Steering a running worker
 
@@ -176,6 +182,22 @@ export interface InitiatorPromptOptions {
    * telling the model about a feature it cannot use.
    */
   skillsDigest?: string | undefined;
+  /**
+   * Tier-3 harness sessions a daemon restart cut short, resumable via
+   * `spawn_worker`'s `resume_session_id`. The engine computes each `cwd` from
+   * the interrupted task's settings, because only it knows the workspaces base
+   * dir. Empty or absent renders nothing — same rule as the skills digest.
+   */
+  resumableSessions?: ResumableSessionRef[] | undefined;
+}
+
+/** What the header needs to offer a resume: the id, what it was doing, where. */
+export interface ResumableSessionRef {
+  sessionId: string;
+  /** The interrupted work item's title. */
+  title: string;
+  /** The directory the session worked in — a resume continues there. */
+  cwd: string;
 }
 
 /**
@@ -237,6 +259,17 @@ export function buildInitiatorMessages(opts: InitiatorPromptOptions): ChatMessag
           "Skills available to this task (load one with `load_skill` if it matches):",
           "",
           opts.skillsDigest,
+        ]),
+    ...(opts.resumableSessions === undefined || opts.resumableSessions.length === 0
+      ? []
+      : [
+          "",
+          "Resumable harness sessions (tier-3 conversations a restart cut short; resume one",
+          "with `spawn_worker`'s `resume_session_id` ONLY if this task continues that work):",
+          "",
+          ...opts.resumableSessions.map(
+            (s) => `- ${s.sessionId} — "${s.title}" — worked in ${s.cwd}`,
+          ),
         ]),
     "",
     "The conversation below is the user's request. Begin.",

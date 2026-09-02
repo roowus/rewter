@@ -42,7 +42,7 @@ import {
   assertWorkerRunTransition,
   isTerminal,
 } from "@rewter/shared";
-import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, lt } from "drizzle-orm";
 import type { EventBus } from "../events/bus.js";
 import type { Db } from "./connection.js";
 import {
@@ -61,6 +61,24 @@ import {
 // Terminality is read off the lifecycle maps, never re-listed here: a hand-kept
 // copy is one enum member away from disagreeing with `shared` about whether a
 // row is finished, and the symptom would be a `finishedAt` that never gets set.
+
+/**
+ * One resumable tier-3 session, as `listResumableHarnessSessions` reports it.
+ *
+ * Server-internal rather than a `shared` contract: this shape feeds the
+ * initiator's prompt header and nothing else — it never crosses to the
+ * dashboard or the API surface.
+ */
+export interface ResumableHarnessSession {
+  sessionId: string;
+  taskId: string;
+  /** The interrupted work item's title — what the session was doing. */
+  title: string;
+  /** When reconciliation closed the run; null if somehow still open. */
+  interruptedAt: number | null;
+  /** The owning task's workspaceDir; null means its default per-task dir. */
+  workspaceDir: string | null;
+}
 
 export class Repos {
   constructor(
@@ -588,6 +606,48 @@ export class Repos {
       .where(eq(workerRuns.id, id))
       .run();
     return this.getWorkerRun(id) as WorkerRun;
+  }
+
+  /**
+   * Harness sessions a daemon restart cut short: interrupted tier-3 runs that
+   * had announced a `harnessSessionId` before the process died.
+   *
+   * These are the sessions `claude --resume` can reload — the conversation
+   * lives in the harness's own storage on disk, which is exactly the part of a
+   * run that does not die with the daemon. Only `interrupted` qualifies: a
+   * `failed` run's session is a conversation that ended in an error the
+   * harness already reported, and a `cancelled` one was stopped on purpose.
+   *
+   * Each row carries what an initiator needs to write a good "continue"
+   * instruction (the work item's title and instructions preview) and what the
+   * engine needs to say where the session worked (the owning task's
+   * `workspaceDir`, null when the task used its default per-taskId workspace).
+   * Most recent first, bounded — the header block this feeds is prompt space.
+   */
+  listResumableHarnessSessions(limit = 5): ResumableHarnessSession[] {
+    const rows = this.db
+      .select({
+        sessionId: workerRuns.harnessSessionId,
+        taskId: workerRuns.taskId,
+        title: workItems.title,
+        interruptedAt: workerRuns.finishedAt,
+        settingsJson: tasks.settingsJson,
+      })
+      .from(workerRuns)
+      .innerJoin(workItems, eq(workerRuns.workItemId, workItems.id))
+      .innerJoin(tasks, eq(workerRuns.taskId, tasks.id))
+      .where(and(eq(workerRuns.status, "interrupted"), isNotNull(workerRuns.harnessSessionId)))
+      .orderBy(desc(workerRuns.updatedAt))
+      .limit(limit)
+      .all();
+    return rows.map((r) => ({
+      // isNotNull in the WHERE guarantees this; the assertion is for the types.
+      sessionId: r.sessionId as string,
+      taskId: r.taskId,
+      title: r.title,
+      interruptedAt: r.interruptedAt,
+      workspaceDir: TaskSettingsSchema.parse(JSON.parse(r.settingsJson)).workspaceDir,
+    }));
   }
 
   // ── Approvals ────────────────────────────────────────────────────────────

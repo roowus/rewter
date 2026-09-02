@@ -332,6 +332,38 @@ process.exit(0);
     expect(unpinnedEnd.resultText).not.toContain("--model");
   });
 
+  it("passes --resume through to argv when the spec carries a session id, and omits it when not", async () => {
+    // Slice 3: `--resume` is the whole restart re-adoption mechanism — the
+    // harness reloads its own on-disk conversation, so the flag either reaches
+    // argv or the "resumed" session silently starts from scratch.
+    const ARGV_STUB = `
+const say = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+say({ type: "result", is_error: false, result: "argv: " + process.argv.slice(2).join(" ") });
+process.exit(0);
+`;
+    const stub = stubBinary(ARGV_STUB);
+    const adapter = createClaudeCodeAdapter({ binary: stub, permissionMode: "acceptEdits" });
+
+    const resumedEvents = await collect(
+      adapter.spawn({
+        instructions: "continue the refactor",
+        cwd: tmpdir(),
+        runId: RUN_ID,
+        resumeSessionId: "sess_prev",
+      }),
+    );
+    const resumedEnd = resumedEvents.find((e) => e.type === "turn_end");
+    if (resumedEnd?.type !== "turn_end") throw new Error("expected a turn_end event");
+    expect(resumedEnd.resultText).toContain("--resume sess_prev");
+
+    const freshEvents = await collect(
+      adapter.spawn({ instructions: "anything", cwd: tmpdir(), runId: RUN_ID }),
+    );
+    const freshEnd = freshEvents.find((e) => e.type === "turn_end");
+    if (freshEnd?.type !== "turn_end") throw new Error("expected a turn_end event");
+    expect(freshEnd.resultText).not.toContain("--resume");
+  });
+
   it("strips the router env so the harness cannot recurse into the daemon", async () => {
     const stub = stubBinary(`
 const say = (o) => process.stdout.write(JSON.stringify(o) + "\\n");

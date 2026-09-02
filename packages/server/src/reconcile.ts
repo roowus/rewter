@@ -23,6 +23,16 @@
  * interrupted keeps the full history — every event is still there for the
  * dashboard to fold — and lets the user decide whether to ask again.
  *
+ * The one exception is a tier-3 harness *session*, and even that is not resumed
+ * *here*. The harness keeps its conversation in its own storage on disk, which
+ * survives daemon death precisely because it needs no living process — so an
+ * interrupted run with a `harnessSessionId` stays interrupted (this sweep's
+ * only concern is closing rows honestly), and the session id it left behind is
+ * offered to the *next* task's initiator instead
+ * (`Repos.listResumableHarnessSessions` → the prompt header → `spawn_worker`'s
+ * `resume_session_id` → `claude --resume`). Resuming is a decision about new
+ * work, so it belongs to the model that plans new work, not to boot cleanup.
+ *
  * Ordering is deepest-first (runs → work items → tasks), so a parent is never
  * closed while a child of it is still open: anything reading the tree mid-sweep
  * sees a consistent shape rather than a finished task with a running worker

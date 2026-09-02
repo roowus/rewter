@@ -21,7 +21,7 @@
  */
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   type ChatMessage,
   type ModelId,
@@ -69,7 +69,7 @@ import {
   workerNoteLine,
   workerStartLine,
 } from "./narrate.js";
-import { buildInitiatorMessages } from "./prompt.js";
+import { type ResumableSessionRef, buildInitiatorMessages } from "./prompt.js";
 import { type Limiter, createLimiter } from "./scheduler.js";
 import { INITIATOR_TOOL_DEFINITIONS, parseToolArgs } from "./tools.js";
 import { type WorkerOutcome, type WorkerRunner, runTier1Worker } from "./worker.js";
@@ -705,6 +705,26 @@ class Session {
     return loadSkillResult(this.o.repos.listSkills(), this.o.project?.slug ?? null, slug);
   }
 
+  /**
+   * Interrupted tier-3 sessions this task could resume, for the prompt header.
+   *
+   * Empty when tier 3 cannot run at all — a header offering a resume that
+   * `spawn_worker` would refuse teaches the initiator to distrust the header.
+   * Each session is listed with the directory it worked in, computed the same
+   * way `openWorkspace` computes a cwd (`workspaceDir`, else the per-taskId
+   * default under the daemon's workspaces dir): a resumed conversation's file
+   * references only make sense from where it originally worked, so the
+   * initiator is told where that was and the ladder tells it to match.
+   */
+  private resumableSessions(): ResumableSessionRef[] {
+    if ("refusal" in this.pickHarness()) return [];
+    return this.o.repos.listResumableHarnessSessions().map((s) => ({
+      sessionId: s.sessionId,
+      title: s.title,
+      cwd: s.workspaceDir ?? resolve(this.o.workspacesDir, s.taskId),
+    }));
+  }
+
   private buildMessages(conversation: ChatMessage[], contextSummary?: string): ChatMessage[] {
     const digest = renderDigest(
       this.o.repos.listModels({ enabledOnly: true }).map((model) => {
@@ -716,6 +736,7 @@ class Session {
     const skillsDigest = renderSkillsDigest(
       visibleSkills(this.o.repos.listSkills(), this.o.project?.slug ?? null),
     );
+    const resumableSessions = this.resumableSessions();
     const base = buildInitiatorMessages({
       digest,
       conversation,
@@ -723,6 +744,7 @@ class Session {
       ...(this.o.dashboardUrl !== null && { dashboardUrl: this.o.dashboardUrl }),
       ...(this.o.project !== null && { project: this.o.project }),
       ...(skillsDigest !== "" && { skillsDigest }),
+      ...(resumableSessions.length > 0 && { resumableSessions }),
     });
     if (contextSummary === undefined) return base;
     // A successor gets the same core and digest, then its predecessor's summary
@@ -928,7 +950,17 @@ class Session {
           model: string;
           instructions: string;
           tier: WorkerTier;
+          resume_session_id?: string;
         };
+        if (args.resume_session_id !== undefined && args.tier !== 3) {
+          // A tool result rather than a silent drop: the initiator asked for a
+          // resumed conversation and would otherwise believe it got one.
+          return {
+            result:
+              "resume_session_id only applies to tier 3 — only a harness has a resumable " +
+              "session. Spawn with tier 3, or omit resume_session_id.",
+          };
+        }
         if (args.tier === 3) {
           // Answered before the work item exists: a refusal here is a tool
           // result the initiator can route around (use tier 2), not a worker
@@ -964,7 +996,13 @@ class Session {
           }
         }
 
-        const worker = this.spawn({ ...args, model: modelId });
+        const worker = this.spawn({
+          title: args.title,
+          model: modelId,
+          instructions: args.instructions,
+          tier: args.tier,
+          resumeSessionId: args.resume_session_id,
+        });
         yield chunk(
           workerStartLine({ label: worker.label, modelId, tier: args.tier, title: args.title }),
         );
@@ -1126,6 +1164,8 @@ class Session {
     model: ModelId;
     instructions: string;
     tier: WorkerTier;
+    /** Tier 3 only: a prior run's harness session to resume (see WorkerContext). */
+    resumeSessionId?: string | undefined;
   }): Worker {
     const now = this.o.clock();
     const workItem = this.o.repos.createWorkItem({
@@ -1171,6 +1211,7 @@ class Session {
         clock: this.o.clock,
         signal: abort.signal,
         inbox: () => inbox.splice(0),
+        resumeSessionId: args.resumeSessionId,
       });
       this.o.repos.transitionWorkItem(
         workItem.id,

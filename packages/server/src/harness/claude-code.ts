@@ -233,6 +233,9 @@ export function createClaudeCodeAdapter(opts: ClaudeCodeOptions): HarnessAdapter
             // have, since ~/.claude/settings.json re-applies whatever env it
             // wants after our strip.
             ...(opts.model !== undefined ? ["--model", opts.model] : []),
+            // Reload a previous session's conversation — the restart
+            // re-adoption path. The id came from an earlier run's init line.
+            ...(spec.resumeSessionId !== undefined ? ["--resume", spec.resumeSessionId] : []),
           ],
           { cwd: spec.cwd, env, stdio: ["pipe", "pipe", "pipe"] },
         );

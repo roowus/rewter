@@ -198,6 +198,95 @@ describe("Repos round-trips (in-memory SQLite)", () => {
     expect(updated.harnessSessionId).toBe("rwtr_abc123");
   });
 
+  it("listResumableHarnessSessions: interrupted tier-3 runs with a session id, newest first", () => {
+    // The query feeds the initiator's prompt header, so what it excludes matters
+    // as much as what it returns: a failed run's session ended in an error the
+    // harness already reported, a cancelled one was stopped on purpose, and a
+    // run that never learned its session id has nothing to resume.
+    const makeRun = (opts: {
+      title: string;
+      status: "interrupted" | "failed" | "cancelled";
+      sessionId: string | null;
+      workspaceDir?: string;
+    }) => {
+      const now = tick;
+      const task = repos.createTask({
+        id: newTaskId(),
+        status: "pending",
+        title: "t",
+        initiatorModelId: mdl,
+        projectId: null,
+        conversationFingerprint: `fp_${opts.title}`,
+        settings: TaskSettingsSchema.parse(
+          opts.workspaceDir === undefined ? {} : { workspaceDir: opts.workspaceDir },
+        ),
+        resultSummary: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        finishedAt: null,
+      });
+      const wi = repos.createWorkItem({
+        id: newWorkItemId(),
+        taskId: task.id,
+        parentWorkItemId: null,
+        status: "pending",
+        title: opts.title,
+        instructions: "x",
+        modelId: mdl,
+        tier: 3,
+        resultSummary: null,
+        error: null,
+        createdAt: tick,
+        updatedAt: tick,
+        finishedAt: null,
+      });
+      const run = repos.createWorkerRun({
+        id: newWorkerRunId(),
+        workItemId: wi.id,
+        taskId: task.id,
+        status: "created",
+        modelId: mdl,
+        tier: 3,
+        attempt: 1,
+        harnessSessionId: null,
+        resultText: null,
+        error: null,
+        createdAt: tick,
+        updatedAt: tick,
+        finishedAt: null,
+      });
+      repos.transitionWorkerRun(run.id, "streaming", { harnessSessionId: opts.sessionId });
+      repos.transitionWorkerRun(run.id, opts.status);
+      return { task, run };
+    };
+
+    makeRun({ title: "failed run", status: "failed", sessionId: "sess_failed" });
+    makeRun({ title: "cancelled run", status: "cancelled", sessionId: "sess_cancelled" });
+    makeRun({ title: "no session", status: "interrupted", sessionId: null });
+    const older = makeRun({
+      title: "older interrupted",
+      status: "interrupted",
+      sessionId: "sess_old",
+      workspaceDir: "/Users/x/projects/thing",
+    });
+    makeRun({ title: "newer interrupted", status: "interrupted", sessionId: "sess_new" });
+
+    const sessions = repos.listResumableHarnessSessions();
+    expect(sessions.map((s) => s.sessionId)).toEqual(["sess_new", "sess_old"]);
+    const old = sessions[1];
+    expect(old?.title).toBe("older interrupted");
+    expect(old?.taskId).toBe(older.task.id);
+    expect(old?.workspaceDir).toBe("/Users/x/projects/thing");
+    expect(old?.interruptedAt).not.toBeNull();
+    // A task without an explicit workspaceDir reports null — the caller resolves
+    // the default per-task directory, because only it knows the base dir.
+    expect(sessions[0]?.workspaceDir).toBeNull();
+
+    // The header block this feeds is prompt space, so the list is bounded.
+    expect(repos.listResumableHarnessSessions(1).map((s) => s.sessionId)).toEqual(["sess_new"]);
+  });
+
   it("approval: pending → approved via resolveApproval; illegal double-resolve throws", () => {
     const task = makeTask();
     const apr = repos.createApproval({

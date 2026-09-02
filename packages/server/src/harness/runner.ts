@@ -121,6 +121,7 @@ export async function runHarnessWorker(
     instructions: ctx.workItem.instructions,
     cwd: opts.cwd,
     runId: run.id,
+    resumeSessionId: ctx.resumeSessionId,
   });
   ctx.repos.transitionWorkerRun(run.id, "streaming");
 

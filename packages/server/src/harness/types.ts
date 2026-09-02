@@ -26,6 +26,15 @@ export interface HarnessSpec {
   cwd: string;
   /** Names the tmux mirror session (`rwtr_<runId>`) and the log it tails. */
   runId: WorkerRunId;
+  /**
+   * Resume a previous session instead of starting fresh. The value is a
+   * `session` event's `sessionId` from an earlier run — persisted as
+   * `WorkerRun.harnessSessionId`, which is what survives a daemon restart.
+   * The harness reloads its own conversation history (for Claude Code,
+   * `--resume`); `instructions` become the first *new* message in the resumed
+   * session, so they should say "continue" things, not restate the task.
+   */
+  resumeSessionId?: string | undefined;
 }
 
 /**
