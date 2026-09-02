@@ -8,7 +8,7 @@ describe("parseSteering", () => {
   it("reads a single approval command and leaves nothing behind", () => {
     const { commands, remainder } = parseSteering(`approve ${ID}`);
     expect(commands).toEqual([
-      { decision: "approve", ids: [ID], note: null, source: `approve ${ID}` },
+      { decision: "approve", ids: [ID], labels: [], note: null, source: `approve ${ID}` },
     ]);
     expect(remainder).toBe("");
   });
@@ -73,5 +73,75 @@ describe("parseSteering", () => {
 
   it("returns an empty parse for an empty message", () => {
     expect(parseSteering("")).toEqual({ commands: [], remainder: "" });
+  });
+
+  describe("worker-label keystrokes", () => {
+    it("reads `a w1` / `d w1` as approve/deny of that worker", () => {
+      expect(parseSteering("a w1").commands).toEqual([
+        { decision: "approve", ids: [], labels: ["w1"], note: null, source: "a w1" },
+      ]);
+      expect(parseSteering("d w2").commands[0]).toMatchObject({
+        decision: "deny",
+        labels: ["w2"],
+        ids: [],
+      });
+    });
+
+    it("takes a space-separated note on the short form, because a keystroke has no colon", () => {
+      const { commands, remainder } = parseSteering("d w1 too dangerous");
+      expect(commands[0]).toMatchObject({
+        decision: "deny",
+        labels: ["w1"],
+        note: "too dangerous",
+      });
+      expect(remainder).toBe("");
+    });
+
+    it("still takes a colon-note on the long form with a label", () => {
+      expect(parseSteering("deny w1: use the fixture").commands[0]).toMatchObject({
+        decision: "deny",
+        labels: ["w1"],
+        note: "use the fixture",
+      });
+    });
+
+    it("accepts several labels the same way it accepts several ids", () => {
+      for (const line of ["a w1 w2", "a w1, w2", "a w1 and w2", "approve w1 and w2"]) {
+        expect(parseSteering(line).commands[0]?.labels, line).toEqual(["w1", "w2"]);
+      }
+    });
+
+    it("accepts `a all` as the same blanket as `approve all`", () => {
+      expect(parseSteering("a all").commands[0]?.ids).toBe("all");
+      expect(parseSteering("d all").commands[0]?.decision).toBe("deny");
+    });
+
+    it("mixes an id and a label on one line without dropping either", () => {
+      const { commands } = parseSteering(`approve ${ID} and w1`);
+      expect(commands[0]?.ids).toEqual([ID]);
+      expect(commands[0]?.labels).toEqual(["w1"]);
+    });
+
+    // Conservative: a lone letter, a letter plus prose, or a non-label word
+    // after `a`/`d` must not be swallowed. "a plan" in particular would be a
+    // disastrous false positive — it is how a person starts an instruction.
+    it("leaves short-form prose that is not a label or an id alone", () => {
+      const prose = [
+        "a",
+        "d",
+        "a plan",
+        "a the tests",
+        "and then",
+        "approve w",
+        "a w0",
+        "a worker 1",
+        "d wait for it",
+      ];
+      for (const line of prose) {
+        const { commands, remainder } = parseSteering(line);
+        expect(commands, line).toHaveLength(0);
+        expect(remainder).toBe(line);
+      }
+    });
   });
 });

@@ -195,7 +195,8 @@ one-shot completions — which is why the default stayed at 4.
 
 Answering a card works three ways, all of them one code path: `POST /internal/approvals/:id`
 with `{"approved": true}` (the dashboard's buttons, and `curl`), or `approve <id>` / `deny <id>:
-why not` typed as the next user turn in whatever client you are already in. An in-band reply
+why not` — or the keystroke form `a w1` / `d w1 why not`, naming the worker — typed as the
+next user turn in whatever client you are already in. An in-band reply
 can be both — `approve apr_x` on one line and an instruction on the next does both things, and
 only the instruction reaches the initiator. Denials carry your note down to the model as a tool
 result (`command not run: denied by the user: use the fixture instead`), because a worker told
@@ -794,8 +795,9 @@ rewter chat summarize these 3 URLs and compare them
 # ▶ [w1 · zai/glm-5.3 · tier1] summarize URL 1 — started
 › also note which one is the most recent        ← typed while w1 is still running
 # · queued for the initiator: also note which one is the most recent
-# ⏸ approval needed (apr_x9…) — shell: curl …
-› approve apr_x9
+# ⏸ [w1] approval needed — curl …
+#    (reply "a w1" / "d w1 reason", or "approve apr_x9…" / "deny apr_x9…", or answer in the dashboard)
+› a w1
 # · 1 approval command(s) applied
 # ✔ [w1] done ($0.0021, 3.1s)
 #
@@ -805,9 +807,12 @@ rewter chat summarize these 3 URLs and compare them
 # ◆ plan: re-read the three summaries for citations
 ```
 
-Typed lines go through the daemon's one steering grammar: `approve`/`deny` resolve pending
-approvals on the spot, everything else queues for the initiator at the next turn boundary —
-and the echo tells you which happened. Once a turn has finished, the prompt comes back and
+Typed lines go through the daemon's one steering grammar: a parked approval is a keystroke —
+`a w1` approves the worker's pending request, `d w1 too dangerous` denies it with the reason
+handed down to the model — and the longer `approve apr_…` / `deny apr_…: why` still works when
+you are reading an id off a log. Everything else queues for the initiator at the next turn
+boundary, and the echo tells you which happened. The parser is conservative on purpose:
+`a plan` or `and then` is an instruction, never a command. Once a turn has finished, the prompt comes back and
 the next line is a **follow-up**: a new task that carries the whole conversation so far
 (your lines and each answer — the answer only, not the progress feed), so the initiator has
 the history without the daemon keeping any session. Ctrl-D ends the session. `--model` picks

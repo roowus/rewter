@@ -83,7 +83,7 @@ All risky actions flow through one choke point (`approvals.require`):
 2. Otherwise: pending `Approval` row + event → dashboard card AND an SSE text line in the
    client stream.
 3. The tool call parks on a promise, resolved by `POST /internal/approvals/:id` or an
-   in-band `approve <id>` reply.
+   in-band `approve <id>` / `a w1` reply.
 4. Denied → the tool returns `{ error: "denied by user: <note>" }` so the worker LLM adapts
    or reports failure.
 
@@ -848,8 +848,8 @@ initiator can read it with `get_result`. The same rule holds inside a tier-2 tur
 ▶ [w1 · gemini-flash · tier1] summarize repo docs — started
 ▶ [w2 · claude-sonnet-5 · tier2] patch the failing test — started
 · [w2] read src/foo.ts, found the off-by-one
-⏸ approval needed — shell: pnpm test
-   (reply "approve apr_x" or "deny apr_x", or answer in the dashboard)
+⏸ [w2] approval needed — pnpm test
+   (reply "a w2" / "d w2 reason", or "approve apr_x" / "deny apr_x", or answer in the dashboard)
 ✔ [w1] done ($0.002, 3.1s)     ✖ [w3] failed: 429 rate limited     ⊘ [w4] cancelled
 ── final answer from finish() ──
 ```
@@ -955,9 +955,10 @@ conversation — and wrong for a client that holds the task id, because it drags
 transcript over the wire to say one sentence, and a fingerprint match is an inference where
 an id is a fact. `POST /internal/tasks/:id/steer` `{message}` is the direct door, built for
 the `rewt` TUI's always-live input line. The message goes through the **same
-`parseSteering`** as the re-POST path — one grammar, two doors — so `approve apr_…` typed
-into the TUI resolves the approval through the gate (`resolvedBy: "in_band"`) instead of
-being read aloud to the initiator, and only the non-command remainder is queued.
+`parseSteering`** as the re-POST path — one grammar, two doors — so `approve apr_…` or the
+keystroke `a w1` / `d w1 reason` typed into the TUI resolves the approval through the gate
+(`resolvedBy: "in_band"`) instead of being read aloud to the initiator, and only the
+non-command remainder is queued.
 
 The response is a **202**, `{taskId, queued, remainder, approvals}`, and 202 is the honest
 code: it reports what the *parser* did, not what the task did. The steering text is in the
@@ -2518,12 +2519,27 @@ wrong: **404** for an id never seen, **409** for one already settled — a race 
 not a mistake it made — and **400** for a body that does not say yes or no.
 
 **In-band replies** are parsed by `orchestrator/steering.ts`, deliberately conservative: a
-line is a command only if it is `approve`/`deny`/`reject` followed by approval ids or the
-literal `all`, optionally then `: note`. Consuming a line hides it from the initiator, so
-anything ambiguous ("please approve whichever you think is right") stays steering. One message
-can be both — `approve apr_x` on one line and an instruction on the next does both things, and
-only the remainder reaches the initiator. `approve all` is scoped to the pending rows of *that
+line is a command only if it is `approve`/`deny`/`reject` — or the one-letter keystrokes
+`a`/`d` — followed by approval ids, worker labels (`w1`, `w2`, …), or the literal `all`, and
+nothing else. The long verbs take a note only after `:`/`—`/`-`; the keystroke form takes
+the rest of the line (`d w1 too dangerous`), because nobody types a colon on a live prompt.
+Consuming a line hides it from the initiator, so anything ambiguous ("please approve whichever
+you think is right", "a plan", "and then") stays steering — the tests pin the false-positive
+cases, since `a plan` is how a person *starts* an instruction. One message can be both —
+`approve apr_x` on one line and an instruction on the next does both things, and only the
+remainder reaches the initiator. `approve all` is scoped to the pending rows of *that
 conversation's* task, never another's.
+
+**Labels resolve at apply time, not parse time.** `w1` is a name the engine gives a worker on
+the running session (`Session.workers`), not a column — so the parser only *names* it, and
+`applyApprovalCommand` in `http/app.ts` asks the orchestrator for the live session's
+`workItemIdForLabel(taskId, label)` and resolves every pending approval row on that work item
+through the same `resolveApproval` the dashboard buttons use. An unknown label, or one whose
+worker has nothing parked, is a quiet no-op — the same as a stale id — never steering. The
+paused feed line is the other half of the contract: it prints `[w1]` and leads with the
+keystroke it accepts (`reply "a w1" / "d w1 reason", or "approve apr_…" / "deny apr_…"`), so
+what the user reads is exactly what the parser takes; an approval with no worker behind it
+(none exist today — every gate call carries a `workItemId`) falls back to the id-only line.
 
 A denial comes back to the worker as a tool **result**, not an exception:
 `command not run: denied by the user: use the fixture instead`. A worker told why can adapt;

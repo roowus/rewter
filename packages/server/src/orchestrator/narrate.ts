@@ -84,15 +84,27 @@ export function workerMessageLine(opts: { label: string; message: string }): str
 }
 
 /**
- * A parked approval, shown in the feed with the two ways to answer it.
+ * A parked approval, shown in the feed with the ways to answer it.
  *
- * The full id is printed, not the label, because the REST route and the in-band
- * reply both address it by id — and a user who is about to authorize a shell
- * command should be reading the same identifier the audit row carries.
+ * The line names the worker (`[w1]`) and leads with the keystroke form,
+ * because that is what a person at a live prompt types: `a w1` to approve,
+ * `d w1 reason` to deny. The full id is still printed — the REST route and a
+ * log-reading user address the approval by id, and someone about to authorize
+ * a shell command should be able to read the same identifier the audit row
+ * carries. Without a label (an approval raised outside a worker) the line
+ * falls back to the id-only form.
  */
-export function approvalLine(opts: { approvalId: string; summary: string }): string {
-  const how = `reply "approve ${opts.approvalId}" or "deny ${opts.approvalId}", or answer in the dashboard`;
-  return `${GLYPH.paused} approval needed — ${firstLine(opts.summary)}\n   (${how})`;
+export function approvalLine(opts: {
+  approvalId: string;
+  summary: string;
+  label?: string | undefined;
+}): string {
+  const who = opts.label === undefined ? "" : ` [${opts.label}]`;
+  const byLabel =
+    opts.label === undefined ? "" : `"a ${opts.label}" / "d ${opts.label} reason", or `;
+  const byId = `"approve ${opts.approvalId}" / "deny ${opts.approvalId}"`;
+  const how = `reply ${byLabel}${byId}, or answer in the dashboard`;
+  return `${GLYPH.paused}${who} approval needed — ${firstLine(opts.summary)}\n   (${how})`;
 }
 
 export function handoffLine(opts: { toModel: string; reason: string }): string {

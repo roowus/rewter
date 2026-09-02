@@ -325,6 +325,79 @@ describe("POST /internal/tasks/:id/steer", () => {
     expect(bus.eventsAfter(0).some((e) => e.payload.type === "steering.received")).toBe(false);
   });
 
+  /**
+   * The keystroke form: `d w1 too dangerous` names the worker, not the
+   * approval. Labels live only on the running session, so this is the one
+   * place the label → pending-approval resolution can be proved end to end —
+   * and the proof has to include the worker *adapting*, because a denial that
+   * merely flips a row while the run hangs is not a denial.
+   */
+  it("resolves `d w1 reason` against the worker's pending approval, and the worker adapts", async () => {
+    setup(
+      [
+        turn({
+          name: "spawn_worker",
+          args: { title: "run it", model: SMALL, instructions: "run it", tier: 2 },
+        }),
+        turn({ name: "wait", args: { mode: "all" } }),
+        turn({ name: "finish", args: { answer: "done" } }),
+      ],
+      {
+        worker: [
+          turn({ name: "shell", args: { command: "echo ran > ran.txt" } }),
+          // The worker's next turn only happens once the denial comes back as a
+          // tool result — so reaching finish_report *is* the adaptation.
+          turn({ name: "finish_report", args: { status: "partial", summary: "was denied" } }),
+        ],
+      },
+    );
+    const base = await listen();
+    const { taskId, chat } = await startTask(base);
+
+    let pending = repos.listPendingApprovals(taskId);
+    for (let i = 0; i < 400 && pending.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      pending = repos.listPendingApprovals(taskId);
+    }
+    expect(pending).toHaveLength(1);
+    const card = pending[0] as (typeof pending)[number];
+
+    const { status, body } = await steer(base, taskId, { message: "d w1 too dangerous" });
+    expect(status).toBe(202);
+    expect(body).toMatchObject({ queued: false, remainder: "", approvals: 1 });
+
+    const feed = feedOf(await chat.text());
+    // The paused line told the user the keystroke it just accepted.
+    expect(feed).toContain(
+      '⏸ [w1] approval needed — echo ran > ran.txt\n   (reply "a w1" / "d w1 reason"',
+    );
+    expect(feed).toContain("done");
+    const row = repos.getApproval(card.id);
+    expect(row?.status).toBe("denied");
+    expect(row?.resolvedBy).toBe("in_band");
+    expect(row?.resolutionNote).toBe("too dangerous");
+    expect(bus.eventsAfter(0).some((e) => e.payload.type === "steering.received")).toBe(false);
+  });
+
+  it("treats a label with no pending approval as a no-op, never as steering", async () => {
+    const parked = parkedWorker();
+    setup(parkedScript(), { runWorker: parked.runner });
+    const base = await listen();
+    const { taskId, chat } = await startTask(base);
+    await parked.started;
+
+    // w1 exists (tier-1, no gate) and w9 does not; neither has anything pending.
+    const { status, body } = await steer(base, taskId, { message: "a w1\na w9" });
+    expect(status).toBe(202);
+    expect(body).toMatchObject({ queued: false, remainder: "", approvals: 2 });
+
+    parked.release();
+    const feed = feedOf(await chat.text());
+    expect(feed).toContain("done");
+    expect(feed).not.toContain("a w9");
+    expect(bus.eventsAfter(0).some((e) => e.payload.type === "steering.received")).toBe(false);
+  });
+
   it("splits a mixed message: commands to the gate, the rest to the queue", async () => {
     const parked = parkedWorker();
     setup(parkedScript(), { runWorker: parked.runner });

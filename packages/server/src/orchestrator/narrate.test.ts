@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
   GLYPH,
+  approvalLine,
   askUserLine,
   formatCost,
   formatDuration,
@@ -64,6 +65,27 @@ describe("progress lines", () => {
     // somewhere else arrives with newlines in it more often than not.
     expect(workerMessageLine({ label: "w2", message: "stop\nand read this" })).toBe(
       "⇄ [w2] told: stop",
+    );
+  });
+
+  // The approval line is an instruction, not a notice: what it prints is what
+  // the user types back, so the keystroke form it advertises must be exactly
+  // what `parseSteering` accepts, and the id must be the full audit-row id.
+  it("advertises the keystroke form and the full id on a parked approval", () => {
+    expect(
+      approvalLine({ approvalId: "apr_abc123def456", summary: "pnpm test", label: "w1" }),
+    ).toBe(
+      '⏸ [w1] approval needed — pnpm test\n   (reply "a w1" / "d w1 reason", or "approve apr_abc123def456" / "deny apr_abc123def456", or answer in the dashboard)',
+    );
+    // A multi-line shell command is still one summary line.
+    expect(
+      approvalLine({ approvalId: "apr_abc123def456", summary: "rm -rf\n./dist", label: "w2" }),
+    ).toContain("⏸ [w2] approval needed — rm -rf\n   (");
+  });
+
+  it("falls back to the id-only form when the approval has no worker behind it", () => {
+    expect(approvalLine({ approvalId: "apr_abc123def456", summary: "curl x" })).toBe(
+      '⏸ approval needed — curl x\n   (reply "approve apr_abc123def456" / "deny apr_abc123def456", or answer in the dashboard)',
     );
   });
 

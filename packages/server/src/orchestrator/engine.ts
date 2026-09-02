@@ -226,6 +226,19 @@ export class Orchestrator {
   }
 
   /**
+   * The work-item id currently wearing this feed label (`w1`, `w2`, …), or
+   * null if this task is not running here or never spawned that worker.
+   *
+   * Labels are session-local — they are not a column — so the in-band
+   * `a w1` keystroke has to ask the live session, not the database. Null is
+   * the ordinary miss (finished, restarted, typo); the apply step treats it
+   * like a stale approval id, not an error.
+   */
+  workItemIdForLabel(taskId: TaskId, label: string): string | null {
+    return this.sessions.get(taskId)?.workItemIdForLabel(label) ?? null;
+  }
+
+  /**
    * Kill a running task: abort its controller and let its own stream finish.
    *
    * Deliberately *only* aborts. The row write is the driving stream's job — it
@@ -550,6 +563,11 @@ class Session {
     return this.tier2?.approvals ?? null;
   }
 
+  /** `w1` → that worker's work-item id, or null when the label was never spawned. */
+  workItemIdForLabel(label: string): string | null {
+    return this.workers.get(label)?.workItem.id ?? null;
+  }
+
   /**
    * Collapse the worker tree. The stream sees the aborted signal at its next
    * step and writes the terminal row itself, so nothing here touches the DB.
@@ -596,7 +614,16 @@ class Session {
       autoApprove: () => this.settings.autoApprove,
       clock: this.o.clock,
       announce: (approval) => {
-        this.lines.push(approvalLine({ approvalId: approval.id, summary: approval.summary }));
+        // The label is what the keystroke form (`a w1`) addresses; an approval
+        // with no worker behind it gets the id-only line.
+        const label = approval.workItemId === null ? undefined : this.labelOf(approval.workItemId);
+        this.lines.push(
+          approvalLine({
+            approvalId: approval.id,
+            summary: approval.summary,
+            label: label === "w?" ? undefined : label,
+          }),
+        );
       },
     });
     const runner = createTier2Runner({

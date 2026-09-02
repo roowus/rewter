@@ -52,11 +52,48 @@ and why in this order.
 |---|---|---|
 | P2-M1 | Projects: schema, prompt block, workspace-from-resource, policy precedence, selection, CRUD + dashboard panel | ✅ 2026-08-31 |
 | P2-M2 | Tailscale hardening: `/internal` auth, fail-closed non-loopback boot, serve walkthrough | ✅ 2026-08-31 |
-| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ + follow-up turns (multi-turn over one growing conversation) ✅ 2026-09-02 — interactive-TTY acceptance pending | 🔶 |
+| P2-M3 | `rewt` TUI: steer route ✅ + `rewter chat` (always-live input, mid-run steer, approvals) ✅ + follow-up turns (multi-turn over one growing conversation) ✅ + approval keystrokes (`a w1` / `d w1 reason`) ✅ 2026-09-02 — interactive-TTY acceptance pending, fold-backed tree open | 🔶 |
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
 
 ## Log
+
+### 2026-09-02 — approvals are keystrokes: `a w1` / `d w1 reason` (P2-M3)
+
+The design doc said it in one line — "Approvals are keystrokes on the live approval line
+(`a w1` / `d w1 reason`), not in-band chat text" — and the feed already named workers `w1`,
+`w2`, …; what was missing was the grammar accepting the name. Copying an `apr_…` id off a
+paused line is what you do from a log, not from a live prompt.
+
+- **Parser** (`orchestrator/steering.ts`): two regexes, one idea. The long verbs
+  (`approve`/`deny`/`reject`) now take worker labels as well as ids and `all`, note still only
+  after `:`/`—`/`-`. The new one-letter form (`a`/`d`) takes the rest of the line as the note,
+  because a keystroke has no colon. `ApprovalCommand` grew a `labels: string[]` field; ids and
+  labels can mix on one line (`approve apr_x and w1`). Still conservative — the test pins
+  `a`, `d`, `a plan`, `a the tests`, `and then`, `approve w`, `a w0`, `a worker 1`,
+  `d wait for it` as prose, all left for the initiator. `a plan` in particular is how a person
+  *starts* an instruction; swallowing it would have been the disastrous false positive.
+- **Apply** (`http/app.ts` `applyApprovalCommand`): labels live only on the running session
+  (`Session.workers`), so the parser names them and the apply step resolves them — a new
+  `Orchestrator.workItemIdForLabel(taskId, label)` seam reads the live session, and every
+  pending approval row on that work item goes through the same `resolveApproval` the dashboard
+  buttons use (`resolvedBy: "in_band"`, note carried). Unknown label or nothing parked ⇒
+  quiet no-op, same as a stale id; never steering. Both doors (re-POST and
+  `POST /internal/tasks/:id/steer`) get it for free — one grammar.
+- **Feed line** (`narrate.ts` `approvalLine`): now `⏸ [w1] approval needed — pnpm test` with
+  `(reply "a w1" / "d w1 reason", or "approve apr_…" / "deny apr_…", or answer in the dashboard)`.
+  The engine's `announce` callback maps `approval.workItemId` → label via the existing
+  `labelOf`; an approval with no worker behind it (none exist today — tier-2 tools and the
+  tier-3 spawn gate all carry `workItemId`) falls back to the id-only line. What the user reads
+  is exactly what the parser takes.
+- **Tests**: steering 17 (7 new), narrate 14 (2 new), and two end-to-end cases in
+  `app.steer.test.ts`: `d w1 too dangerous` against a real tier-2 shell gate denies the right
+  row with the note, and the worker *adapts* (reaches `finish_report` — a denial that flips a
+  row while the run hangs is not a denial); `a w1\na w9` with nothing pending is a no-op that
+  never becomes `steering.received`. No CLI change: `rewter chat` already sends every typed
+  line to the steer route and echoes `approvals` applied.
+
+Remaining for P2-M3: interactive-TTY acceptance (owner), fold-backed live tree in the TUI.
 
 ### 2026-09-02 — `rewter chat` follows up (P2-M3, the deferred multi-turn slice)
 

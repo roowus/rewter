@@ -387,6 +387,17 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       return;
     }
     for (const id of command.ids) resolveApproval(id, approved, by, command.note);
+    // Labels (`a w1`) name a worker, not an approval. Each pending row on that
+    // work item is the target — usually one (the shell that just parked), but
+    // a worker can have stacked gates and "approve w1" should clear them all,
+    // the same way "approve all" clears the task.
+    for (const label of command.labels) {
+      const workItemId = orchestrator?.workItemIdForLabel(taskId, label) ?? null;
+      if (workItemId === null) continue;
+      for (const row of repos.listPendingApprovals(taskId)) {
+        if (row.workItemId === workItemId) resolveApproval(row.id, approved, by, command.note);
+      }
+    }
   }
 
   app.register(cors, { origin: true });
