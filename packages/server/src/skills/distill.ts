@@ -159,6 +159,14 @@ function eventLine(e: EventEnvelope, items: Map<string, WorkItem>): string | nul
       return `handoff → ${p.toModelId}: ${clip(p.reason, 300)}`;
     case "steering.received":
       return `user steering: ${clip(p.text, 400)}`;
+    // A skill distilled from this task should carry the lesson: the tier was
+    // wrong for a job that needed steering, or the message came too late.
+    case "worker.message_refused": {
+      const w = items.get(p.workItemId);
+      const label = w === undefined ? p.workItemId : `"${w.title}"`;
+      const why = p.reason === "tier_1" ? "it is tier 1" : "it had already finished";
+      return `message to worker ${label} refused (${why}): ${clip(p.message, 300)}`;
+    }
     default:
       return null;
   }

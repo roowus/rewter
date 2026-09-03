@@ -87,6 +87,31 @@ describe("describeEvent", () => {
     ).toBe("→ claude-opus-5 — needs deeper reasoning than I can offer");
   });
 
+  it("says why a worker message was refused, then what it would have said", () => {
+    expect(
+      describeEvent(
+        wrap({
+          type: "worker.message_refused",
+          taskId: "task_1" as never,
+          workItemId: "wi_1" as never,
+          reason: "tier_1",
+          message: "use the fixture, not prod",
+        }),
+      ),
+    ).toBe("tier-1 worker — use the fixture, not prod");
+    expect(
+      describeEvent(
+        wrap({
+          type: "worker.message_refused",
+          taskId: "task_1" as never,
+          workItemId: "wi_1" as never,
+          reason: "finished",
+          message: "one more thing",
+        }),
+      ),
+    ).toBe("worker already finished — one more thing");
+  });
+
   it("shows progress and steering text as written", () => {
     expect(
       describeEvent(

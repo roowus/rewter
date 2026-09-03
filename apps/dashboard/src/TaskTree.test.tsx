@@ -205,6 +205,31 @@ describe("TaskTree", () => {
     expect(screen.getByText(/needs deeper reasoning/)).toBeDefined();
   });
 
+  it("shows a steer the worker never received, by label", () => {
+    // Otherwise the user sees the initiator announce a change of plan and w1
+    // carry on regardless, with nothing on screen to explain it (#7).
+    const events = scenario();
+    const created = events.find((e) => e.payload.type === "work_item.created");
+    if (created === undefined || created.payload.type !== "work_item.created") {
+      throw new Error("bad scenario");
+    }
+    events.push(
+      envelope({
+        type: "worker.message_refused",
+        taskId,
+        workItemId: created.payload.workItem.id,
+        reason: "tier_1",
+        message: "use the cached copy",
+      }),
+    );
+    render(<TaskTree task={foldOne(events)} now={now} />);
+
+    const list = screen.getByLabelText("refused messages");
+    expect(list.textContent).toContain("w1");
+    expect(list.textContent).toContain("tier 1");
+    expect(list.textContent).toContain("use the cached copy");
+  });
+
   it("counts attempts when a work item was retried", () => {
     const events = scenario();
     const first = events.find((e) => e.payload.type === "worker_run.created");

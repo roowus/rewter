@@ -250,6 +250,20 @@ export function TaskTree({ task, now }: { task: FoldedTask; now: number }): JSX.
         </ol>
       )}
 
+      {/* A steer the worker never got. Shown, not buried in the event table: the
+          user watching w1 is otherwise left wondering why the plan the initiator
+          announced never reached it (#7). */}
+      {task.refusedMessages.length > 0 && (
+        <ol className="refused" aria-label="refused messages">
+          {task.refusedMessages.map((r) => (
+            <li key={r.seq}>
+              <strong>{r.label ?? "worker"}</strong> not told (
+              {r.reason === "tier_1" ? "tier 1" : "already finished"}): {r.message}
+            </li>
+          ))}
+        </ol>
+      )}
+
       <ul className="work-items">
         {task.workItems.map((item) => (
           <WorkItemRow item={item} now={now} key={item.workItem.id} />

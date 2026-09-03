@@ -66,7 +66,16 @@ describe("the tool surface", () => {
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(7);
+    expect(ORCHESTRATOR_TOOLS_VERSION).toBe(8);
+  });
+
+  it("states the steering tradeoff where the tier is chosen, not only where it bites (#7)", () => {
+    // The refusal in `send_to_worker` arrives one turn too late to change the
+    // tier. The place the model can still act on it is the `tier` field itself.
+    const tier = jsonSchema("spawn_worker").properties.tier as { description: string };
+    expect(tier.description).toMatch(/cannot be messaged/);
+    expect(tier.description).toMatch(/steer/);
+    expect(tier.description).toMatch(/tier 2/);
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {

@@ -75,6 +75,10 @@ export function describeEvent(payload: EventPayload): string {
       return payload.text;
     case "handoff.initiated":
       return `→ ${shortModelId(payload.toModelId)} — ${payload.reason}`;
+    case "worker.message_refused":
+      // The reason first, the undelivered text after: "what was this worker
+      // never told" is the question a reader of this row is asking.
+      return `${payload.reason === "tier_1" ? "tier-1 worker" : "worker already finished"} — ${payload.message}`;
   }
 }
 

@@ -830,7 +830,8 @@ initiator picks the cheapest sufficient tier and cannot do that from a bare numb
 (See [Tier 3](#tier-3-external-harnesses-p2-m5).) `spawn_worker` also takes an optional
 `tag` from the card vocabulary — the key the worker's outcome is recorded under (see
 [Learned stats](#learned-stats-the-recorder-and-the-digest)); an untagged spawn is fine and
-simply uncounted. `ORCHESTRATOR_TOOLS_VERSION` and `ORCHESTRATOR_PROMPT_VERSION` are both 7.
+simply uncounted. `ORCHESTRATOR_PROMPT_VERSION` is 8 and `ORCHESTRATOR_TOOLS_VERSION` is 8 (the
+tier description carries the steering caveat, below).
 
 Now that tier 2 exists, `concurrency` (default 4) bounds **agent loops**, not just single
 calls. The same number that used to cap four simultaneous one-shot completions now caps four
@@ -872,6 +873,24 @@ worker is one model call with no point at which it could read anything — so th
 tier 2 as what to use when steering is expected. The delivery itself prints `⇄ [w2] told: …`
 to the user's feed: a worker changing course mid-run is only explicable if the instruction that
 caused it is visible in the same place.
+
+The latter two refusals are also **recorded**, as `worker.message_refused`
+`{taskId, workItemId, reason: "tier_1" | "finished", message}` (#7). Each one is a planning
+miss — the initiator chose tier 1 and then found it needed to steer, or steered after the
+result was already in — and the question #7 leaves open (should a tier-1 worker be
+transparently promoted to tier 2 on the first `send_to_worker`?) can only be answered by
+knowing how often it happens. The unknown-label case is *not* recorded: a typo is not a
+planning miss, and counting it would muddy the number. The fold accumulates these on
+`FoldedTask.refusedMessages` with the worker's `w<n>` label when the work item is known
+(`null` otherwise — a refusal naming an unseen work item still counts on the task rather than
+becoming an orphan, since the count is the point). The dashboard task card lists them under
+"refused messages" so a user watching `w1` carry on regardless of an announced change of plan
+can see why; the event table renders the reason then the message; and the skills distiller
+carries the line into the condensed transcript, so the tier lesson is available to be learned.
+Alongside the instrumentation, `spawn_worker.tier` (tools v8) names the tradeoff *where the
+tier is chosen*, not only where it bites: tier 1 "cannot be messaged once started: if you might
+need to steer this worker mid-run, choose tier 2 now". Promotion stays unimplemented until the
+event log shows the pattern is worth it.
 
 ### Tier-1 workers
 

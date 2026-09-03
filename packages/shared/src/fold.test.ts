@@ -323,6 +323,38 @@ describe("foldEvents", () => {
     expect(folded?.handoffs[0]?.reason).toBe("this needs deeper reasoning");
   });
 
+  it("records refused worker messages on the task, labelled when the worker is known", () => {
+    const s = new Stream();
+    const t = task();
+    s.push(t.id, { type: "task.created", task: t });
+    const wi = workItem(t.id, "think");
+    s.push(t.id, { type: "work_item.created", workItem: wi });
+    s.push(t.id, {
+      type: "worker.message_refused",
+      taskId: t.id,
+      workItemId: wi.id,
+      reason: "tier_1",
+      message: "change of plan",
+    });
+    // A refusal naming a work item this fold never saw is still this task's
+    // refusal — the count is the point, and an orphan would lose it.
+    s.push(t.id, {
+      type: "worker.message_refused",
+      taskId: t.id,
+      workItemId: newWorkItemId(),
+      reason: "finished",
+      message: "one more thing",
+    });
+
+    const state = foldEvents(s.events);
+    const folded = state.tasks[t.id];
+    expect(folded?.refusedMessages.map((r) => [r.label, r.reason, r.message])).toEqual([
+      ["w1", "tier_1", "change of plan"],
+      [null, "finished", "one more thing"],
+    ]);
+    expect(state.orphanedEvents).toBe(0);
+  });
+
   it("adopts a settings change wholesale, so the folded task equals the row", () => {
     // The dashboard reads the cap out of the folded `Task`, and the daemon reads
     // it out of the row. A fold that merged toward `to` instead of taking it

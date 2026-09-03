@@ -219,7 +219,10 @@ reads at its next step — a constraint you left out, an answer it needed, or an
 drop what it is doing — and the feed shows `⇄ [w2] told: …` so a worker changing course mid-run
 is explicable. The message does not interrupt work in flight: the initiator sends and then
 `wait`s as usual. Tier-1 workers cannot be messaged, and the refusal says so and names tier 2,
-because a single model call has no point at which it could read anything.
+because a single model call has no point at which it could read anything. Each such refusal is
+also recorded as a `worker.message_refused` event and listed on the task card, and the
+`spawn_worker` tier description warns about it up front, so the initiator learns to pick tier 2
+when it expects to steer (#7).
 
 All three ran live on 2026-08-28, which is what closes M6. A `uname -a` parked, was approved by
 `curl` while the stream stayed open, and the same stream finished with the kernel string; a

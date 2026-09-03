@@ -24,7 +24,7 @@ import { CapabilityTagSchema, type ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const ORCHESTRATOR_TOOLS_VERSION = 7;
+export const ORCHESTRATOR_TOOLS_VERSION = 8;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -146,8 +146,12 @@ export const INITIATOR_TOOLS: Record<string, InitiatorTool> = {
             enum: [1, 2, 3],
             description:
               "1 = one model call, no tools (default) — use it for anything that is just " +
-              "thinking, writing or summarizing. 2 = agent loop with file, shell and web " +
-              "tools in a workspace — use it when the subtask has to read or change something. " +
+              "thinking, writing or summarizing. It cannot be messaged once started: if you " +
+              "might need to steer this worker mid-run, choose tier 2 now, because " +
+              "`send_to_worker` will refuse a tier-1 target and your only recourse is to cancel " +
+              "and respawn. 2 = agent loop with file, shell and web " +
+              "tools in a workspace — use it when the subtask has to read or change something, " +
+              "or when you expect to steer it. " +
               "3 = external coding harness (brings its own model; `model` is ignored) — " +
               "reserve it for substantial multi-file coding work; starting one may pause " +
               "for the user's approval.",

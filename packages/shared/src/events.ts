@@ -82,6 +82,22 @@ export const EventPayloadSchema = z.discriminatedUnion("type", [
     toModelId: z.string(),
     reason: z.string(),
   }),
+  /**
+   * The initiator tried to steer a worker and could not: the target was a
+   * tier-1 worker (one model call, no turn boundary to read at) or had already
+   * finished. Recorded because each is a planning miss, not a delivery fault —
+   * the initiator chose a tier that forecloses steering, or steered too late —
+   * and issue #7 asks how often that happens before deciding whether the answer
+   * is prompt guidance or promoting the worker. A refusal that lives only in
+   * the tool result cannot be counted.
+   */
+  z.object({
+    type: z.literal("worker.message_refused"),
+    taskId: TaskIdSchema,
+    workItemId: WorkItemIdSchema,
+    reason: z.enum(["tier_1", "finished"]),
+    message: z.string(),
+  }),
 ]);
 export type EventPayload = z.infer<typeof EventPayloadSchema>;
 export type EventType = EventPayload["type"];

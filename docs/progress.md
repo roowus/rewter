@@ -58,8 +58,46 @@ and why in this order.
 | P2-late | Stats-driven advice: `spawn_worker.tag` → `WorkItem.taskTag`, `wireStatsRecorder` bus subscriber over `model_stats`, `stats:[…]` in the digest, prompt v7 | ✅ 2026-09-02 |
 | #10 | Tier-2 `web_search`: searxng (keyless) / Brave / Tavily behind one `SearchBackend`, declared only where a backend exists, `search` config block (strict), worker tools v3, prompt v8 | ✅ 2026-09-02 |
 | #9 | Failure instrumentation: `failure_records` (migration 0004) written by the router per failed attempt, `before_output`/`mid_stream` split, `summarizeFailures` + `GET /internal/failures`, dashboard `FailuresPanel`; the data #9 said to gather before designing resumable streams | ✅ 2026-09-02 (instrumentation; the design decision stays open) |
+| #7 | `send_to_worker` vs tier 1: `worker.message_refused` event (folded to `FoldedTask.refusedMessages`, shown on the task card, event table and skill transcript) + `spawn_worker.tier` states the steering tradeoff at spawn time (tools v8); transparent promotion deferred until the log shows the rate | ✅ 2026-09-02 (instrumentation + prompt; promotion stays open) |
 
 ## Log
+
+### 2026-09-02 — `send_to_worker` refusals become a counted fact (#7)
+
+Issue #7 named a structural gap — a tier-1 worker is one model call and cannot be steered —
+and offered two exits: the prompt guidance lands and the pattern stops showing up in the eval,
+or tier-1 workers get transparently promoted to tier 2 on the first `send_to_worker`. There is
+no eval harness, so the pattern was unobservable either way. Same move as #9: instrument first,
+decide later.
+
+- **`worker.message_refused`** `{taskId, workItemId, reason: "tier_1" | "finished", message}`
+  — appended by the engine's `send_to_worker` case on both refusal paths, before the tool
+  result goes back. The **unknown-label** refusal is deliberately not recorded: a typo is not
+  a planning miss, and the number this exists to produce is "how often did the initiator pick
+  tier 1 and then need to steer".
+- **Fold**: `FoldedTask.refusedMessages: FoldedRefusedMessage[]` carrying the worker's label
+  when the work item has been seen (`null` otherwise). Not routed through `mapWorkItem` on
+  purpose — a refusal naming an unknown work item still counts on the task instead of becoming
+  an orphan.
+- **Surfaces**: dashboard task card lists them as `w1 not told (tier 1): …` under
+  "refused messages" (the user watching `w1` carry on regardless otherwise has nothing on
+  screen explaining why); `describeEvent` renders reason-then-message in the event table; the
+  skills distiller's `eventLine` carries
+  `message to worker "…" refused (it is tier 1): …` into the condensed transcript so the tier
+  lesson can be distilled. `EVENT_TYPES` picked the new type up for the events filter and the
+  `?type=` validation without edits.
+- **Tools v8**: `spawn_worker.tier`'s description now states the tradeoff where the tier is
+  chosen — tier 1 "cannot be messaged once started: if you might need to steer this worker
+  mid-run, choose tier 2 now, because `send_to_worker` will refuse a tier-1 target and your
+  only recourse is to cancel and respawn". This is the fix the issue itself proposed.
+- **Not done**: transparent promotion. It changes the cost of a spawn after the fact and the
+  issue is explicit that it is a decision, not a default. The issue stays open until the event
+  log shows the rate.
+
+Tests: fold +1, engine +1 (typo'd label records nothing) and two existing refusal tests now
+assert the event, tools +1, distill +1, dashboard `eventSummary` +1 and `TaskTree` +1; shared
+402, server 1405, dashboard 319, CLI 174. Docs: ARCHITECTURE.md steering section and the tool
+version line.
 
 ### 2026-09-02 — Failure instrumentation: the data issue #9 asked for before designing
 

@@ -1206,6 +1206,15 @@ button.kill:disabled {
   color: var(--accent);
 }
 
+/* A steer that never reached its worker. Warn-coloured like a handoff: it is
+   the initiator's plan going wrong, not the user's. */
+.refused {
+  margin: 0 0 0.8rem;
+  padding-left: 1.2rem;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+
 .handoff {
   font-size: 0.85rem;
   color: var(--warn);

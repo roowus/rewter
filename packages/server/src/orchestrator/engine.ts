@@ -1104,7 +1104,26 @@ class Session {
         const { label, message } = parsed.args as { label: string; message: string };
         const worker = this.workers.get(label);
         if (worker === undefined) return { result: this.unknownLabel(label) };
+        // Both refusals below are planning misses — the initiator chose a tier
+        // that forecloses steering, or steered too late — and issue #7 wants
+        // them counted before deciding between prompt guidance and promotion.
+        // A refusal that lives only in the tool result cannot be counted, so
+        // each is also an event. An unknown label is not: that is a typo, not a
+        // plan.
+        const refuse = (reason: "tier_1" | "finished"): void => {
+          this.o.bus.append({
+            taskId: this.o.task.id,
+            payload: {
+              type: "worker.message_refused",
+              taskId: this.o.task.id,
+              workItemId: worker.workItem.id,
+              reason,
+              message,
+            },
+          });
+        };
         if (worker.outcome !== null) {
+          refuse("finished");
           const advice =
             "Use `get_result` for its output, or spawn a new worker for the follow-up.";
           return { result: `${label} has already finished, so it cannot read this. ${advice}` };
@@ -1113,6 +1132,7 @@ class Session {
         // turn boundary to deliver a message at. Say what to do instead — a
         // refusal the model can act on costs one turn; one it cannot costs the task.
         if (worker.workItem.tier === 1) {
+          refuse("tier_1");
           const advice =
             "Cancel it and spawn a replacement with the fuller instructions, or use tier 2 " +
             "when you expect to steer.";

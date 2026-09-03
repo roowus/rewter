@@ -198,6 +198,22 @@ describe("condenseTaskLog", () => {
       'worker "broken step" failed: timed out',
     );
   });
+
+  it("carries a refused steer into the transcript, so the tier lesson can be distilled", () => {
+    const w = workItem(succeeded.id, "quick think", { tier: 1 });
+    const events = [
+      envelope(succeeded.id, {
+        type: "worker.message_refused",
+        taskId: succeeded.id,
+        workItemId: w.id,
+        reason: "tier_1",
+        message: "actually compare against the v2 spec",
+      }),
+    ];
+    expect(condenseTaskLog(succeeded, events, [w])).toContain(
+      'message to worker "quick think" refused (it is tier 1): actually compare against the v2 spec',
+    );
+  });
 });
 
 // ── Messages ────────────────────────────────────────────────────────────────

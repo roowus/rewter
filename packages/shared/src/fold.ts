@@ -68,6 +68,22 @@ export interface FoldedHandoff {
 }
 
 /**
+ * A `send_to_worker` the engine refused. Kept on the task rather than the work
+ * item because the miss is the initiator's — it picked the tier, or the moment —
+ * and the question it answers ("how often does the planner want to steer a
+ * worker it cannot") is asked per task, not per worker.
+ */
+export interface FoldedRefusedMessage {
+  seq: number;
+  ts: number;
+  workItemId: string;
+  /** Resolved from `work_item.created` order like every other label; `null` if never seen. */
+  label: string | null;
+  reason: "tier_1" | "finished";
+  message: string;
+}
+
+/**
  * One attempt at a work item. `run` is patched in place for status/timestamps —
  * see the module note on what the stream carries.
  */
@@ -97,6 +113,8 @@ export interface FoldedTask {
   /** User turns injected mid-run. */
   steering: FoldedNote[];
   handoffs: FoldedHandoff[];
+  /** `send_to_worker` calls the engine refused — see `FoldedRefusedMessage`. */
+  refusedMessages: FoldedRefusedMessage[];
   /** Every cost record seen, whoever it was attributed to. */
   costUsd: number;
   /**
@@ -182,6 +200,7 @@ export function applyEvent(state: FoldState, event: EventEnvelope): FoldState {
           planNotes: [],
           steering: [],
           handoffs: [],
+          refusedMessages: [],
           costUsd: 0,
           initiatorCostUsd: 0,
           lastSeq: event.seq,
@@ -247,6 +266,26 @@ function applyToTask(task: FoldedTask, event: EventEnvelope): FoldedTask {
             fromWorkItemId: p.fromWorkItemId,
             toModelId: p.toModelId,
             reason: p.reason,
+          },
+        ],
+      };
+
+    // Not routed through `mapWorkItem`: a refusal naming a work item this fold
+    // never saw is still a refusal on this task, and dropping it as an orphan
+    // would undercount exactly the thing it exists to count. The label goes
+    // `null` instead.
+    case "worker.message_refused":
+      return {
+        ...task,
+        refusedMessages: [
+          ...task.refusedMessages,
+          {
+            seq: event.seq,
+            ts: event.ts,
+            workItemId: p.workItemId,
+            label: task.workItems.find((w) => w.workItem.id === p.workItemId)?.label ?? null,
+            reason: p.reason,
+            message: p.message,
           },
         ],
       };

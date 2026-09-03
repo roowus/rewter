@@ -964,6 +964,19 @@ describe("send_to_worker", () => {
     expect(feed).not.toContain("told:");
     expect(feed).toContain("finished anyway");
     expect(only(tasks())?.status).toBe("succeeded");
+
+    // And it is on the record (#7): the refusal in the tool result is what the
+    // model sees; the event is what lets anyone count how often it happens.
+    const refused = bus
+      .eventsAfter(0)
+      .map((e) => e.payload)
+      .filter((p) => p.type === "worker.message_refused");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({
+      reason: "tier_1",
+      message: "change of plan",
+      workItemId: repos.listWorkItems(only(tasks())?.id ?? "")[0]?.id,
+    });
   });
 
   it("tells the initiator to read the result instead when the worker has already finished", async () => {
@@ -979,6 +992,29 @@ describe("send_to_worker", () => {
     const sent = JSON.stringify(h.adapter.requests.at(-1)?.messages ?? []);
     expect(sent).toContain("already finished");
     expect(sent).toContain("get_result");
+
+    const refused = bus
+      .eventsAfter(0)
+      .map((e) => e.payload)
+      .filter((p) => p.type === "worker.message_refused");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ reason: "finished", message: "one more thing" });
+  });
+
+  it("does not record a typo'd label as a refusal", async () => {
+    // An unknown label is a slip, not a planning miss; counting it would
+    // inflate the very rate #7 wants to read.
+    const h = makeHarness([
+      turn(spawnTier2("real")),
+      turn({ name: "send_to_worker", args: { label: "w7", message: "hello?" } }),
+      turn({ name: "wait", args: {} }),
+      turn({ name: "finish", args: { answer: "carried on" } }),
+    ]);
+
+    await drive(h);
+
+    const types = bus.eventsAfter(0).map((e) => e.payload.type);
+    expect(types).not.toContain("worker.message_refused");
   });
 
   it("names the workers that do exist when the label does not", async () => {
