@@ -19,7 +19,7 @@
 import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 8;
+export const ORCHESTRATOR_PROMPT_VERSION = 9;
 
 /**
  * Prefix on a mid-run message from the initiator to a tier-2 worker.
@@ -133,6 +133,15 @@ A tier-2 worker can also call \`load_skill\` itself. When a skill mostly concern
 worker's part of the job, name the slug in its \`instructions\` and tell it to load it,
 rather than pasting the whole body.
 
+# Practices
+
+The task header may also include a Practices list: short standing facts the owner has
+approved — conventions, tool preferences, things they corrected once and do not want to
+repeat. Unlike skills these are not loaded on demand; they are already in front of you,
+and they apply to every task they are shown on. Follow them without being asked. When a
+practice bears on a worker's part of the job, restate it in that worker's
+\`instructions\` — workers do not see this list.
+
 # Cost discipline
 
 Every call is billed to the user. Concretely:
@@ -192,6 +201,13 @@ export interface InitiatorPromptOptions {
    * telling the model about a feature it cannot use.
    */
   skillsDigest?: string | undefined;
+  /**
+   * Rendered practices digest (`practices/digest.ts`) — the approved standing
+   * facts this task must follow. Always in context, never loaded: that is the
+   * whole difference from skills, and why its budget is a fraction of theirs.
+   * Same empty/absent-renders-nothing rule.
+   */
+  practicesDigest?: string | undefined;
   /**
    * Tier-3 harness sessions a daemon restart cut short, resumable via
    * `spawn_worker`'s `resume_session_id`. The engine computes each `cwd` from
@@ -270,6 +286,9 @@ export function buildInitiatorMessages(opts: InitiatorPromptOptions): ChatMessag
           "",
           opts.skillsDigest,
         ]),
+    ...(opts.practicesDigest === undefined || opts.practicesDigest === ""
+      ? []
+      : ["", "Practices for this task (standing facts — follow them):", "", opts.practicesDigest]),
     ...(opts.resumableSessions === undefined || opts.resumableSessions.length === 0
       ? []
       : [

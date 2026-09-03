@@ -139,6 +139,26 @@ export const SkillsConfigSchema = z
 export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 /**
+ * Practices knobs (phase 2, docs/design/practices-memory.md). Every field
+ * defaults, so a config that predates practices still boots a daemon that
+ * drafts them.
+ */
+export const PracticesConfigSchema = z
+  .object({
+    /**
+     * Draft pending practices from the corrections in each finished task's
+     * log. Inert until approved — `pending/` is never in a prompt — and
+     * cheap: the drafter only runs at all when the log holds a steering
+     * message or a denied approval, which most tasks don't.
+     */
+    distill: z.boolean().default(true),
+    /** Who drafts. Null = the same cheapest-priced pick the skills distiller makes. */
+    distillModel: z.string().min(1).nullable().default(null),
+  })
+  .default({});
+export type PracticesConfig = z.infer<typeof PracticesConfigSchema>;
+
+/**
  * Tier-3 harness knobs (phase-2 M5). Off by default: a harness is another
  * program with the owner's login and its own spend, and enabling it should be
  * a decision someone made in a file, not a default they discover on the bill.
@@ -303,6 +323,11 @@ export const ConfigSchema = z.object({
    * under here. Files are the source of truth; the DB only indexes them.
    */
   skillsDir: z.string().min(1).default("~/.rewter/skills"),
+  /**
+   * The PRACTICE.md tree: same `global/`, `<project-slug>/`, `pending/` layout
+   * as skills. The learned CLAUDE.md — approved facts ride every prompt.
+   */
+  practicesDir: z.string().min(1).default("~/.rewter/practices"),
   /** Env var NAME holding the bearer token clients must send to `/v1`. */
   apiKeyEnv: z.string().min(1).default("REWTER_API_KEY"),
   /**
@@ -317,6 +342,7 @@ export const ConfigSchema = z.object({
   models: z.array(ModelConfigSchema).default([]),
   orchestrator: OrchestratorConfigSchema,
   skills: SkillsConfigSchema,
+  practices: PracticesConfigSchema,
   harnesses: HarnessesConfigSchema,
   search: SearchConfigSchema,
 });

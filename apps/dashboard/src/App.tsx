@@ -13,6 +13,7 @@ import { DaemonFooter } from "./DaemonFooter.js";
 import { EventsPanel } from "./EventsPanel.js";
 import { FailuresPanel } from "./FailuresPanel.js";
 import { HealthPanel } from "./HealthPanel.js";
+import { PracticesPanel } from "./PracticesPanel.js";
 import { ProjectsPanel } from "./ProjectsPanel.js";
 import { ProvidersPanel } from "./ProvidersPanel.js";
 import { ReadinessCard } from "./ReadinessCard.js";
@@ -119,6 +120,10 @@ export function App(): JSX.Element {
           count even while collapsed: a proposed skill is a question waiting
           on the owner, and the header is where the question shows. */}
       <SkillsPanel />
+
+      {/* Same gate, different memory: standing facts drafted from the owner's
+          own corrections, in every initiator prompt once approved. */}
+      <PracticesPanel />
 
       {/* Collapsed, and next to the log for the same reason: both are opened
           when something has gone wrong. This one answers the question the log

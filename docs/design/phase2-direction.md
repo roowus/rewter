@@ -160,10 +160,12 @@ request; the file is the source of truth and the index is rebuilt from it.
   event bus over the existing `model_stats` table, keyed by the `tag` the initiator passes to
   `spawn_worker`; per-(model, taskTag) success/cost/latency render into the digest as
   `stats:[…]`. See ARCHITECTURE.md → "Learned stats".
-- **Practices memory** — small always-in-context durable facts (corrections, coding
-  conventions, tool preferences), global + project scoped: a learned `CLAUDE.md` the
-  system drafts and the owner approves. Same stage/approve pipeline as skills; different
-  retrieval (always in context, so the budget is tight).
+- ~~**Practices memory**~~ — **shipped 2026-09-03**, see
+  [practices-memory.md](practices-memory.md). Small always-in-context durable facts
+  (corrections, coding conventions, tool preferences), global + project scoped: a learned
+  `CLAUDE.md` the system drafts and the owner approves. Same stage/approve pipeline as
+  skills; different retrieval (always in context, so the budget is tight — 400 tokens). The
+  drafter fires on the owner's corrections (steering, denied approvals), not on effort.
 - **Skill refinement** — a skill that keeps getting loaded on tasks that then fail is
   evidence it's wrong; feed that back as a proposed edit (still gated).
 
@@ -276,7 +278,8 @@ remote-capable; TUI before skills because the approval UX for proposed skills wa
 place to live; harness last because everything before it makes the harness worth having.
 
 Stats-driven advice and practices memory queue behind P2-M4 as the loop's second and
-third dimensions (§2, "explicitly later").
+third dimensions (§2, "explicitly later"). *Both have since landed: stats 2026-09-02,
+practices 2026-09-03.*
 
 ## Key risks
 

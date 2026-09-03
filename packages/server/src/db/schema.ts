@@ -243,6 +243,23 @@ export const skills = sqliteTable(
   (t) => [index("idx_skills_slug").on(t.slug), index("idx_skills_status").on(t.status)],
 );
 
+// Phase-2 practices index — the always-in-context twin of `skills`. Same
+// files-are-truth contract: one row per PRACTICE.md, rebuilt from the tree.
+export const practices = sqliteTable(
+  "practices",
+  {
+    path: text("path").primaryKey(),
+    slug: text("slug").notNull(),
+    status: text("status").notNull(),
+    scope: text("scope").notNull(),
+    projectSlug: text("project_slug"),
+    fact: text("fact").notNull(),
+    learnedFrom: text("learned_from"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_practices_slug").on(t.slug), index("idx_practices_status").on(t.status)],
+);
+
 // Phase-2 learned stats — schema present from day one per the plan.
 export const modelStats = sqliteTable(
   "model_stats",

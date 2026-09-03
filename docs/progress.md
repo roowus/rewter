@@ -59,8 +59,61 @@ and why in this order.
 | #10 | Tier-2 `web_search`: searxng (keyless) / Brave / Tavily behind one `SearchBackend`, declared only where a backend exists, `search` config block (strict), worker tools v3, prompt v8 | ✅ 2026-09-02 |
 | #9 | Failure instrumentation: `failure_records` (migration 0004) written by the router per failed attempt, `before_output`/`mid_stream` split, `summarizeFailures` + `GET /internal/failures`, dashboard `FailuresPanel`; the data #9 said to gather before designing resumable streams | ✅ 2026-09-02 (instrumentation; the design decision stays open) |
 | #7 | `send_to_worker` vs tier 1: `worker.message_refused` event (folded to `FoldedTask.refusedMessages`, shown on the task card, event table and skill transcript) + `spawn_worker.tier` states the steering tradeoff at spawn time (tools v8); transparent promotion deferred until the log shows the rate | ✅ 2026-09-02 (instrumentation + prompt; promotion stays open) |
+| P2-late | Practices memory: `PRACTICE.md` tree + `practices` index (migration 0005), corrections-triggered drafter, stage/approve routes + `rewter practices` + dashboard panel, always-in-context 400-token digest in the per-task prompt region, prompt v9 | ✅ 2026-09-03 |
 
 ## Log
+
+### 2026-09-03 — Practices memory: the learned `CLAUDE.md` (the loop's third dimension)
+
+The direction doc filed this under "explicitly later": *small always-in-context durable facts
+(corrections, coding conventions, tool preferences), global + project scoped … same
+stage/approve pipeline as skills; different retrieval (always in context, so the budget is
+tight).* Skills teach the system how and stats teach it who; neither captures what the owner
+keeps saying. "Use pnpm, not npm" typed into a steer lives in that task's log and nowhere else,
+and the next task makes the same mistake. Design note: [practices-memory.md](design/practices-memory.md).
+
+- **Store** (`shared/practices.ts`, `server/src/practices/store.ts`): `~/.rewter/practices/
+  {global,<project>,pending}/<slug>/PRACTICE.md`, config `practicesDir`. Body is the fact,
+  whitespace-collapsed, **hard-capped at 400 chars by the parser** (`PRACTICE_MAX_CHARS`).
+  Frontmatter is **strict** — `name`, `learned_from?` (a `TaskId`), `project?` — because a
+  practice is never imported, so a stray key is a typo worth naming. Same reserved slugs,
+  same directory-is-scope / frontmatter-is-target rule, same one-transaction
+  `replacePracticesIndex` over a new `practices` table (migration 0005), boot reindex in the
+  daemon. `visiblePractices` in `shared` is the one retrieval door: nothing pending, project
+  shadows global.
+- **Drafter** (`distill.ts`, `watch.ts`, `wirePracticesDrafter`): the trigger is a
+  **correction**, not effort — `shouldDraftPractices` counts `steering.received` and
+  `approval.resolved` with `status: "denied"`, on **any** terminal state (a task the owner
+  cancelled after steering it is the strongest signal). Zero corrections is a synchronous
+  early return before the chain, so the common case costs nothing. `condenseCorrections`
+  renders only the plan notes, worker briefs, approval requests, the owner's words as
+  `USER STEERED:` / `USER DENIED:`, and worker failures (3000-token budget, middle elided).
+  Up to three `{name, fact, scope}` drafts, zod-parsed, slugified, deduped, clamped to the cap
+  **minus one** — `clamp` appends `…` past its cut, and a 401-char draft failed its own
+  `composePracticeMd` round-trip in the test before it could in the daemon. `{"skip": true}`
+  is a first-class verdict; a project-scoped draft on a project-less task lands global;
+  an already-pending twin is left alone. On by default (`practices.distill`); `pending/` is
+  inert.
+- **Gate** (`stage.ts`, `/internal/practices` routes, `rewter practices`, `PracticesPanel`):
+  the skills gate with the filename swapped — re-parse at approval, 422 on an unparseable
+  edit or a missing target project, 409 without explicit `overwrite`, reject deletes only
+  `pending/<slug>`, 501 without a tree. `rewter practices list` prints the fact under each
+  slug because it is short enough to review in the listing; pending rows are `?` with their
+  target scope.
+- **Retrieval** (`digest.ts`, engine, prompt v9): always in context, no tool.
+  `renderPracticesDigest` renders `- fact` / `- fact (project)` in stable slug order under a
+  **400-token** budget — a quarter of the skills digest, because this one is paid on every
+  task forever — and says `(N further practice(s) omitted for space — the library is over
+  budget.)` when it drops any. Rendered in the per-task region after the skills digest under
+  `Practices for this task (standing facts — follow them):`. The core prompt's new
+  `# Practices` section tells the initiator to follow them unasked and to restate the relevant
+  ones in a worker's `instructions` — **workers do not see the list**, a deliberate cost
+  decision (fan-out would multiply the always-in-context spend).
+
+Tests: shared `practices.test.ts`; server `store`, `stage`, `digest`, `distill` (24),
+`watch` (8), `app.practices` (9) plus prompt v9; CLI `practices.test.ts`; dashboard
+`PracticesPanel.test.tsx`. Docs: ARCHITECTURE.md new "Practices" section, config listing,
+design-docs bullet and phase bullets; README; direction doc roadmap struck through.
 
 ### 2026-09-02 — `send_to_worker` refusals become a counted fact (#7)
 

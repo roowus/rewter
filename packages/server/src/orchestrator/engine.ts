@@ -42,12 +42,14 @@ import {
   newTaskId,
   newWorkItemId,
   primaryWorkspace,
+  visiblePractices,
   visibleSkills,
 } from "@rewter/shared";
 import type { Repos } from "../db/repos.js";
 import type { EventBus } from "../events/bus.js";
 import { createHarnessRunner, harnessCostModelId } from "../harness/runner.js";
 import type { HarnessAdapter } from "../harness/types.js";
+import { renderPracticesDigest } from "../practices/digest.js";
 import { renderDigest } from "../registry/digest.js";
 import { pinnedInitiator } from "../router/resolve.js";
 import type { Router } from "../router/router.js";
@@ -789,6 +791,9 @@ class Session {
     const skillsDigest = renderSkillsDigest(
       visibleSkills(this.o.repos.listSkills(), this.o.project?.slug ?? null),
     );
+    const practicesDigest = renderPracticesDigest(
+      visiblePractices(this.o.repos.listPractices(), this.o.project?.slug ?? null),
+    );
     const resumableSessions = this.resumableSessions();
     const base = buildInitiatorMessages({
       digest,
@@ -797,6 +802,7 @@ class Session {
       ...(this.o.dashboardUrl !== null && { dashboardUrl: this.o.dashboardUrl }),
       ...(this.o.project !== null && { project: this.o.project }),
       ...(skillsDigest !== "" && { skillsDigest }),
+      ...(practicesDigest !== "" && { practicesDigest }),
       ...(resumableSessions.length > 0 && { resumableSessions }),
     });
     if (contextSummary === undefined) return base;

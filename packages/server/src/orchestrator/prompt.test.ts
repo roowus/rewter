@@ -31,7 +31,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(8);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(9);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {
@@ -193,6 +193,34 @@ describe("buildInitiatorMessages", () => {
         ...(skillsDigest === undefined ? {} : { skillsDigest }),
       });
       expect(without[0]?.content).not.toContain("Skills available");
+    }
+  });
+
+  it("renders the practices list in the per-task region, and nothing at all without one", () => {
+    // Practices are always in context, so they sit in the header rather than
+    // behind a tool — but still after the cache breakpoint, because visibility
+    // is project-scoped. The core prompt explains what the list is; the
+    // per-task block carries the facts.
+    const withPractices = buildInitiatorMessages({
+      digest: DIGEST,
+      conversation: CONVERSATION,
+      taskId: "task_abc",
+      practicesDigest: "- Use conventional-commit subjects (project)",
+    });
+    const text = withPractices[0]?.content ?? "";
+    expect(text).toContain("Practices for this task");
+    expect(text).toContain("- Use conventional-commit subjects (project)");
+    expect(text).toContain("# Practices");
+    expect(text.indexOf("Practices for this task")).toBeGreaterThan(text.indexOf(DIGEST));
+
+    for (const practicesDigest of [undefined, ""]) {
+      const without = buildInitiatorMessages({
+        digest: DIGEST,
+        conversation: CONVERSATION,
+        taskId: "task_abc",
+        ...(practicesDigest === undefined ? {} : { practicesDigest }),
+      });
+      expect(without[0]?.content).not.toContain("Practices for this task");
     }
   });
 

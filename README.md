@@ -119,7 +119,14 @@ is (`tag: "coding"`, from the same vocabulary the capability cards use), every s
 worker is recorded as a success or failed attempt with its own cost and latency under
 (model, tag), and the digest the initiator reads shows the record as `stats:[coding 4/5 ok
 ~$0.012 ~14s]` next to the card's opinion — evidence to weigh above `best:` when the two
-disagree. Untagged spawns are simply not counted; nothing is inferred.*
+disagree. Untagged spawns are simply not counted; nothing is inferred.* And the third
+dimension, **practices memory** — *shipped 2026-09-03: when you steer a task ("use pnpm, not
+npm") or deny an approval with a reason, the daemon drafts the standing rule behind it as a
+pending `PRACTICE.md` fact (one line, under 400 characters, global or scoped to the project);
+you review with `rewter practices` or the dashboard's practices panel, and once approved it
+sits in the initiator's prompt on every task it applies to — a learned `CLAUDE.md` you never
+have to type twice. Nothing pending is ever read; nothing is drafted from a task you did not
+correct.*
 
 Working today (M0–M3d): the **plain routing** path end to end — a bootable daemon
 (`rewter start`), both client dialects (`POST /v1/chat/completions` for OpenAI clients and

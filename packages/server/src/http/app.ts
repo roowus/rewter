@@ -32,6 +32,7 @@ import {
   OpenAIChatRequestSchema,
   type OpenAIModelEntry,
   type OpenAIToolCallWire,
+  PracticeApproveRequestSchema,
   type Project,
   ProjectCreateSchema,
   ProjectPatchSchema,
@@ -83,6 +84,8 @@ import {
 } from "../orchestrator/engine.js";
 import { type LiveTask, LiveTaskIndex, conversationKey } from "../orchestrator/live.js";
 import { type ApprovalCommand, parseSteering } from "../orchestrator/steering.js";
+import { reindexPractices } from "../practices/reindex.js";
+import { approvePractice, rejectPractice } from "../practices/stage.js";
 import { collectStream } from "../providers/collect.js";
 import { type ProbeOptions, probeProvider as realProbeProvider } from "../registry/probe.js";
 import { applyImport } from "../registry/transfer.js";
@@ -190,6 +193,8 @@ export interface AppOptions {
    * pattern; `GET /internal/skills` still lists whatever the index holds.
    */
   skillsRoot?: string | null;
+  /** The practices tree, with the same contract as `skillsRoot`. */
+  practicesRoot?: string | null;
 }
 
 /**
@@ -1395,6 +1400,66 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       });
     }
     reindexSkills(root, repos);
+    return { rejected: slug };
+  });
+
+  // ── Practices ─────────────────────────────────────────────────────────────
+  // The skills gate, one tree over: same list/approve/reject shape, same
+  // placement-is-approval semantics, same 501 without a configured tree.
+
+  app.get("/internal/practices", async (req) => {
+    const q = req.query as { status?: string };
+    const all = repos.listPractices();
+    const practices =
+      q.status === "pending" || q.status === "approved"
+        ? all.filter((p) => p.status === q.status)
+        : all;
+    return { practices };
+  });
+
+  app.post("/internal/practices/:slug/approve", async (req, reply) => {
+    const root = opts.practicesRoot;
+    if (root === undefined || root === null) {
+      return reply.code(501).send({ error: { message: "no practices directory configured" } });
+    }
+    const { slug } = req.params as { slug: string };
+    const parsed = PracticeApproveRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: { message: issues(parsed.error) } });
+
+    const outcome = approvePractice(root, slug, {
+      ...(parsed.data.overwrite !== undefined && { overwrite: parsed.data.overwrite }),
+      projectExists: (p) => repos.getProjectBySlug(p) !== undefined,
+    });
+    if (!outcome.ok) {
+      return reply.code(skillStageStatus[outcome.code]).send({
+        error: { message: outcome.reason },
+      });
+    }
+
+    const { practices, problems } = reindexPractices(root, repos);
+    const practice = practices.find((p) => p.path === outcome.path);
+    if (practice === undefined) {
+      const why = problems.find((p) => p.path === outcome.path)?.reason ?? "not in the fresh scan";
+      return reply
+        .code(500)
+        .send({ error: { message: `approved to ${outcome.path} but unreadable there: ${why}` } });
+    }
+    return { practice };
+  });
+
+  app.post("/internal/practices/:slug/reject", async (req, reply) => {
+    const root = opts.practicesRoot;
+    if (root === undefined || root === null) {
+      return reply.code(501).send({ error: { message: "no practices directory configured" } });
+    }
+    const { slug } = req.params as { slug: string };
+    const outcome = rejectPractice(root, slug);
+    if (!outcome.ok) {
+      return reply.code(skillStageStatus[outcome.code]).send({
+        error: { message: outcome.reason },
+      });
+    }
+    reindexPractices(root, repos);
     return { rejected: slug };
   });
 

@@ -30,6 +30,8 @@ import type { HarnessAdapter } from "./harness/types.js";
 import { buildApp } from "./http/app.js";
 import { Orchestrator } from "./orchestrator/engine.js";
 import { LiveTaskIndex } from "./orchestrator/live.js";
+import { reindexPractices } from "./practices/reindex.js";
+import { wirePracticesDrafter } from "./practices/watch.js";
 import { type ReconcileResult, reconcileOnBoot, reconcileSummary } from "./reconcile.js";
 import { wireStatsRecorder } from "./registry/stats.js";
 import { Router } from "./router/router.js";
@@ -218,6 +220,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   // after `listen`, never fatal — one bad import must not stop the daemon.
   const skillsDir = expandPath(config.skillsDir, home);
   const skillsIndex = reindexSkills(skillsDir, repos);
+  // The practices index has the same files-are-truth contract, one tree over.
+  const practicesDir = expandPath(config.practicesDir, home);
+  const practicesIndex = reindexPractices(practicesDir, repos);
 
   const router = new Router({ repos, env });
   // The bearer token is read from the environment by *name*, like every other
@@ -316,6 +321,29 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     },
   });
 
+  // The practices drafter is the distiller's twin for corrections: any task
+  // that ends — however it ends — with a steer or a denial in its log is
+  // offered up, and the draft lands in `pending/` with the same inertness.
+  const practicesDrafter = wirePracticesDrafter({
+    bus,
+    generator: router,
+    source: {
+      eventsAfter: (afterSeq, taskId) => bus.eventsAfter(afterSeq, taskId),
+      listWorkItems: (taskId) => repos.listWorkItems(taskId),
+      getProject: (id) => repos.getProject(id),
+      listPractices: () => repos.listPractices(),
+      getTask: (id) => repos.getTask(id),
+    },
+    repos,
+    listModels: () => repos.listModels({ enabledOnly: true }),
+    practicesRoot: practicesDir,
+    config: config.practices,
+    log: {
+      info: (obj, msg) => app.log.info(obj, msg),
+      warn: (obj, msg) => app.log.warn(obj, msg),
+    },
+  });
+
   // The learning loop's other half: every tagged worker that finishes becomes
   // one row of evidence in `model_stats`, which the digest renders back to the
   // next initiator as `stats:` facts. Wired before the app for the same reason
@@ -352,6 +380,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       // reindex then finds the DB closed, that's a caught warn and the next
       // boot's reindex picks the file up anyway.
       distiller.unsubscribe();
+      practicesDrafter.unsubscribe();
       // Stats too: the cancellations the drain below causes are the daemon
       // stopping, not the models failing, and must not be counted against them.
       stats.unsubscribe();
@@ -396,6 +425,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     // The tree the approve/reject routes move files in — same one the boot
     // reindex and the distiller write to.
     skillsRoot: skillsDir,
+    practicesRoot: practicesDir,
     // The same environment the registry was seeded against — so "test this
     // provider" answers for the process that would serve the request.
     env,
@@ -444,6 +474,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   }
   for (const { path, reason } of skillsIndex.problems) {
     app.log.warn({ path, reason }, "skill not indexed");
+  }
+  for (const { path, reason } of practicesIndex.problems) {
+    app.log.warn({ path, reason }, "practice not indexed");
   }
 
   return {

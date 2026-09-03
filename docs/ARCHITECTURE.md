@@ -755,6 +755,82 @@ successors rebuild their prompt through the same `buildMessages`, so they inheri
 for free. The frontmatter `uses` counter is deliberately not incremented yet — retrieval
 writes nothing.
 
+## Practices: the learned `CLAUDE.md`
+
+Shipped 2026-09-03 (design: [practices-memory.md](design/practices-memory.md)). The learning
+loop's third dimension after skills and stats: a **practice** is one short standing fact the
+owner wants every task to honour — a convention, a tool preference, something they corrected
+once and do not want to repeat. Where a skill is a *procedure* the model loads on demand, a
+practice is a *rule* that is already in front of it when it plans.
+
+**Same substrate as skills, one tree over.** `~/.rewter/practices` (config `practicesDir`)
+holds `global/`, `<project-slug>/`, `pending/` directories of `<slug>/PRACTICE.md`; files are
+truth and the `practices` table indexes them (`reindexPractices`, one-transaction
+`replacePracticesIndex`, rebuilt at boot and after every mutation); scope is read off the
+directory for approved files and off frontmatter `project:` for pending ones; `global` and
+`pending` are the same reserved slugs; the scanner (`server/src/practices/store.ts`) names
+problems and never throws; `visiblePractices(all, projectSlug)` in `shared` is the one
+retrieval door and pins the same two invariants — nothing pending is ever returned, project
+shadows global on a slug collision.
+
+**Where it differs, each difference is the point:**
+
+- **The body is the fact.** Whitespace-collapsed to one line, capped at `PRACTICE_MAX_CHARS`
+  (400, ~100 tokens) by the parser itself, so an over-long file is a named scan problem, not a
+  prompt tax. A fact that needs a page is a skill.
+- **The frontmatter is strict** (`name`, `learned_from?`, `project?`, `.strict()`), where the
+  skill frontmatter is passthrough. Skills are imported from other tools and must tolerate
+  their keys; practices never are, so a stray key is a typo and gets named. `learned_from` is
+  validated as a `TaskId`.
+- **The trigger is a correction, not effort.** `shouldDraftPractices` counts
+  `steering.received` events and `approval.resolved` events with `status: "denied"` — the two
+  places the log carries the owner's words against the system's plan. Approved approvals and
+  worker turns do not count. It fires on **every** terminal state (`succeeded`, `failed`,
+  `cancelled`): a correction is a correction however the task ended. The check runs
+  synchronously in the bus subscriber before anything is queued, so a task with no
+  corrections — the common case — is not even a chain link.
+- **The transcript is only the corrections** (`condenseCorrections`): plan notes and worker
+  briefs (what was about to happen), approval requests (what was asked), the owner's steering
+  and denial text verbatim as `USER STEERED:` / `USER DENIED:`, and worker failures. Budget
+  3000 tokens, middle elided. Feeding the whole log would invite procedures, which is the
+  skills distiller's job.
+- **Up to three drafts per task** (`MAX_PRACTICES_PER_TASK`), each `{name, fact, scope}`,
+  zod-parsed defensively (`parsePracticesDraft`): slugified with repair, deduped, clamped to
+  the cap *minus one* so the clamp's `…` still fits — `composePracticeMd` round-trips through
+  the store's parser before writing and a 401-character draft would have failed its own
+  composer. `{"skip": true, "reason"}` is a first-class verdict. A `project`-scoped draft on a
+  task with no project lands global. The drafter sees the existing library (pending drafts
+  marked) and is told not to re-draft it.
+
+The drafter (`server/src/practices/distill.ts`, trigger `watch.ts`, `wirePracticesDrafter`)
+is otherwise the skills distiller's twin: same `pickDistillModel`, same promise-chain queue,
+same skip of an already-pending twin, spend booked against the task, reindex after a draft
+lands, on by default (`practices.distill`) because `pending/` is inert.
+
+**Stage/approve** (`server/src/practices/stage.ts`, routes `/internal/practices` in `app.ts`)
+is the skills gate with `PRACTICE.md` substituted: re-parse at approval time, refuse an
+invalid file or a name mismatch before moving, resolve the target from frontmatter `project:`
+and check it exists against the repos (422), refuse to clobber without explicit `overwrite`
+(409), `reject` deletes only the pending directory, 501 without a configured tree. `rewter
+practices [list|show|approve|reject]` (`cli/src/practices.ts`) prints the **fact itself**
+under each slug — a practice is short enough to review in the listing — with pending ones
+marked `?` and their target scope. The dashboard `PracticesPanel` sits beside the skills panel
+with the same armed reject and explicit-overwrite-on-409.
+
+**Retrieval is always-in-context, no tool.** `renderPracticesDigest`
+(`server/src/practices/digest.ts`) renders `- fact` / `- fact (project)` lines in stable slug
+order, metered by `estimateTokens` against `DEFAULT_PRACTICES_MAX_TOKENS` = **400** — a quarter
+of the skills digest, deliberately uncomfortable, because a practice is paid for on every
+task's prompt forever. Over budget it drops from the end with `(N further practice(s) omitted
+for space — the library is over budget.)`, which is the curation prompt. The engine renders it
+into the **per-task** region of the initiator prompt after the skills digest, under
+`Practices for this task (standing facts — follow them):`; an empty library renders nothing.
+The core prompt (`ORCHESTRATOR_PROMPT_VERSION 9`) gains a `# Practices` section: these are
+already in front of you, follow them without being asked, and restate the ones that bear on a
+worker's part in that worker's `instructions` — **workers do not see the list**. That is a
+scope decision, not an omission: injecting practices into every worker prompt would multiply
+the always-in-context cost by the fan-out; the initiator sees every task and relays.
+
 ## Orchestrator engine
 
 Implemented in M5a (the engine) and M5b (the wiring) — `packages/server/src/orchestrator/`.
@@ -1676,6 +1752,11 @@ while opening another's database. It failed silently for exactly as long as no r
     "distill": true,                // draft a pending skill after each qualifying success
     "distillModel": null,           // null = cheapest enabled model with a known price
     "minWorkerTurns": 6             // worker LLM turns a task must burn to be worth learning from
+  },
+  "practicesDir": "~/.rewter/practices",  // the PRACTICE.md tree; same layout as skills
+  "practices": {
+    "distill": true,                // draft pending practices from a task's corrections
+    "distillModel": null            // null = cheapest enabled model with a known price
   },
   "apiKeyEnv": "REWTER_API_KEY",    // env var NAME holding the bearer token /v1 requires
   "search": {                       // tier-2 `web_search`; omit the block and the tool is never declared
@@ -3641,6 +3722,13 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   ahead of Brave and Tavily, with **no per-model dependence** and the tool **declared only
   where a backend exists**. Records the wire shape of each backend, the strict config block
   that cannot hold a key, and what is deliberately left for later.
+- [**Practices memory**](design/practices-memory.md) — the learning loop's third dimension,
+  shipped 2026-09-03. Why a standing rule cannot be a skill (it must be in the prompt before
+  the first turn), why the *owner's corrections* — steering and denied approvals — are the
+  trigger rather than task effort, why the body is the fact itself under a hard 400-character
+  cap with strict frontmatter, why the digest gets a quarter of the skills budget, and why
+  workers do not see the list. Records the config, the surfaces, and what is left for later
+  (worker-visible practices, use counting, contradiction detection).
 
 ## Phases
 
@@ -3658,10 +3746,12 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   items all survive inside this: harness adapters are P2-M5, tmux attach rides with it,
   and learned stats landed 2026-09-02 as the
   [stats recorder](#learned-stats-the-recorder-and-the-digest), the learning loop's second
-  dimension after skills. (The plan listed Anthropic-native `/v1/messages` here; it was
-  pulled into phase 1 as M3d once it became clear M3's own acceptance criterion depends on it.)
-- **Phase 3**: multi-initiator handoff chains, budgets, scheduling; practices memory as the
-  learning loop's third dimension; a possible project rename
+  dimension after skills; [practices memory](#practices-the-learned-claudemd), the third,
+  landed 2026-09-03 off the direction doc's "explicitly later" list. (The plan listed
+  Anthropic-native `/v1/messages` here; it was pulled into phase 1 as M3d once it became clear
+  M3's own acceptance criterion depends on it.)
+- **Phase 3**: multi-initiator handoff chains, budgets, scheduling; worker-visible practices
+  and practice use-counting if observation calls for them; a possible project rename
   ([#17](https://github.com/roowus/rewter/issues/17)).
 
 ## Key risks

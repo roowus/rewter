@@ -103,3 +103,18 @@ export const SkillSlugSchema = z
   .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
   .brand("skillSlug");
 export type SkillSlug = z.infer<typeof SkillSlugSchema>;
+
+/**
+ * Practice slugs: same shape as skill slugs, for the same reasons (dirname,
+ * list token, typed at a prompt — `rewter practices approve prefer-pnpm`). A
+ * distinct brand because a practice and a skill are different things with
+ * different retrieval, and a slug of one must not be passed where the other's
+ * is expected.
+ */
+export const PracticeSlugSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+  .brand("practiceSlug");
+export type PracticeSlug = z.infer<typeof PracticeSlugSchema>;

@@ -20,6 +20,8 @@ import {
   ModelSchema,
   type ModelStat,
   ModelStatSchema,
+  type Practice,
+  PracticeSchema,
   type Project,
   ProjectSchema,
   type Provider,
@@ -57,6 +59,7 @@ import {
   failureRecords,
   modelStats,
   models,
+  practices,
   projects,
   providers,
   skills,
@@ -369,6 +372,30 @@ export class Repos {
       .orderBy(asc(skills.slug), asc(skills.path))
       .all()
       .map((r) => SkillSchema.parse(r));
+  }
+
+  // ── Practices index ──────────────────────────────────────────────────────
+  //
+  // Same contract as the skills index: PRACTICE.md files are the truth, these
+  // rows a rebuildable cache, the only write a wholesale replacement.
+
+  replacePracticesIndex(all: Practice[]): void {
+    const parsed = all.map((p) => PracticeSchema.parse(p));
+    this.db.transaction((tx) => {
+      tx.delete(practices).run();
+      for (const p of parsed) {
+        tx.insert(practices).values(p).run();
+      }
+    });
+  }
+
+  listPractices(): Practice[] {
+    return this.db
+      .select()
+      .from(practices)
+      .orderBy(asc(practices.slug), asc(practices.path))
+      .all()
+      .map((r) => PracticeSchema.parse(r));
   }
 
   // ── Tasks ────────────────────────────────────────────────────────────────
