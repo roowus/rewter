@@ -56,8 +56,58 @@ and why in this order.
 | P2-M4 | Skills loop: SKILL.md store ✅ · distiller ✅ · stage/approve pipeline ✅ · digest + `load_skill` ✅ | ✅ 2026-09-01 |
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
 | P2-late | Stats-driven advice: `spawn_worker.tag` → `WorkItem.taskTag`, `wireStatsRecorder` bus subscriber over `model_stats`, `stats:[…]` in the digest, prompt v7 | ✅ 2026-09-02 |
+| #10 | Tier-2 `web_search`: searxng (keyless) / Brave / Tavily behind one `SearchBackend`, declared only where a backend exists, `search` config block (strict), worker tools v3, prompt v8 | ✅ 2026-09-02 |
 
 ## Log
+
+### 2026-09-02 — `web_search` lands, declared only where a backend exists (#10)
+
+Issue #10 was the oldest open design gap: the tier-2 list named `web_search` from the first
+plan, the built list did not have it, and a test pinned the absence so it stayed a decision.
+The issue asked for a design note before code; the note is
+[`docs/design/web-search.md`](design/web-search.md), and the decision it records is **a
+search API, made free-first by putting a keyless self-hosted searxng first**, with **no
+per-model dependence**. The third option the issue floated — a provider's native search — was
+declined *for this tool*: it would make tool availability model-dependent, which nothing else
+in the tier-2 loop is, and a worker handed off to a cheaper model would silently lose a tool.
+It remains a plausible model capability for the digest to advertise later, which is a
+different feature.
+
+- **`workers/search.ts`** — one `SearchBackend { id; search(q, fetchImpl?) }` with three
+  implementations: searxng (`GET <base>/search?q=&format=json`, `/search` appended unless the
+  path already ends in it), Brave (`X-Subscription-Token`, reads `web.results`) and Tavily
+  (`POST` bearer, reads `results`). Endpoint must be http(s) (`file:` passes the config's
+  `url()` check and is refused here, before any fetch); hits without an http(s) URL are
+  dropped; non-2xx and non-JSON bodies are errors naming the vendor. `createSearchBackend`
+  returns `{ backend, warning }` — a configured provider with its key unset is a **warning and
+  an undeclared tool**, never a boot failure.
+- **Config** — `search: { provider, baseUrl, apiKeyEnv, maxResults }`, `provider` default
+  `null`, `maxResults` default 8 / max 20. The block is `.strict()`, the one place in the
+  schema that is: there is no field a pasted `apiKey` can land in, so it is refused at load
+  rather than left sitting in a file people paste into issues.
+- **Availability is one value.** `WorkerToolAvailability { webSearch }` feeds both
+  `workerToolDefinitions()` (declared) and `parseWorkerArgs()` (accepted), so the two cannot
+  disagree; an undeclared call gets the ordinary `no such tool` message with a list that does
+  not include it. `WORKER_TOOL_DEFINITIONS` stays as the all-tools list for the parity test.
+  `WORKER_TOOLS_VERSION` 2 → 3.
+- **The tool** — ungated like `web_fetch`; clamps `max_results` to the config cap; renders a
+  numbered title/URL/snippet list with snippets collapsed and clipped to 400 chars; every
+  failure is text (`no results for: …`, `search failed (brave): Brave Search returned HTTP
+  429 …`).
+- **Plumbing** — resolved once in `daemon.ts`, passed to `Orchestrator` as
+  `search: { backend, maxResults } | null`, spread by the engine into each tier-2 runner. The
+  tier-2 prompt (`ORCHESTRATOR_PROMPT_VERSION` 7 → 8) tells the worker that an absent
+  `web_search` means the daemon has no backend, so absence reads as a fact about the host.
+
+Tests: server 1336 → 1387. `search.test.ts` asserts each vendor's exact wire shape — method,
+headers, query string, body — against a stub `fetch`, plus the factory's every branch and
+warning text (which never contains a key); `execute.test.ts` covers the rendering and every
+failure path through a fake backend; `tier2.test.ts` drives a scripted worker through a
+declared call and an undeclared one; `tools.test.ts` pins that the two surfaces derive from
+one value; `config.test.ts` pins the defaults, the caps and the strict refusal of a pasted
+key. Docs: ARCHITECTURE.md tool list, executor rules, config example and safety section;
+README pitch and quickstart; this file's two "absent on purpose" passages annotated rather
+than rewritten.
 
 ### 2026-09-02 — Learned stats: the `model_stats` table gets its writer (stats-driven advice)
 
@@ -2032,7 +2082,8 @@ scattered across code comments, this log, and nobody's memory. They are now
 - **[#6] the M7 remainder** (kill, costs page, registry editor), **[#11] the M8 CLI stubs**, and
   four deferred-by-design limits worth watching rather than fixing now: **[#7]** `send_to_worker`
   cannot reach tier 1, **[#8]** the digest budget is a char count, **[#9]** streams are
-  unretryable after the first chunk, **[#10]** `web_search` is specified but unimplemented.
+  unretryable after the first chunk, **[#10]** `web_search` is specified but unimplemented
+  (shipped 2026-09-02, see below).
 
 Two suspected findings did **not** survive checking, which is worth recording so nobody
 re-files them: the `@fastify/websocket` root-route trap *does* have a regression guard
@@ -2400,7 +2451,8 @@ M6b before it does anything. Two files:
 
 `web_search` from the design is **absent on purpose**, and the tool-name list is asserted
 exactly so that stays a decision: there is no search backend, and a tool that errors every
-time costs a turn to discover and invites a retry.
+time costs a turn to discover and invites a retry. *(Superseded 2026-09-02: it now exists,
+declared only when a backend is configured — the same objection, answered differently.)*
 
 The four rules the executor is built around:
 

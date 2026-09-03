@@ -34,6 +34,7 @@ import type { WorkItemId, WorkerRunId } from "@rewter/shared";
 import type { z } from "zod";
 import type { Approvals } from "./approvals.js";
 import { isReadOnlyCommand } from "./approvals.js";
+import type { SearchBackend } from "./search.js";
 import type {
   EditFileArgs,
   GlobArgs,
@@ -42,6 +43,7 @@ import type {
   ReadFileArgs,
   ShellArgs,
   WebFetchArgs,
+  WebSearchArgs,
   WriteFileArgs,
 } from "./tools.js";
 import { type Workspace, classify } from "./workspace.js";
@@ -50,6 +52,8 @@ import { type Workspace, classify } from "./workspace.js";
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_SHELL_OUTPUT = 32 * 1024;
 const MAX_FETCH_BYTES = 100 * 1024;
+/** Per result. A snippet is a pointer to a page, not the page. */
+const MAX_SNIPPET_CHARS = 400;
 const MAX_LIST_ENTRIES = 500;
 const MAX_GREP_MATCHES = 200;
 const MAX_GLOB_RESULTS = 300;
@@ -86,6 +90,12 @@ export interface ExecuteContext {
   fetchImpl?: typeof fetch;
   /** Announce a `report_progress` note to the user's feed. */
   onProgress?: (note: string) => void;
+  /**
+   * The `web_search` backend, when the daemon has one. Absent means the tool was
+   * never declared to this worker; `webSearchTool` still answers a call
+   * gracefully, because a model can call a tool it was not offered.
+   */
+  search?: { backend: SearchBackend; maxResults: number };
 }
 
 /** What a tool hands back to the model. */
@@ -523,6 +533,55 @@ export async function webFetchTool(
   const type = res.headers.get("content-type") ?? "";
   const text = type.includes("html") ? stripHtml(body) : body;
   return ok(truncate(text, MAX_FETCH_BYTES, "page"));
+}
+
+/**
+ * `web_search`: query the configured backend and render the hits as a numbered
+ * list the model can act on — title, URL, one-paragraph snippet.
+ *
+ * Ungated, like `web_fetch`: a search reads the public web and touches nothing
+ * of the user's. The one thing it must not become is a way to reach a non-http
+ * URL, and the backend module enforces that on the endpoint while the renderer
+ * drops any hit whose URL is not http(s).
+ */
+export async function webSearchTool(
+  ctx: ExecuteContext,
+  args: z.infer<typeof WebSearchArgs>,
+): Promise<ToolResult> {
+  if (ctx.search === undefined) {
+    return fail("web_search is not available on this daemon (no search provider is configured)");
+  }
+  const maxResults = Math.min(args.max_results ?? ctx.search.maxResults, ctx.search.maxResults);
+  const doFetch = ctx.fetchImpl ?? fetch;
+
+  let results: Awaited<ReturnType<SearchBackend["search"]>>;
+  try {
+    results = await ctx.search.backend.search(
+      { query: args.query, maxResults, signal: ctx.signal },
+      doFetch,
+    );
+  } catch (err) {
+    return fail(`search failed (${ctx.search.backend.id}): ${errorText(err)}`);
+  }
+
+  if (results.length === 0) return ok(`no results for: ${args.query}`);
+  const lines = results.map((r, i) => {
+    const title = r.title === "" ? r.url : r.title;
+    const snippet = collapseWhitespace(r.snippet);
+    const head = `${i + 1}. ${title}\n   ${r.url}`;
+    return snippet === "" ? head : `${head}\n   ${clip(snippet, MAX_SNIPPET_CHARS)}`;
+  });
+  const n = results.length;
+  return ok(`${n} result${n === 1 ? "" : "s"} for: ${args.query}\n\n${lines.join("\n\n")}`);
+}
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** Snippets get an ellipsis rather than `truncate`'s banner: it is one line, not a file. */
+function clip(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
 }
 
 /**

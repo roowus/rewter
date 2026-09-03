@@ -19,7 +19,7 @@
 import type { ChatMessage, Project } from "@rewter/shared";
 
 /** Bumped whenever the core prompt changes shape. Snapshot-tested for stability. */
-export const ORCHESTRATOR_PROMPT_VERSION = 7;
+export const ORCHESTRATOR_PROMPT_VERSION = 8;
 
 /**
  * Prefix on a mid-run message from the initiator to a tier-2 worker.
@@ -371,6 +371,10 @@ Files and commands act on your working directory unless you give an absolute pat
 - \`load_skill\` fetches a learned procedure by slug from the skill library. If your
   instructions name a skill, load it before starting and follow it. It reads the
   library, not your workspace, so it never needs approval.
+- \`web_fetch\` reads one URL. \`web_search\`, when it is offered to you, finds pages:
+  search first, then fetch only the one or two results worth reading. Neither needs
+  approval. If \`web_search\` is not among your tools, this daemon has no search
+  backend — work from URLs you are given or already know.
 
 # Approvals
 

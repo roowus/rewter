@@ -280,6 +280,58 @@ describe("harnesses.generic", () => {
   });
 });
 
+describe("search", () => {
+  it("defaults to no provider — an old config boots with web_search undeclared", () => {
+    const path = writeConfig({ port: 1234 });
+    const { config } = loadConfig({ path, env: {} });
+    expect(config.search).toEqual({
+      provider: null,
+      baseUrl: null,
+      apiKeyEnv: null,
+      maxResults: 8,
+    });
+  });
+
+  it("accepts a full block", () => {
+    const path = writeConfig({
+      search: {
+        provider: "searxng",
+        baseUrl: "https://searx.example",
+        apiKeyEnv: "SEARX_TOKEN",
+        maxResults: 12,
+      },
+    });
+    const { config } = loadConfig({ path, env: {} });
+    expect(config.search.provider).toBe("searxng");
+    expect(config.search.baseUrl).toBe("https://searx.example");
+    expect(config.search.apiKeyEnv).toBe("SEARX_TOKEN");
+    expect(config.search.maxResults).toBe(12);
+  });
+
+  it("rejects a provider it has no backend for", () => {
+    const path = writeConfig({ search: { provider: "google" } });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/provider/);
+  });
+
+  it("caps maxResults at 20 — the tool's own schema caps a call there too", () => {
+    const path = writeConfig({ search: { provider: "brave", maxResults: 21 } });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/maxResults/);
+  });
+
+  it("rejects a baseUrl that is not a URL", () => {
+    const path = writeConfig({ search: { provider: "searxng", baseUrl: "searx.example" } });
+    expect(() => loadConfig({ path, env: {} })).toThrow(/baseUrl/);
+  });
+
+  it("never holds a key — only the name of the variable that does", () => {
+    // The block has no field a raw key could go in. Anything that looks like
+    // one is an unknown key and refused, so a copy-pasted secret cannot land in
+    // a config file that is routinely shared.
+    const path = writeConfig({ search: { provider: "brave", apiKey: "BSA-secret" } });
+    expect(() => loadConfig({ path, env: {} })).toThrow();
+  });
+});
+
 describe("isLoopbackHost", () => {
   it("recognizes the loopback spellings", () => {
     expect(isLoopbackHost("127.0.0.1")).toBe(true);

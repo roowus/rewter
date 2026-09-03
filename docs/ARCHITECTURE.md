@@ -88,7 +88,7 @@ All risky actions flow through one choke point (`approvals.require`):
    or reports failure.
 
 Risk classes: `shell` gated unless allowlisted-readonly; file writes gated iff outside the
-task workspace; `web_fetch` logged, ungated.
+task workspace; `web_fetch` and `web_search` logged, ungated.
 
 ### As built (M6a/M6b)
 
@@ -1608,6 +1608,12 @@ while opening another's database. It failed silently for exactly as long as no r
     "minWorkerTurns": 6             // worker LLM turns a task must burn to be worth learning from
   },
   "apiKeyEnv": "REWTER_API_KEY",    // env var NAME holding the bearer token /v1 requires
+  "search": {                       // tier-2 `web_search`; omit the block and the tool is never declared
+    "provider": "searxng",          // "searxng" | "brave" | "tavily" | null
+    "baseUrl": "http://localhost:8888", // searxng instance (brave/tavily: optional override)
+    "apiKeyEnv": null,              // brave/tavily key VARIABLE NAME; defaults BRAVE_SEARCH_API_KEY / TAVILY_API_KEY
+    "maxResults": 8                 // per call, max 20
+  },
   "providers": [
     { "preset": "anthropic" },
     { "preset": "zai" }
@@ -1624,8 +1630,10 @@ line; `slug` + `kind` (+ optional `baseUrl`, `apiKeyEnv`, `name`) describes an u
 table doesn't know. Anything given explicitly overrides the preset.
 
 **No secret ever appears in this file.** `apiKeyEnv` is the *name* of an environment
-variable, both for provider keys and for rewter's own bearer token — the file is safe to
-paste into an issue.
+variable, for provider keys, for rewter's own bearer token and for the search backend's key
+— the file is safe to paste into an issue. The `search` block is the one schema that is
+`strict`, so a pasted `"apiKey": "BSA-…"` is refused at load rather than silently ignored and
+left sitting in a shared file.
 
 Precedence is **env > file > defaults**, with `REWTER_HOST`, `REWTER_PORT` and `REWTER_DB`
 as the overrides. A `REWTER_PORT` that isn't a number is a hard error rather than a silent
@@ -2008,6 +2016,7 @@ running daemon by surprise.
 `WorkerAdapter` interface abstracts tiers (`run(ctx)`, optional `send()` for follow-up
 injection). Tier-2 tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`,
 `grep`, `shell` (a POSIX shell `-c`, cwd=workspace, timeout, 32KB output tail cap), `web_fetch`,
+`web_search` (only when a search backend is configured — see below), `load_skill`,
 `report_progress`, `finish_report`.
 
 Workspace: `~/.rewter/workspaces/<taskId>/`, shared by a task's workers. Task settings may
@@ -2022,10 +2031,17 @@ argument rejected that the model was never told to send. `parseWorkerArgs` retur
 *message* on any failure, because a worker that dies over a number where a string was wanted
 has burned a whole subtask on something a one-turn correction fixes.
 
-**`web_search` from the design is deliberately absent**, and the tool-name list is asserted
-exactly so that stays a decision rather than an omission: there is no search backend to call,
-and a tool that errors every time costs a turn to discover and invites a retry. It lands when
-a provider does.
+**`web_search` is declared only where a backend exists.** Until 2026-09-02 it was absent
+outright, for the reason that still governs the conditional form: a tool that errors every
+time costs a turn to discover and invites a retry. Now `workers/tools.ts` carries the full
+list (`WORKER_TOOL_DEFINITIONS`) and a per-run `WorkerToolAvailability` — `{ webSearch }` —
+that both `workerToolDefinitions()` (what the model is told) and `parseWorkerArgs()` (what is
+accepted) derive from, so the two surfaces cannot disagree. On a daemon with no
+`search.provider`, the worker is never told the tool exists, and a call to it anyway gets
+`no such tool "web_search". Available: …` — the same message as any other typo. The tier-2
+prompt says in so many words that an absent `web_search` means the daemon has no search
+backend, so the model reads its absence as a fact about the host and not a bug. The design
+note is [`docs/design/web-search.md`](design/web-search.md).
 
 Two schema-level refusals earn their keep. An empty `path` is rejected, because
 `resolve(cwd, "")` is `cwd` — a write "to the working directory" is never what the model
@@ -2087,6 +2103,18 @@ Per-tool decisions worth stating:
   entirely, which is the one thing a fetch tool must not become. HTML is reduced to text with
   `<script>`/`<style>` bodies dropped *first*, or a page's minified bundle would be the
   majority of what the worker reads.
+- **`web_search` is ungated for the same reason, and its backend is one of three.**
+  `workers/search.ts` normalizes searxng (keyless, `GET <base>/search?q=&format=json`),
+  Brave Search (`X-Subscription-Token`) and Tavily (`POST`, bearer) to one
+  `{ title, url, snippet }[]`. The endpoint must be http(s), hits without an http(s) URL are
+  dropped (a result the worker cannot fetch is not a result), the row count is clamped to the
+  configured `search.maxResults` (default 8, hard max 20, and the tool's own `max_results`
+  argument cannot exceed the config), and each snippet is whitespace-collapsed and clipped to
+  400 characters. The worker sees a numbered list — title, URL, snippet — sized for "pick one
+  or two to `web_fetch`" rather than for reading. A backend error is a tool result naming the
+  vendor and the HTTP status, never a throw. `createSearchBackend(config.search, env)` runs
+  once at daemon boot; a configured provider whose key variable is unset logs one warning
+  alongside the "provider disabled" lines and leaves the tool undeclared.
 
 Its tests run against real temp directories rather than a mocked `fs`, because the thing worth
 testing is exactly what a mock would paper over: symlink following, parent creation, resolved
@@ -3523,6 +3551,12 @@ Larger decisions and investigations live under [`docs/design/`](design/):
   [a translation debug panel](#what-the-model-actually-receives) — and an
   explicit account of what is deliberately *not* adopted (tabs, a router, a command palette,
   combos) and why, argued against [the dashboard app](#the-dashboard-app-one-store-one-clock-m7c).
+- [**`web_search` for tier-2 workers**](design/web-search.md) — the note issue #10 asked for
+  before code, shipped 2026-09-02. Weighs a search API against scraping and against a
+  provider's native search; picks the API, made free-first by a keyless self-hosted searxng
+  ahead of Brave and Tavily, with **no per-model dependence** and the tool **declared only
+  where a backend exists**. Records the wire shape of each backend, the strict config block
+  that cannot hold a key, and what is deliberately left for later.
 
 ## Phases
 

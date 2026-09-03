@@ -37,6 +37,7 @@ import type { WorkerContext, WorkerRouter } from "../orchestrator/worker.js";
 import type { RouteRequest } from "../router/router.js";
 import { model } from "../testing/registry.js";
 import { Approvals } from "./approvals.js";
+import type { SearchBackend, SearchResult } from "./search.js";
 import { type Tier2Options, createTier2Runner, runTier2Worker } from "./tier2.js";
 import { type Workspace, openWorkspace } from "./workspace.js";
 
@@ -269,6 +270,58 @@ describe("the happy path", () => {
     expect(names).toContain("shell");
     expect(names).toContain("finish_report");
     expect(names).not.toContain("spawn_worker");
+  });
+
+  describe("web_search is declared only when a backend is configured", () => {
+    const backend = (results: SearchResult[]): SearchBackend => ({
+      id: "fake",
+      async search() {
+        return results;
+      },
+    });
+
+    it("leaves web_search out of the declared tools without a backend", async () => {
+      const router = scriptedRouter([report("success", "ok")]);
+      await runTier2Worker(makeContext(router), options());
+      const names = (router.requests[0]?.tools ?? []).map((t) => t.name);
+      expect(names).not.toContain("web_search");
+      expect(names).toContain("web_fetch");
+    });
+
+    it("declares it, and dispatches to the backend, when one is configured", async () => {
+      const router = scriptedRouter([
+        toolCall("web_search", { query: "rewter" }),
+        report("success", "found it"),
+      ]);
+      await runTier2Worker(
+        makeContext(router),
+        options({
+          search: {
+            backend: backend([{ title: "Hit", url: "https://hit.example/", snippet: "s" }]),
+            maxResults: 8,
+          },
+        }),
+      );
+      const names = (router.requests[0]?.tools ?? []).map((t) => t.name);
+      expect(names).toContain("web_search");
+      const toolTurn = router.requests[1]?.messages.find((m) => m.role === "tool");
+      expect(toolTurn?.name).toBe("web_search");
+      expect(toolTurn?.content).toContain("https://hit.example/");
+    });
+
+    it("answers an undeclared web_search call as an unknown tool, not with a search", async () => {
+      // Models remember tools from other runs. The refusal has to name what is
+      // available so the next turn can be `web_fetch` on a known URL instead.
+      const router = scriptedRouter([
+        toolCall("web_search", { query: "rewter" }),
+        report("partial", "no search here"),
+      ]);
+      const outcome = await runTier2Worker(makeContext(router), options());
+      expect(outcome.status).toBe("succeeded");
+      const toolTurn = router.requests[1]?.messages.find((m) => m.role === "tool");
+      expect(toolTurn?.content).toContain('no such tool "web_search"');
+      expect(toolTurn?.content).toContain("web_fetch");
+    });
   });
 
   it("puts the workspace in the prompt so relative paths mean something", async () => {

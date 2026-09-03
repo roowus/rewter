@@ -7,10 +7,12 @@
  * send), and a bad call must come back as a *result* the model can fix in one
  * turn rather than an exception that ends the subtask.
  *
- * One extra assertion carries its weight here: the exact tool-name list. It is
- * what makes `web_search`'s absence a decision — there is no search backend, so
- * declaring it would hand a worker a tool that fails every time — rather than
- * something that fell out during editing.
+ * One extra assertion carries its weight here: the exact tool-name list, so a
+ * tool cannot fall in or out during editing. And one tool is conditional:
+ * `web_search` is declared only where a search backend exists, because a tool
+ * that fails every time costs a turn to discover and invites a retry. The
+ * declared surface and the accepted surface must agree on that, which is the
+ * property the availability tests pin.
  */
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -18,7 +20,9 @@ import {
   WORKER_TOOLS,
   WORKER_TOOLS_VERSION,
   WORKER_TOOL_DEFINITIONS,
+  availableWorkerToolNames,
   parseWorkerArgs,
+  workerToolDefinitions,
 } from "./tools.js";
 
 /** The JSON-Schema half, typed only as far as this test reads it. */
@@ -46,11 +50,8 @@ const TOOL_NAMES = Object.keys(WORKER_TOOLS);
 
 describe("the worker tool surface", () => {
   it("declares exactly the tools the tier-2 loop dispatches", () => {
-    // `web_search` is absent on purpose: there is no search backend to call, and
-    // a tool that errors every time costs a turn to discover and invites a
-    // retry. This assertion is what keeps that a decision. Most of these live in
-    // execute.ts; `load_skill`, `report_progress` and `finish_report` are the
-    // loop's own (they never touch the workspace).
+    // Most of these live in execute.ts; `load_skill`, `report_progress` and
+    // `finish_report` are the loop's own (they never touch the workspace).
     expect(TOOL_NAMES.sort()).toEqual(
       [
         "edit_file",
@@ -63,14 +64,56 @@ describe("the worker tool surface", () => {
         "report_progress",
         "shell",
         "web_fetch",
+        "web_search",
         "write_file",
       ].sort(),
     );
-    expect(TOOL_NAMES).not.toContain("web_search");
   });
 
   it("keeps the version constant in step with the surface", () => {
-    expect(WORKER_TOOLS_VERSION).toBe(2);
+    expect(WORKER_TOOLS_VERSION).toBe(3);
+  });
+
+  describe("web_search is declared only where a backend exists", () => {
+    it("is left out of the declared surface without one, and nothing else is", () => {
+      const without = workerToolDefinitions({ webSearch: false }).map((t) => t.name);
+      const withSearch = workerToolDefinitions({ webSearch: true }).map((t) => t.name);
+      expect(without).not.toContain("web_search");
+      expect(withSearch).toContain("web_search");
+      expect(withSearch.filter((n) => n !== "web_search")).toEqual(without);
+      // The full list is what the parity tests audit; it never shrinks.
+      expect(withSearch).toEqual(WORKER_TOOL_DEFINITIONS.map((t) => t.name));
+    });
+
+    it("keeps the declared names and the accepted names the same list", () => {
+      for (const webSearch of [true, false]) {
+        expect(availableWorkerToolNames({ webSearch })).toEqual(
+          workerToolDefinitions({ webSearch }).map((t) => t.name),
+        );
+      }
+    });
+
+    it("refuses an undeclared web_search call the way it refuses any invented tool", () => {
+      // Models remember tools from other runs. The answer has to name what *is*
+      // available so the model can route around it in one turn.
+      const result = parseWorkerArgs("web_search", '{"query":"x"}', { webSearch: false });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain('no such tool "web_search"');
+      expect(result.error).toContain("web_fetch");
+      expect(result.error).not.toMatch(/Available:.*web_search/);
+    });
+
+    it("accepts the same call once a backend is configured", () => {
+      const result = parseWorkerArgs("web_search", '{"query":"x","max_results":5}', {
+        webSearch: true,
+      });
+      expect(result).toEqual({ ok: true, args: { query: "x", max_results: 5 } });
+    });
+
+    it("defaults to the full surface, which is what the schema audits want", () => {
+      expect(parseWorkerArgs("web_search", '{"query":"x"}').ok).toBe(true);
+    });
   });
 
   it("exports one definition per tool, each with the name it is keyed under", () => {

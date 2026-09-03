@@ -257,6 +257,34 @@ export const HarnessesConfigSchema = z
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 export type GenericHarnessConfig = HarnessesConfig["generic"][number];
 
+/**
+ * The `web_search` backend (issue #10; `docs/design/web-search.md`). Off by
+ * default — `provider: null` — and then the tool is not merely disabled but
+ * **undeclared**: a tier-2 worker never sees a `web_search` it cannot use.
+ * Configuring a provider is what makes the tool appear.
+ *
+ * `searxng` is keyless and needs `baseUrl`; `brave` and `tavily` read their key
+ * from the environment by name (`apiKeyEnv`, with a per-provider default). A
+ * configured provider whose key is unset logs one warning at boot and leaves
+ * the tool undeclared — booting without search is the right failure for a
+ * missing key.
+ */
+export const SearchConfigSchema = z
+  .object({
+    provider: z.enum(["searxng", "brave", "tavily"]).nullable().default(null),
+    /** Instance URL for searxng; an endpoint override for the others. */
+    baseUrl: z.string().url().nullable().default(null),
+    /** Env var NAME holding the key. Never the key. */
+    apiKeyEnv: z.string().min(1).nullable().default(null),
+    /** Results per query. Kept small: each one is context the worker pays for. */
+    maxResults: z.number().int().positive().max(20).default(8),
+  })
+  // Strict so there is no field a pasted key can land in: `apiKey: "BSA-…"` is
+  // refused at load rather than silently ignored and left in a shared file.
+  .strict()
+  .default({});
+export type SearchConfig = z.infer<typeof SearchConfigSchema>;
+
 export const ConfigSchema = z.object({
   /** Loopback by default: the daemon holds provider keys and gates nothing else. */
   host: z.string().min(1).default("127.0.0.1"),
@@ -290,6 +318,7 @@ export const ConfigSchema = z.object({
   orchestrator: OrchestratorConfigSchema,
   skills: SkillsConfigSchema,
   harnesses: HarnessesConfigSchema,
+  search: SearchConfigSchema,
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

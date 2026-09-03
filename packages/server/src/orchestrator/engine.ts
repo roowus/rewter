@@ -54,6 +54,7 @@ import type { Router } from "../router/router.js";
 import { renderSkillsDigest } from "../skills/digest.js";
 import { loadSkillResult } from "../skills/lookup.js";
 import { Approvals } from "../workers/approvals.js";
+import type { SearchBackend } from "../workers/search.js";
 import { createTier2Runner } from "../workers/tier2.js";
 import { type Workspace, openWorkspace } from "../workers/workspace.js";
 import {
@@ -106,6 +107,12 @@ export interface OrchestratorOptions {
    * existed — the daemon only passes adapters when the config enables them.
    */
   harnesses?: HarnessAdapter[] | undefined;
+  /**
+   * The tier-2 `web_search` backend. Absent (the default) leaves the tool
+   * undeclared to every worker; the daemon passes one only when the config
+   * names a provider whose key is present.
+   */
+  search?: { backend: SearchBackend; maxResults: number } | undefined;
   /** Model that leads when nothing is pinned or configured. */
   defaultInitiatorModel?: string | null;
   /** Printed at the top of the feed so the user can open the task. */
@@ -402,6 +409,7 @@ export class Orchestrator {
       runWorker: this.runWorker,
       workspacesDir: this.workspacesDir,
       harnesses: this.opts.harnesses ?? [],
+      search: this.opts.search ?? null,
       abort: taskAbort,
       maxTurns: this.opts.maxTurns ?? DEFAULT_MAX_TURNS,
       maxHandoffs: this.opts.maxHandoffs ?? DEFAULT_MAX_HANDOFFS,
@@ -489,6 +497,7 @@ interface SessionOptions {
   runWorker: WorkerRunner | null;
   workspacesDir: string;
   harnesses: HarnessAdapter[];
+  search: { backend: SearchBackend; maxResults: number } | null;
   abort: AbortController;
   maxTurns: number;
   maxHandoffs: number;
@@ -631,6 +640,8 @@ class Session {
     const runner = createTier2Runner({
       workspace,
       approvals,
+      // Absent means `web_search` is not declared to the worker at all.
+      ...(this.o.search === null ? {} : { search: this.o.search }),
       // Bound here because only the engine knows the task's project, and skill
       // visibility is project-scoped.
       loadSkill: (slug) => this.loadSkill(slug),

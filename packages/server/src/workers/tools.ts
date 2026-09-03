@@ -11,10 +11,12 @@
  * job without, because each one is also a way to reach the disk, and the gate in
  * `approvals.ts` has to be consulted from every single one of them.
  *
- * **`web_search` from the design is absent**, and not by oversight: there is no
- * search backend to call. Declaring it would offer a worker a tool that returns
- * an error every time, which is worse than not having it — the model spends a
- * turn discovering that, and may well try again. It lands when a provider does.
+ * **`web_search` is conditional.** It is declared to a worker only when the
+ * daemon has a search backend configured (`search.provider` in the config; see
+ * `docs/design/web-search.md`). Offering a tool that returns an error every time
+ * is worse than not having it — the model spends a turn discovering that, and
+ * may well try again — so `workerToolDefinitions({ webSearch })` leaves it out
+ * and `parseWorkerArgs` refuses it when there is nothing behind it.
  *
  * Two conventions the descriptions carry, because the model learns them nowhere
  * else: `edit_file` needs a *unique* anchor string, and `finish_report` is how a
@@ -25,7 +27,7 @@ import type { ToolDefinition } from "@rewter/shared";
 import { z } from "zod";
 
 /** Bumped when the tool surface changes shape; snapshot-tested. */
-export const WORKER_TOOLS_VERSION = 2;
+export const WORKER_TOOLS_VERSION = 3;
 
 const str = (description: string) => ({ type: "string", description }) as const;
 
@@ -73,6 +75,12 @@ export const ShellArgs = z.object({
 
 export const WebFetchArgs = z.object({
   url: z.string().trim().min(1).max(4_000),
+});
+
+export const WebSearchArgs = z.object({
+  query: z.string().trim().min(1).max(500),
+  /** Capped further by the daemon's `search.maxResults`. */
+  max_results: z.number().int().positive().max(20).optional(),
 });
 
 export const LoadSkillArgs = z.object({
@@ -240,6 +248,25 @@ export const WORKER_TOOLS: Record<string, WorkerTool> = {
     },
   },
 
+  web_search: {
+    schema: WebSearchArgs,
+    definition: {
+      name: "web_search",
+      description:
+        "Search the web. Returns a ranked list of results, each with a title, URL and " +
+        "snippet — then use web_fetch on the URLs worth reading. Keep queries short and " +
+        "specific; one good query beats three vague ones.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: str("The search query."),
+          max_results: { type: "integer", description: "How many results to return. Default 8." },
+        },
+        required: ["query"],
+      },
+    },
+  },
+
   load_skill: {
     schema: LoadSkillArgs,
     definition: {
@@ -302,10 +329,40 @@ export const WORKER_TOOLS: Record<string, WorkerTool> = {
   },
 };
 
-/** The definitions to send with a chat request. */
+/**
+ * Which tools are optional, and the option that switches each one on. Today that
+ * is one tool; the shape is a table so the next backend-dependent tool adds a
+ * row here rather than another `if` in the loop.
+ */
+export interface WorkerToolAvailability {
+  /** A search backend is configured, so `web_search` has something to call. */
+  webSearch: boolean;
+}
+
+/** Every tool, including the conditional ones. What the tests audit. */
 export const WORKER_TOOL_DEFINITIONS: ToolDefinition[] = Object.values(WORKER_TOOLS).map(
   (t) => t.definition,
 );
+
+function isAvailable(name: string, availability: WorkerToolAvailability): boolean {
+  return name !== "web_search" || availability.webSearch;
+}
+
+/** The names a worker may call on this daemon, in declaration order. */
+export function availableWorkerToolNames(availability: WorkerToolAvailability): string[] {
+  return Object.keys(WORKER_TOOLS).filter((name) => isAvailable(name, availability));
+}
+
+/**
+ * The definitions to send with a chat request — the surface **this** daemon can
+ * honour, which is the whole point of the conditional tool: a worker is told
+ * about `web_search` only where calling it can succeed.
+ */
+export function workerToolDefinitions(availability: WorkerToolAvailability): ToolDefinition[] {
+  return Object.entries(WORKER_TOOLS)
+    .filter(([name]) => isAvailable(name, availability))
+    .map(([, t]) => t.definition);
+}
 
 export type ParsedWorkerArgs = { ok: true; args: unknown } | { ok: false; error: string };
 
@@ -317,11 +374,20 @@ export type ParsedWorkerArgs = { ok: true; args: unknown } | { ok: false; error:
  * keeps a malformed-JSON model reply from becoming a thrown error somewhere.
  * Like the orchestrator's `parseToolArgs`, every failure is a string for the
  * model to read and fix in one turn.
+ *
+ * `availability` defaults to everything, which is right for the tests that audit
+ * schemas; the loop passes what it declared, so a model that calls an undeclared
+ * `web_search` anyway (it happens — models remember tools from other runs) gets
+ * the same "no such tool" answer it would for any invented name.
  */
-export function parseWorkerArgs(name: string, rawArguments: string): ParsedWorkerArgs {
-  const tool = WORKER_TOOLS[name];
+export function parseWorkerArgs(
+  name: string,
+  rawArguments: string,
+  availability: WorkerToolAvailability = { webSearch: true },
+): ParsedWorkerArgs {
+  const tool = isAvailable(name, availability) ? WORKER_TOOLS[name] : undefined;
   if (tool === undefined) {
-    const known = Object.keys(WORKER_TOOLS).join(", ");
+    const known = availableWorkerToolNames(availability).join(", ");
     return { ok: false, error: `no such tool "${name}". Available: ${known}.` };
   }
 

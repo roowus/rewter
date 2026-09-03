@@ -36,6 +36,7 @@ import { Router } from "./router/router.js";
 import { removePidfile, writePidfile } from "./service/pidfile.js";
 import { reindexSkills } from "./skills/reindex.js";
 import { wireDistiller } from "./skills/watch.js";
+import { createSearchBackend } from "./workers/search.js";
 
 export interface StartDaemonOptions {
   /** Explicit config path (`--config`); otherwise `~/.rewter/config.json`. */
@@ -237,11 +238,20 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
     );
   }
 
+  // Resolved once at boot. A configured provider whose key is unset is a
+  // warning and an undeclared tool, not a boot failure — same treatment as a
+  // provider with a missing key. The warning is logged with the others below.
+  const search = createSearchBackend(config.search, env);
+
   const orchestrator = new Orchestrator({
     router,
     repos,
     bus,
     defaultInitiatorModel: config.orchestrator.initiatorModel,
+    // Absent means tier-2 workers are never told `web_search` exists.
+    ...(search.backend === null
+      ? {}
+      : { search: { backend: search.backend, maxResults: config.search.maxResults } }),
     // Not created here: `openWorkspace` mkdirs the per-task directory (and its
     // parents) on the first tier-2 spawn, so a daemon that never orchestrates
     // never makes the directory.
@@ -428,6 +438,9 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
   for (const warning of seeded.warnings) app.log.warn({ warning }, "config");
   for (const { slug, env: name } of seeded.missingKeys) {
     app.log.warn({ provider: slug, envVar: name }, "provider disabled: key env var is unset");
+  }
+  if (search.warning !== null) {
+    app.log.warn({ provider: config.search.provider }, search.warning);
   }
   for (const { path, reason } of skillsIndex.problems) {
     app.log.warn({ path, reason }, "skill not indexed");

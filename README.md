@@ -172,6 +172,11 @@ file it only half received; files keep the head, `shell` keeps the tail. Reads a
 when they leave the zone, `edit_file` refuses an ambiguous anchor rather than editing
 somewhere the model never looked, the recursive walk won't follow a symlink out of the tree,
 and `web_fetch` takes http(s) only — `file:` would be a way around the path gate entirely.
+`web_search` (2026-09-02, [design note](docs/design/web-search.md)) sits beside it and is
+**declared only when the daemon has a search backend**: a keyless self-hosted
+[searxng](https://docs.searxng.org/) instance, Brave Search, or Tavily, chosen by a `search`
+block in the config with the key named by env var. A daemon with no backend never tells a
+worker the tool exists, so it cannot burn a turn discovering that it does not work.
 
 The loop that drives them (M6d) is the same `WorkerRunner` shape as a tier-1 worker, so the
 engine needs no case analysis — but a loop has a model as an unreliable participant, and that
@@ -408,6 +413,16 @@ stay in the file you paste this into.
       "pricing": { "inputPerMTok": 0.6, "outputPerMTok": 2.2 } }
   ]
 }
+```
+
+Optionally give tier-2 workers `web_search`. Without this block the tool is simply not
+offered; with it, every worker on every model has it:
+
+```jsonc
+  "search": { "provider": "searxng", "baseUrl": "http://localhost:8888" }  // keyless, self-hosted
+  // or: { "provider": "brave" }   — reads $BRAVE_SEARCH_API_KEY
+  // or: { "provider": "tavily" }  — reads $TAVILY_API_KEY
+  // "apiKeyEnv" names a different variable; "maxResults" caps a call (default 8, max 20)
 ```
 
 Put the command on your `PATH` once, and it works from any directory:

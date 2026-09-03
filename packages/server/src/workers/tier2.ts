@@ -52,9 +52,11 @@ import {
   readFileTool,
   shellTool,
   webFetchTool,
+  webSearchTool,
   writeFileTool,
 } from "./execute.js";
-import { WORKER_TOOL_DEFINITIONS, parseWorkerArgs } from "./tools.js";
+import type { SearchBackend } from "./search.js";
+import { type WorkerToolAvailability, parseWorkerArgs, workerToolDefinitions } from "./tools.js";
 import type { Workspace } from "./workspace.js";
 
 /**
@@ -73,8 +75,15 @@ export interface Tier2Options {
   workspace: Workspace;
   /** The one gate. Shared per task, so denials are remembered across workers. */
   approvals: Approvals;
-  /** Injected so `web_fetch` tests need no network. */
+  /** Injected so `web_fetch` and `web_search` tests need no network. */
   fetchImpl?: typeof fetch | undefined;
+  /**
+   * The `web_search` backend. Absent — the default, and the state of any daemon
+   * without `search.provider` configured — means the tool is **not declared**
+   * to the worker at all, rather than declared and refusing: a model offered a
+   * tool that always errors spends a turn learning that and may try again.
+   */
+  search?: { backend: SearchBackend; maxResults: number } | undefined;
   /**
    * A `report_progress` note, for the user's live feed. The `workItem` comes
    * along because the engine labels lines by worker (`▶ [w2] …`) and only it
@@ -141,10 +150,15 @@ export async function runTier2Worker(
     workerRunId: run.id,
     signal: ctx.signal,
     ...(opts.fetchImpl === undefined ? {} : { fetchImpl: opts.fetchImpl }),
+    ...(opts.search === undefined ? {} : { search: opts.search }),
     ...(opts.onProgress === undefined
       ? {}
       : { onProgress: (note: string) => opts.onProgress?.(note, ctx.workItem, run.id) }),
   };
+  // Decided once per run and used for both halves — what is declared and what
+  // is accepted — so the two cannot disagree.
+  const availability: WorkerToolAvailability = { webSearch: opts.search !== undefined };
+  const tools = workerToolDefinitions(availability);
 
   const messages: ChatMessage[] = buildTier2Messages({
     instructions: ctx.workItem.instructions,
@@ -178,7 +192,7 @@ export async function runTier2Worker(
         {
           model: ctx.workItem.modelId,
           messages,
-          tools: WORKER_TOOL_DEFINITIONS,
+          tools,
           maxTokens: opts.maxTokens ?? ctx.maxTokens ?? DEFAULT_MAX_TOKENS,
           taskId: ctx.taskId,
           workerRunId: run.id,
@@ -293,7 +307,7 @@ export async function runTier2Worker(
         });
       }
 
-      const result = await dispatch(execCtx, call, denied, opts.loadSkill);
+      const result = await dispatch(execCtx, call, denied, opts.loadSkill, availability);
       if (result.denied === true) denied.set(fingerprint(call), result.content);
       if (call.name === "write_file" || call.name === "edit_file") {
         const path = pathOf(call);
@@ -329,6 +343,7 @@ async function dispatch(
   call: ToolCall,
   denied: Map<string, string>,
   loadSkill: ((slug: string) => string) | undefined,
+  availability: WorkerToolAvailability,
 ): Promise<ToolResult> {
   const remembered = denied.get(fingerprint(call));
   if (remembered !== undefined) {
@@ -338,7 +353,7 @@ async function dispatch(
     };
   }
 
-  const parsed = parseWorkerArgs(call.name, call.arguments);
+  const parsed = parseWorkerArgs(call.name, call.arguments, availability);
   if (!parsed.ok) return { content: parsed.error };
 
   // biome-ignore lint/suspicious/noExplicitAny: each tool re-validates via its own zod schema; `parseWorkerArgs` already produced the matching shape.
@@ -360,6 +375,8 @@ async function dispatch(
       return shellTool(ctx, args);
     case "web_fetch":
       return webFetchTool(ctx, args);
+    case "web_search":
+      return webSearchTool(ctx, args);
     case "report_progress":
       ctx.onProgress?.(args.note);
       return { content: "noted" };

@@ -51,8 +51,10 @@ import {
   shellTool,
   stripHtml,
   webFetchTool,
+  webSearchTool,
   writeFileTool,
 } from "./execute.js";
+import type { SearchBackend, SearchQuery, SearchResult } from "./search.js";
 import { type Workspace, openWorkspace } from "./workspace.js";
 
 let db: Db;
@@ -583,6 +585,102 @@ describe("web_fetch", () => {
     );
     expect(res.content).toContain("[truncated:");
     expect(res.content.length).toBeLessThan(110 * 1024);
+  });
+});
+
+describe("web_search", () => {
+  /** A backend that records what it was asked and answers from a script. */
+  function fakeBackend(answer: SearchResult[] | Error, seen: SearchQuery[] = []): SearchBackend {
+    return {
+      id: "fake",
+      async search(q) {
+        seen.push(q);
+        if (answer instanceof Error) throw answer;
+        return answer;
+      },
+    };
+  }
+
+  function withSearch(backend: SearchBackend, maxResults = 8): ExecuteContext {
+    return { ...ctx, search: { backend, maxResults } };
+  }
+
+  const hits: SearchResult[] = [
+    { title: "First", url: "https://one.example/", snippet: "the  first\n\nresult" },
+    { title: "", url: "https://two.example/", snippet: "" },
+  ];
+
+  it("says so when no backend is configured, in case a model calls it anyway", async () => {
+    // The tool is not declared without a backend, but models remember tools
+    // from other runs. The answer must be a result, not a throw.
+    const res = await webSearchTool(ctx, { query: "anything" });
+    expect(res.content).toContain("not available");
+    expect(res.content).toContain("no search provider");
+  });
+
+  it("renders a numbered list of title, URL and snippet", async () => {
+    const res = await webSearchTool(withSearch(fakeBackend(hits)), { query: "rewter" });
+    expect(res.content).toContain("2 results for: rewter");
+    expect(res.content).toContain("1. First\n   https://one.example/\n   the first result");
+    // Whitespace collapsed, so a multi-line snippet stays one line.
+    expect(res.content).not.toContain("first\n\n");
+  });
+
+  it("falls back to the URL as the title, and omits the snippet line when empty", async () => {
+    const res = await webSearchTool(withSearch(fakeBackend(hits)), { query: "rewter" });
+    const second = res.content.split("\n\n").at(-1);
+    expect(second).toBe("2. https://two.example/\n   https://two.example/");
+  });
+
+  it("clamps max_results to the daemon's cap and passes the signal through", async () => {
+    const seen: SearchQuery[] = [];
+    await webSearchTool(withSearch(fakeBackend([], seen), 4), { query: "q", max_results: 20 });
+    expect(seen[0]?.maxResults).toBe(4);
+    expect(seen[0]?.query).toBe("q");
+    expect(seen[0]?.signal).toBe(ctx.signal);
+  });
+
+  it("uses the daemon default when the model gives no max_results", async () => {
+    const seen: SearchQuery[] = [];
+    await webSearchTool(withSearch(fakeBackend([], seen), 6), { query: "q" });
+    expect(seen[0]?.maxResults).toBe(6);
+  });
+
+  it("lets the model ask for fewer than the cap", async () => {
+    const seen: SearchQuery[] = [];
+    await webSearchTool(withSearch(fakeBackend([], seen), 8), { query: "q", max_results: 2 });
+    expect(seen[0]?.maxResults).toBe(2);
+  });
+
+  it("reports an empty answer as no results, not as an error", async () => {
+    const res = await webSearchTool(withSearch(fakeBackend([])), { query: "zzzq" });
+    expect(res.content).toBe("no results for: zzzq");
+  });
+
+  it("turns a backend failure into a result naming the backend", async () => {
+    const res = await webSearchTool(withSearch(fakeBackend(new Error("HTTP 429 Too Many"))), {
+      query: "q",
+    });
+    expect(res.content).toContain("search failed (fake)");
+    expect(res.content).toContain("HTTP 429");
+  });
+
+  it("clips a long snippet with an ellipsis", async () => {
+    const long = "w".repeat(2_000);
+    const res = await webSearchTool(
+      withSearch(fakeBackend([{ title: "Long", url: "https://l.example/", snippet: long }])),
+      { query: "q" },
+    );
+    const snippetLine = res.content.split("\n").at(-1) ?? "";
+    expect(snippetLine.trim().length).toBeLessThanOrEqual(400);
+    expect(snippetLine.trimEnd().endsWith("…")).toBe(true);
+  });
+
+  it("uses the singular for one result", async () => {
+    const res = await webSearchTool(withSearch(fakeBackend([hits[0] as SearchResult])), {
+      query: "q",
+    });
+    expect(res.content.startsWith("1 result for: q")).toBe(true);
   });
 });
 

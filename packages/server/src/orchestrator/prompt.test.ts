@@ -31,7 +31,7 @@ const CONVERSATION: ChatMessage[] = [
 
 describe("the core prompt", () => {
   it("keeps the version constant in step with the text", () => {
-    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(7);
+    expect(ORCHESTRATOR_PROMPT_VERSION).toBe(8);
   });
 
   it("offers tier 2 as available work rather than a promise", () => {
@@ -324,6 +324,14 @@ describe("buildTier2Messages", () => {
     // arrives looking like the user talking to the worker directly — which is
     // exactly what the paragraph above it says never happens.
     expect(TIER2_SYSTEM_PROMPT).toContain(ORCHESTRATOR_MESSAGE_PREFIX.trim());
+  });
+
+  it("explains that web_search is conditional, so its absence is not read as a bug", () => {
+    // The tool is declared only on daemons with a search backend. A worker that
+    // was never told this may burn turns trying to reach it by other names.
+    expect(TIER2_SYSTEM_PROMPT).toContain("web_search");
+    expect(TIER2_SYSTEM_PROMPT).toContain("web_fetch");
+    expect(TIER2_SYSTEM_PROMPT).toContain("If `web_search` is not among your tools");
   });
 
   it("does not ask for the tier-1 SUMMARY line, which would collide with the report", () => {
