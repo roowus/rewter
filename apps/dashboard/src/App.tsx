@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { CostsPanel } from "./CostsPanel.js";
 import { DaemonFooter } from "./DaemonFooter.js";
 import { EventsPanel } from "./EventsPanel.js";
+import { FailuresPanel } from "./FailuresPanel.js";
 import { HealthPanel } from "./HealthPanel.js";
 import { ProjectsPanel } from "./ProjectsPanel.js";
 import { ProvidersPanel } from "./ProvidersPanel.js";
@@ -96,6 +97,10 @@ export function App(): JSX.Element {
       {/* Above the tree: it is the daemon's whole spend, including the
           pass-through traffic no task in the tree accounts for. */}
       <CostsPanel />
+
+      {/* Beside spend: what the upstreams cost in a different currency. The
+          retried failures here are the ones no task in the tree shows. */}
+      <FailuresPanel />
 
       {/* Above the registry, because it is the prior question: a model's price
           is irrelevant if the provider under it is holding an unset key. */}

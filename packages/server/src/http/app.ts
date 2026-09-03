@@ -63,6 +63,7 @@ import {
   newProjectId,
   restartAdvice,
   summarizeCosts,
+  summarizeFailures,
   toAnthropicStopReason,
   toAnthropicUsage,
   toChatMessages,
@@ -1633,6 +1634,32 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     }
 
     return summarizeCosts(repos.allCosts(window), { groupBy: groupBy.data, timeZone, ...window });
+  });
+
+  // ── Failures ──────────────────────────────────────────────────────────────
+  /**
+   * `GET /internal/failures?since=&until=`.
+   *
+   * Issue #9's instrumentation read back. Every row the router wrote about a
+   * failed upstream attempt — including the retried ones no client saw — split
+   * before/after first output, with the window's cost records beside them as
+   * the success count. A failure total without that denominator is a scare,
+   * not a rate. Aggregation is `summarizeFailures` from `shared`, for the same
+   * reason `/internal/costs` uses `summarizeCosts`: one implementation.
+   */
+  app.get("/internal/failures", async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const window: { since?: number; until?: number } = {};
+    for (const field of ["since", "until"] as const) {
+      const raw = q[field];
+      if (raw === undefined) continue;
+      const value = Number.parseInt(raw, 10);
+      if (Number.isNaN(value)) {
+        return reply.code(400).send({ error: { message: `${field} must be a ms timestamp` } });
+      }
+      window[field] = value;
+    }
+    return summarizeFailures(repos.allFailures(window), repos.allCosts(window), window);
   });
 
   // Two questions, one resource. `afterSeq` is the replay cursor: everything

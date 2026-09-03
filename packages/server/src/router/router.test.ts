@@ -251,6 +251,104 @@ describe("Router cost recording", () => {
   });
 });
 
+describe("Router failure recording", () => {
+  it("writes a row for the retried failure the caller never sees", async () => {
+    const adapter = new FakeAdapter([[err("503 upstream", true, 503)], [text("ok"), end()]]);
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }));
+
+    const rows = repos.allFailures();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      modelId: MODEL_ID,
+      providerId: PRV_A,
+      attempt: 1,
+      phase: "before_output",
+      retried: true,
+      retryable: true,
+      statusCode: 503,
+      message: "503 upstream",
+      taskId: null,
+    });
+  });
+
+  it("writes one row per exhausted attempt, the last marked not retried", async () => {
+    const adapter = new FakeAdapter([[err("503 upstream unavailable", true, 503)]]);
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }));
+
+    const rows = repos.allFailures();
+    expect(rows.map((r) => [r.attempt, r.retried])).toEqual([
+      [1, true],
+      [2, true],
+      [3, false],
+    ]);
+  });
+
+  it("records a failure after output as mid_stream — the number issue #9 asks for", async () => {
+    const adapter = new FakeAdapter([[text("half"), err("connection reset", true, null)]]);
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }));
+
+    const rows = repos.allFailures();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      phase: "mid_stream",
+      retried: false,
+      statusCode: null,
+      message: "connection reset",
+    });
+  });
+
+  it("records a throwing adapter as a non-retryable failure", async () => {
+    const adapter = new FakeAdapter([[]], { throwOnAttempt: 1 });
+    await drain(
+      makeRouter(adapter, { maxAttempts: 1 }).stream({ model: MODEL_ID, messages: MESSAGES }),
+    );
+    expect(repos.allFailures()).toMatchObject([
+      { phase: "before_output", retryable: false, retried: false, message: "adapter exploded" },
+    ]);
+  });
+
+  it("records a silent stream with a message that names the model", async () => {
+    const adapter = new FakeAdapter([[]]);
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }));
+    const rows = repos.allFailures();
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.message).toContain(MODEL_ID);
+  });
+
+  it("does not record an abort — that is the user's decision, not the model's", async () => {
+    const adapter = new FakeAdapter([[text("a"), end()]]);
+    const abort = new AbortController();
+    abort.abort();
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }, abort.signal));
+    expect(repos.allFailures()).toHaveLength(0);
+  });
+
+  it("records nothing for a clean success", async () => {
+    const adapter = new FakeAdapter([[text("hi"), end()]]);
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }));
+    expect(repos.allFailures()).toHaveLength(0);
+  });
+
+  it("attributes the row to the task and run that asked", async () => {
+    const task = makeTask();
+    const adapter = new FakeAdapter([[err("429 slow down", true, 429)], [text("ok"), end()]]);
+    await drain(
+      makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES, taskId: task.id }),
+    );
+    expect(repos.allFailures()[0]).toMatchObject({ taskId: task.id, statusCode: 429 });
+  });
+
+  it("filters the window half-open on createdAt", async () => {
+    const adapter = new FakeAdapter([[err("503", true, 503)]]);
+    await drain(makeRouter(adapter).stream({ model: MODEL_ID, messages: MESSAGES }));
+    const all = repos.allFailures();
+    expect(all).toHaveLength(3);
+    const second = all[1]?.createdAt ?? 0;
+    expect(repos.allFailures({ since: second })).toHaveLength(2);
+    expect(repos.allFailures({ until: second })).toHaveLength(1);
+  });
+});
+
 describe("Router.complete", () => {
   it("folds the stream into a single response", async () => {
     const adapter = new FakeAdapter([[text("hello "), text("world"), end()]]);

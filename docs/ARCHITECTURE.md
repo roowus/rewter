@@ -201,6 +201,10 @@ Entities (zod-typed in `shared`):
 - **Event** — append-only, autoincrement `seq`; **source of truth** for dashboard replay and audit.
 - **Approval** — kind (shell|write_outside_workspace|spawn_harness|budget|other), status, resolvedBy.
 - **CostRecord** — token counts incl. cache read/write; costUsd computed at write time from a pricing snapshot.
+- **FailureRecord** — one failed upstream attempt as the router saw it: `phase`
+  (before_output|mid_stream), `attempt`, `retried`, `retryable`, `statusCode`, clipped
+  `message`; nullable `taskId`/`workerRunId` like a cost record. Not an event — see
+  [Failure recording](#failure-recording-issue-9).
 - **ModelStat** — (modelId, taskTag) → attempts/successes/avgCostUsd?/avgLatencyMs?. Running
   means, upserted per observation by the stats recorder — see
   [Learned stats](#learned-stats-the-recorder-and-the-digest). The schema waited from M1; the
@@ -1390,6 +1394,53 @@ attempt. `taskId` is nullable, so plain pass-through calls are metered too — t
 can price a bare routing session, not just orchestrations. A stream that dies before
 reporting usage records nothing rather than guessing.
 
+### Failure recording (issue #9)
+
+Issue #9 asked whether resumable streams are worth building, and the honest answer was "we
+do not know how often streams fail mid-way". The router is the only component that sees
+every attempt — including the retried ones whose caller never learns a failure happened — so
+it is where the data is gathered. Every failed attempt appends a **`FailureRecord`** to the
+`failure_records` table (migration `0004`), never an event: a retried 503 must not appear in
+a task's tree as if it had reached the user, and the fold has no business knowing about it.
+
+What one row carries, and why:
+
+- **`phase`** — `before_output` or `mid_stream`. The split is the whole point. A failure
+  before any output is one the retry loop already absorbs; its rate says what the retry is
+  earning. A failure after the first chunk cannot be retried without duplicating rendered
+  text, so it always reaches the client; *its* rate is the number that decides #9.
+- **`attempt`** and **`retried`** — 1-based attempt within one `Router.stream()`, and
+  whether the router went on to try again. Three rows `[1, retried] [2, retried] [3, not]`
+  is one exhausted request; a single `[1, not retried]` before output is a non-retryable
+  error surfaced immediately.
+- **`retryable`** and **`statusCode`** — the adapter's own verdict, and the upstream's
+  status. A thrown adapter is recorded as `retryable: false` with a null status.
+- **`modelId`**, **`providerId`**, nullable **`taskId`** / **`workerRunId`** — a
+  pass-through call is attributed to nothing but the model, exactly like a cost record.
+- **`message`** — the upstream's text clipped to 500 characters. Never a request body,
+  never a key.
+
+Two deliberate omissions. **Aborts are not failures**: a request cancelled by its caller is
+recorded nowhere, because "the user hit ctrl-c" says nothing about the upstream. And the
+recording itself is wrapped so that a full disk or a locked table cannot turn a completed
+answer into an error — instrumentation never gets to be the failure.
+
+Successes come from `cost_records`, which already exist one-per-completed-request, so the
+two tables together give a rate rather than a bare count. `summarizeFailures()` in
+`@rewter/shared` (the sibling of `summarizeCosts()`) folds both into a `FailureSummary`:
+totals and a per-model bucket of `{failures, beforeOutput, midStream, retried, successes,
+byStatus, lastMessage, lastAt}`, sorted by failures then mid-stream. The mid-stream rate is
+`midStream / (successes + failures)` and is **`null` when nothing was called** — no calls is
+no rate, not a zero one. `GET /internal/failures?since=&until=` serves it; the dashboard's
+`FailuresPanel` renders it beside the costs panel with the same range tabs, refetching on
+socket movement for the same reason the costs panel does.
+
+Failure records are **never collected by `gc`**, for the reason cost records are not: they
+are evidence about a model's reliability, not about a task, and the question they answer
+outlives any one transcript. The `model_stats` recorder is the natural consumer of this
+table once there is enough of it — per-model backoff in the engine's handoff cap (the other
+half of #9) is the first thing it would inform.
+
 ### SSE and the OpenAI wire format
 
 `SseWriter` writes `data: <json>\n\n` frames straight to `reply.raw`, ends with the literal
@@ -1997,7 +2048,8 @@ Three rules make it more than a `DELETE FROM`:
 
 - **Cost records are never collected.** `cost_records.task_id` is nullable with no foreign
   key precisely so this is possible: dropping a task's transcript is a storage decision,
-  dropping its price destroys the answer to "what did I spend in March".
+  dropping its price destroys the answer to "what did I spend in March". Failure records
+  are kept on the same grounds — they are evidence about a model, not about a task.
 - **Unfinished tasks are never collected**, whatever their age — they are either genuinely in
   flight or something for the next boot's reconciliation to close. Age is measured from
   `finishedAt`, not `createdAt`, so a task that ran for a week is judged on when it *ended*.
@@ -2559,7 +2611,9 @@ every adapter leans on.
   `POST /internal/tasks/:id/settings` (`{maxSpendUsd: number|null}` → `{task, applied}`;
   404 unknown, 409 terminal, 400 for a zero/absent/non-numeric cap — see
   [Moving the cap](#moving-the-cap-m7g)), `GET /internal/costs`
-  (see below), the registry-editor writes — `POST /internal/models`,
+  (see below), `GET /internal/failures?since=&until=` (a `FailureSummary`; 400 on a
+  non-numeric bound — see [Failure recording](#failure-recording-issue-9)), the
+  registry-editor writes — `POST /internal/models`,
   `PATCH|DELETE /internal/models/*`, `PUT /internal/card-overrides/*` (see
   [The registry editor](#the-registry-editor-m7f)) — `POST /internal/providers/:id/test`
   (a catalog read against the real upstream; every upstream failure is a **200 carrying a
@@ -2905,6 +2959,17 @@ carries** — cost per request, input→output tokens, cache reads/writes, and t
 of the current grouping. That is the rule the survey drew from OmniRoute's fourteen
 tiles, and the same rule that kept latency off the health strip: zero calls renders `—`,
 not `$0`, because a zero average claims a measurement that was never taken.
+
+**The failures panel (`src/FailuresPanel.tsx`)** sits directly beneath and is built on the
+same pattern — same range tabs, same `lastSeq` tick, same keep-the-last-good-numbers rule,
+same schema parse — over `GET /internal/failures`. It is a second panel rather than a second
+tab because it measures a different currency: what the upstreams cost in reliability, not in
+dollars. The headline keeps `before output` and `mid-stream` apart all the way to the screen
+(a single "errors" count would blend the retry-absorbed problem into the open one), the four
+cards are mid-stream rate, failure rate, retried-of-before-output, and the top status, and
+the per-model table shows successes beside the failures so every rate has its denominator in
+view. No calls renders `—` for the same reason zero spend does. See
+[Failure recording](#failure-recording-issue-9) for what the rows mean.
 
 ### Health: what the daemon knows about itself
 

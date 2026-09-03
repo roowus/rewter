@@ -11,6 +11,7 @@
 import {
   type ChatMessage,
   type ChatResponse,
+  type FailurePhase,
   type Model,
   type ModelPricing,
   type StreamChunk,
@@ -19,6 +20,7 @@ import {
   type Usage,
   type WorkerRunId,
   newCostRecordId,
+  newFailureRecordId,
 } from "@rewter/shared";
 import { computeCost } from "../costs/compute.js";
 import type { Repos } from "../db/repos.js";
@@ -139,6 +141,11 @@ export class Router {
           }
           emitted = true;
           if (chunk.type === "message_end") usage = chunk.usage;
+          if (chunk.type === "error") {
+            // The one failure retry cannot touch: the client has the bytes.
+            // Recorded so its frequency is a fact rather than a guess (#9).
+            this.recordFailure(req, resolution, chunk, { attempt, phase: "mid_stream", signal });
+          }
           yield chunk;
           if (chunk.type === "message_end" || chunk.type === "error") {
             if (usage !== undefined) this.recordCost(req, resolution.model, usage);
@@ -148,15 +155,29 @@ export class Router {
       } catch (err) {
         // An adapter that throws instead of yielding an error chunk is a bug,
         // but the client still deserves a terminal chunk rather than a hang.
+        const thrown: Extract<StreamChunk, { type: "error" }> = {
+          type: "error",
+          message: err instanceof Error ? err.message : String(err),
+          retryable: false,
+          statusCode: null,
+        };
         if (emitted || attempt >= this.maxAttempts) {
-          yield {
-            type: "error",
-            message: err instanceof Error ? err.message : String(err),
-            retryable: false,
-            statusCode: null,
-          };
+          this.recordFailure(req, resolution, thrown, {
+            attempt,
+            phase: emitted ? "mid_stream" : "before_output",
+            signal,
+          });
+          yield thrown;
           return;
         }
+        this.recordFailure(req, resolution, thrown, {
+          attempt,
+          phase: "before_output",
+          retried: true,
+          signal,
+        });
+        await this.sleep(this.backoffMs(attempt));
+        continue;
       }
 
       if (emitted) return;
@@ -164,7 +185,19 @@ export class Router {
       // A stream that produced nothing at all left no reason behind; treat the
       // silence as retryable rather than concluding the request is hopeless.
       const retryable = failure?.retryable ?? true;
-      if (retryable && attempt < this.maxAttempts) {
+      const willRetry = retryable && attempt < this.maxAttempts;
+      this.recordFailure(
+        req,
+        resolution,
+        failure ?? {
+          type: "error",
+          message: `${resolution.model.id} produced no output`,
+          retryable: true,
+          statusCode: null,
+        },
+        { attempt, phase: "before_output", retried: willRetry, signal },
+      );
+      if (willRetry) {
         await this.sleep(this.backoffMs(attempt));
         continue;
       }
@@ -194,6 +227,52 @@ export class Router {
    */
   async complete(req: RouteRequest, signal?: AbortSignal): Promise<ChatResponse> {
     return collectStream(this.stream(req, signal));
+  }
+
+  /**
+   * Write down one failed attempt — including the ones the caller never sees.
+   *
+   * Every failure the router papers over with a retry is a fact about the
+   * upstream that the stream, by design, hides. Issue #9 asks how often a
+   * stream dies *after* its first chunk; that cannot be answered from the logs
+   * of the client that received the error, only from here, where both kinds are
+   * seen side by side.
+   *
+   * An abort is not recorded: it is the user's decision, not the model's
+   * failure, and counting it would inflate exactly the rate this exists to
+   * measure. Recording is best-effort — a failing insert must not turn a
+   * recoverable upstream error into an unrecoverable one.
+   */
+  private recordFailure(
+    req: RouteRequest,
+    resolution: Resolution,
+    chunk: Extract<StreamChunk, { type: "error" }>,
+    ctx: {
+      attempt: number;
+      phase: FailurePhase;
+      retried?: boolean;
+      signal?: AbortSignal | undefined;
+    },
+  ): void {
+    if (ctx.signal?.aborted === true) return;
+    try {
+      this.repos.recordFailure({
+        id: newFailureRecordId(),
+        taskId: req.taskId ?? null,
+        workerRunId: req.workerRunId ?? null,
+        modelId: resolution.model.id,
+        providerId: resolution.provider.id,
+        attempt: ctx.attempt,
+        phase: ctx.phase,
+        retried: ctx.retried ?? false,
+        retryable: chunk.retryable,
+        statusCode: chunk.statusCode,
+        message: chunk.message.slice(0, 500),
+        createdAt: this.clock(),
+      });
+    } catch {
+      // Instrumentation never gets to be the failure.
+    }
   }
 
   private recordCost(req: RouteRequest, model: Model, usage: Usage): void {

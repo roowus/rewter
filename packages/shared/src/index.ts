@@ -19,6 +19,7 @@ export * from "./projects.js";
 export * from "./skills.js";
 export * from "./fold.js";
 export * from "./costs.js";
+export * from "./failures.js";
 export * from "./registry.js";
 export * from "./providers.js";
 export * from "./health.js";

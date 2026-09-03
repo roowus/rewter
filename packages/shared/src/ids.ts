@@ -17,6 +17,7 @@ export const ID_PREFIXES = {
   model: "mdl",
   cost: "cst",
   project: "proj",
+  failure: "fail",
 } as const;
 
 type Prefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
@@ -36,6 +37,7 @@ export const EventIdSchema = idSchema(ID_PREFIXES.event);
 export const ProviderIdSchema = idSchema(ID_PREFIXES.provider);
 export const CostRecordIdSchema = idSchema(ID_PREFIXES.cost);
 export const ProjectIdSchema = idSchema(ID_PREFIXES.project);
+export const FailureRecordIdSchema = idSchema(ID_PREFIXES.failure);
 
 export type TaskId = z.infer<typeof TaskIdSchema>;
 export type WorkItemId = z.infer<typeof WorkItemIdSchema>;
@@ -45,6 +47,7 @@ export type EventId = z.infer<typeof EventIdSchema>;
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 export type CostRecordId = z.infer<typeof CostRecordIdSchema>;
 export type ProjectId = z.infer<typeof ProjectIdSchema>;
+export type FailureRecordId = z.infer<typeof FailureRecordIdSchema>;
 
 function makeId<T>(prefix: Prefix, schema: { parse: (v: string) => T }): () => T {
   return () => schema.parse(`${prefix}_${alphabet()}`);
@@ -58,6 +61,7 @@ export const newEventId = makeId(ID_PREFIXES.event, EventIdSchema);
 export const newProviderId = makeId(ID_PREFIXES.provider, ProviderIdSchema);
 export const newCostRecordId = makeId(ID_PREFIXES.cost, CostRecordIdSchema);
 export const newProjectId = makeId(ID_PREFIXES.project, ProjectIdSchema);
+export const newFailureRecordId = makeId(ID_PREFIXES.failure, FailureRecordIdSchema);
 
 /** Model IDs are human-authored slugs like `anthropic/claude-sonnet-5`, not generated. */
 export const ModelIdSchema = z

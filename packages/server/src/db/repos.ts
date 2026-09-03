@@ -14,6 +14,8 @@ import {
   CapabilityCardSchema,
   type CostRecord,
   CostRecordSchema,
+  type FailureRecord,
+  FailureRecordSchema,
   type Model,
   ModelSchema,
   type ModelStat,
@@ -52,6 +54,7 @@ import {
   approvals,
   capabilityCards,
   costRecords,
+  failureRecords,
   modelStats,
   models,
   projects,
@@ -749,6 +752,37 @@ export class Repos {
     const query = this.db.select().from(costRecords);
     const filtered = clauses.length === 0 ? query : query.where(and(...clauses));
     return filtered.orderBy(asc(costRecords.createdAt)).all().map(toCostRecord);
+  }
+
+  // ── Failures ─────────────────────────────────────────────────────────────
+
+  /**
+   * One failed upstream attempt. No event is appended: a failure the router
+   * retries is, by design, invisible to the task's stream — the dashboard tree
+   * would show a "failure" on a task that then succeeded normally. The rows are
+   * for the aggregate (`/internal/failures`), which is what issue #9 asked for.
+   */
+  recordFailure(failure: FailureRecord): FailureRecord {
+    const f = FailureRecordSchema.parse(failure);
+    this.db.insert(failureRecords).values(f).run();
+    return f;
+  }
+
+  /** Every failure row in a half-open time window, oldest first. */
+  allFailures(window: { since?: number | null; until?: number | null } = {}): FailureRecord[] {
+    const clauses = [];
+    if (window.since !== undefined && window.since !== null) {
+      clauses.push(gte(failureRecords.createdAt, window.since));
+    }
+    if (window.until !== undefined && window.until !== null) {
+      clauses.push(lt(failureRecords.createdAt, window.until));
+    }
+    const query = this.db.select().from(failureRecords);
+    const filtered = clauses.length === 0 ? query : query.where(and(...clauses));
+    return filtered
+      .orderBy(asc(failureRecords.createdAt))
+      .all()
+      .map((r) => FailureRecordSchema.parse(r));
   }
 
   // ── Model stats ──────────────────────────────────────────────────────────

@@ -12,7 +12,9 @@
  * - **Cost records are never collected.** They carry a nullable `taskId` and no
  *   foreign key on purpose, and this is why: "what did I spend in March" must
  *   keep working after March's transcripts are gone. Dropping a task's detail is
- *   a storage decision; dropping its price is destroying an answer.
+ *   a storage decision; dropping its price is destroying an answer. Failure
+ *   records (issue #9's instrumentation) are kept for the same reason: they are
+ *   evidence about a model's reliability, not about a task.
  * - **Unfinished tasks are never collected**, whatever their age. A task still
  *   `running` is either genuinely in flight or something for the next boot's
  *   reconciliation to close out, and neither wants its history removed from
@@ -209,7 +211,7 @@ export function formatGcResult(result: GcResult): string {
     `  ${d.events} event(s), ${d.workItems} work item(s), ${d.workerRuns} worker run(s), ${d.approvals} approval(s)`,
   ];
   if (d.workspaces > 0) lines.push(`  ${d.workspaces} workspace director(ies)`);
-  lines.push("  cost records kept — spend history outlives task detail");
+  lines.push("  cost and failure records kept — spend and reliability history outlive task detail");
   lines.push(...kept);
   if (result.dryRun) lines.push("  (dry run — nothing was deleted)");
   return lines.join("\n");

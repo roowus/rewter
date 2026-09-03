@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   ApprovalIdSchema,
   CostRecordIdSchema,
+  FailureRecordIdSchema,
   ModelIdSchema,
   ProjectIdSchema,
   ProjectSlugSchema,
@@ -315,6 +316,43 @@ export const CostRecordSchema = z.object({
   createdAt: TimestampSchema,
 });
 export type CostRecord = z.infer<typeof CostRecordSchema>;
+
+/**
+ * Where in a call an upstream failure landed. The distinction is the whole
+ * reason this record exists (issue #9): a `before_output` failure is one the
+ * router can retry invisibly, a `mid_stream` one is not — the client has already
+ * seen bytes — so how often the second kind happens decides whether a
+ * resume-on-drop design is worth its cost.
+ */
+export const FailurePhaseSchema = z.enum(["before_output", "mid_stream"]);
+export type FailurePhase = z.infer<typeof FailurePhaseSchema>;
+
+/**
+ * One failed upstream attempt, as the router saw it. Written on every failure,
+ * including the ones a retry later papered over — the caller never learns
+ * about those, which is exactly why they need writing down somewhere. Like
+ * `CostRecord`, it has a nullable `taskId` and no foreign key: it is evidence
+ * about a *model*, and must outlive the task that happened to be running.
+ */
+export const FailureRecordSchema = z.object({
+  id: FailureRecordIdSchema,
+  taskId: TaskIdSchema.nullable(),
+  workerRunId: WorkerRunIdSchema.nullable(),
+  modelId: ModelIdSchema,
+  providerId: ProviderIdSchema,
+  /** 1-based attempt number within one `Router.stream()` call. */
+  attempt: z.number().int().positive(),
+  phase: FailurePhaseSchema,
+  /** Whether the router went on to try again after this failure. */
+  retried: z.boolean(),
+  /** The adapter's own verdict. A thrown error is recorded as not retryable. */
+  retryable: z.boolean(),
+  statusCode: z.number().int().nullable(),
+  /** The upstream's message, clipped — never a request body, never a key. */
+  message: z.string().max(500),
+  createdAt: TimestampSchema,
+});
+export type FailureRecord = z.infer<typeof FailureRecordSchema>;
 
 /**
  * Learned outcomes per (model, kind of work). Written by the server's stats

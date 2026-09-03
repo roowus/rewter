@@ -57,8 +57,48 @@ and why in this order.
 | P2-M5 | Tier-3 harness #1: headless Claude Code adapter + runner + spawn gate + mid-session `send()` ✅ 2026-09-01 · tmux attach/mirror ✅ 2026-09-01 · restart re-adoption via `--resume` ✅ 2026-09-01 · generic adapter spec (any CLI by config; aider/codex = config entries) ✅ 2026-09-01 | ✅ 2026-09-01 |
 | P2-late | Stats-driven advice: `spawn_worker.tag` → `WorkItem.taskTag`, `wireStatsRecorder` bus subscriber over `model_stats`, `stats:[…]` in the digest, prompt v7 | ✅ 2026-09-02 |
 | #10 | Tier-2 `web_search`: searxng (keyless) / Brave / Tavily behind one `SearchBackend`, declared only where a backend exists, `search` config block (strict), worker tools v3, prompt v8 | ✅ 2026-09-02 |
+| #9 | Failure instrumentation: `failure_records` (migration 0004) written by the router per failed attempt, `before_output`/`mid_stream` split, `summarizeFailures` + `GET /internal/failures`, dashboard `FailuresPanel`; the data #9 said to gather before designing resumable streams | ✅ 2026-09-02 (instrumentation; the design decision stays open) |
 
 ## Log
+
+### 2026-09-02 — Failure instrumentation: the data issue #9 asked for before designing
+
+Issue #9 asked whether resumable streams and per-model backoff are worth building, and
+answered itself: "depends on how often mid-stream failures actually happen, which we do not
+have data on yet — worth instrumenting before designing." This is the instrumentation. The
+design decision is deliberately *not* made here; the issue stays open until the panel has
+something to say.
+
+- **`FailureRecord`** (`@rewter/shared`, `fail_` id prefix) and the `failure_records` table
+  (migration `0004`, indexed by `created_at` and `model_id`). One row per failed upstream
+  attempt with `phase` (`before_output` | `mid_stream`), `attempt`, `retried`, `retryable`,
+  `statusCode`, and the upstream's message clipped to 500 chars. Nullable `taskId` and no
+  foreign key, exactly like `cost_records`, and for the same reason: `gc` never touches
+  them — they are evidence about a model, not about a task.
+- **Not an event.** A retried 503 the client never saw must not appear in the task tree as if
+  it had, so the router writes the table directly from three places: the mid-stream error
+  path, the thrown-adapter catch, and the pre-output settle where retry-or-surface is decided
+  (the row's `retried` is that decision). **Aborts are not recorded** — a ctrl-c says nothing
+  about the upstream. The write is wrapped so instrumentation can never be the failure.
+- **`summarizeFailures(failures, costs, window)`** — the pure fold, sibling of
+  `summarizeCosts`. Successes are cost records, so every figure is a rate over the window's
+  calls rather than a bare count. Per-model buckets sorted by failures then mid-stream;
+  `byStatus` with `"none"` for a null status; `midStreamRate()` is `null` when nothing was
+  called — no calls is no rate, not a zero one.
+- **`GET /internal/failures?since=&until=`** — a `FailureSummary`; 400 with the field name on
+  a non-numeric bound. Both tables are read through the same half-open window.
+- **`FailuresPanel`** beneath the costs panel: same range tabs, same `lastSeq` refetch, same
+  last-good-numbers-on-error rule. Headline keeps before-output and mid-stream apart; cards
+  are mid-stream rate, failure rate, retried-of-before-output, top status; per-model table
+  with successes beside failures and the last message.
+
+Tests: router 21 → 30 (retried/exhausted/mid-stream/thrown/silent/abort/success/attribution/
+window), `app.failures.test.ts` 5 (incl. an end-to-end 503-then-ok through
+`/v1/chat/completions`), shared `failures.test.ts` 7, dashboard `FailuresPanel.test.tsx` 9,
+gc +1 (records survive collection); server 1387 → 1402, dashboard now 317, shared now 401.
+Docs: ARCHITECTURE.md entity list, a new
+[Failure recording](ARCHITECTURE.md#failure-recording-issue-9) section, API listing, costs
+panel section, gc rule; README.
 
 ### 2026-09-02 — `web_search` lands, declared only where a backend exists (#10)
 

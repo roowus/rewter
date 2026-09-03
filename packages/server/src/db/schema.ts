@@ -198,6 +198,31 @@ export const costRecords = sqliteTable(
   (t) => [index("idx_cost_records_task").on(t.taskId)],
 );
 
+// One row per failed upstream attempt, written by the router (issue #9's
+// instrumentation). Like cost_records: nullable task_id, no foreign key, never
+// collected by gc — it is evidence about a model, not about a task.
+export const failureRecords = sqliteTable(
+  "failure_records",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id"),
+    workerRunId: text("worker_run_id"),
+    modelId: text("model_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    attempt: integer("attempt").notNull(),
+    phase: text("phase").notNull(),
+    retried: integer("retried", { mode: "boolean" }).notNull(),
+    retryable: integer("retryable", { mode: "boolean" }).notNull(),
+    statusCode: integer("status_code"),
+    message: text("message").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_failure_records_created").on(t.createdAt),
+    index("idx_failure_records_model").on(t.modelId),
+  ],
+);
+
 // Phase-2 skills index. One row per SKILL.md on disk; the FILE is the source
 // of truth and this table is rebuilt from the tree (reindex on boot and after
 // every store write). Keyed by path — the same slug can exist approved in two

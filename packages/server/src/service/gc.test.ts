@@ -8,6 +8,8 @@ import {
   type TaskStatus,
   newApprovalId,
   newCostRecordId,
+  newFailureRecordId,
+  newProviderId,
   newTaskId,
   newWorkItemId,
   newWorkerRunId,
@@ -19,6 +21,7 @@ import { EventBus } from "../events/bus.js";
 import { DEFAULT_RETENTION_DAYS, collectGarbage, formatGcResult, vacuum } from "./gc.js";
 
 const mdl = ModelIdSchema.parse("anthropic/claude-sonnet-5");
+const prv = newProviderId();
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
 
@@ -129,6 +132,21 @@ function makeTask(opts: { status: TaskStatus; daysAgo: number }): TaskId {
     createdAt: tick,
   });
 
+  repos.recordFailure({
+    id: newFailureRecordId(),
+    taskId: task.id,
+    workerRunId: null,
+    modelId: mdl,
+    providerId: prv,
+    attempt: 1,
+    phase: "before_output",
+    retried: true,
+    retryable: true,
+    statusCode: 503,
+    message: "overloaded",
+    createdAt: tick,
+  });
+
   if (opts.status !== "pending") {
     repos.transitionTask(task.id, "running");
     if (opts.status !== "running") repos.transitionTask(task.id, opts.status);
@@ -180,6 +198,16 @@ describe("collectGarbage", () => {
 
     expect(rows("cost_records", String(id))).toBe(1);
     expect(repos.listCosts(String(id))).toHaveLength(1);
+  });
+
+  it("keeps failure records — reliability history is about the model, not the task", () => {
+    // Same reasoning as cost records: a retried 503 is evidence about the
+    // upstream, and issue #9's question outlives any one transcript.
+    const id = makeTask({ status: "succeeded", daysAgo: 90 });
+    collectGarbage(db, { now: NOW });
+
+    expect(rows("failure_records", String(id))).toBe(1);
+    expect(repos.allFailures({})).toHaveLength(1);
   });
 
   it("leaves a task that has not finished, however old", () => {
@@ -379,7 +407,7 @@ describe("formatGcResult", () => {
 
     expect(text).toContain("removed 1 task(s)");
     expect(text).toContain("work item(s)");
-    expect(text).toContain("cost records kept");
+    expect(text).toContain("cost and failure records kept");
   });
 
   it("marks a dry run as one, in both the verb and a trailing note", () => {

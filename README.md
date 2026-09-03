@@ -284,6 +284,16 @@ above the breakdown (cost per request, tokens in→out, cache reads and writes, 
 of whatever grouping is showing), and every one of them is a field the summary actually
 carries: zero calls prints `—`, not a `$0` average nobody measured.
 
+Beneath it, built the same way, the **failures panel** (`GET /internal/failures`) shows what
+the upstreams cost in a different currency. The router records every failed attempt it sees
+— including the ones it retried and the client never learned about — and splits them by
+whether they happened **before any output** (the retry loop absorbs these; their rate says
+what the retry is earning) or **mid-stream** (unretryable without duplicating text the client
+has rendered, so they always reach the user). That second rate is the number issue #9 asked
+for before deciding whether resumable streams are worth building. Successes come from the
+cost records, so every figure is a rate over the window's calls, and no calls prints `—`
+rather than a fabricated `0%`. Failure records, like cost records, survive `rewter gc`.
+
 The fifth piece closes M7: the **registry editor**, which fetches for the same reason — a
 registry is not a stream of things that happened, it is a table of what is true now. It
 exists so one rule is visible instead of buried. A row whose facts came from a provider's
@@ -683,13 +693,14 @@ rewter gc --older-than 30 --dry-run
 # would remove 12 task(s) finished before 2026-07-30:
 #   4831 event(s), 39 work item(s), 44 worker run(s), 7 approval(s)
 #   12 workspace director(ies)
-#   cost records kept — spend history outlives task detail
+#   cost and failure records kept — spend and reliability history outlive task detail
 #   (dry run — nothing was deleted)
 ```
 
 **Cost records are never collected** — they carry a nullable task id and no foreign key
 precisely so that "what did I spend in March" keeps working after March's transcripts are
-gone. Unfinished tasks are never collected either, whatever their age. Add `--vacuum` to
+gone. Failure records are kept for the same reason: they are evidence about a model's
+reliability, not about a task. Unfinished tasks are never collected either, whatever their age. Add `--vacuum` to
 actually give the pages back to the filesystem; it's opt-in because `VACUUM` needs room for
 a second copy of the database and locks the whole of it while it runs.
 

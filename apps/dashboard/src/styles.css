@@ -258,6 +258,18 @@ pre,
   color: var(--dim);
 }
 
+/* The failures table reuses the costs classes — same panel, different rows.
+   Its one prose column is the upstream's own error text, which is left-aligned
+   and clipped so a 500-char message cannot push the figures off screen. */
+.costs-table td.failures-last {
+  text-align: left;
+  font-family: inherit;
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── daemon health ─────────────────────────────────────────────────── */
 
 .health {

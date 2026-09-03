@@ -29,6 +29,13 @@
       "when": 1788376940778,
       "tag": "0003_work_item_tag",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788412057992,
+      "tag": "0004_failure_records",
+      "breakpoints": true
     }
   ]
 }
